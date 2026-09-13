@@ -14,6 +14,8 @@
 
 #include "harness/autotest.h"
 
+#include "harness/autotest/death_state_probe.h"
+
 #include "coop/player/death_revive.h"
 #include "coop/player/run_end_travel.h"
 #include "ue_wrap/core/call.h"
@@ -153,12 +155,13 @@ void RunRunEndDrill() {
     RunGT([&worldAfter, &pausedAfter, &aliveAfter, &atKppAfter] {
         if (void* w = R::FindObjectByClass(P::name::WorldClass)) worldAfter = R::ToString(R::NameOf(w));
         pausedAfter = E::IsGamePaused();
-        void* pawn = R::FindObjectByClass(P::name::MainPlayerClass);
-        bool isRagdoll = false, dead = true;
-        if (pawn && E::ReadMainPlayerRagdollState(pawn, isRagdoll, dead)) aliveAfter = !dead;
-        if (pawn) {
-            const ue_wrap::FVector at = E::GetActorLocation(pawn);
-            const float dx = at.X - P::name::kKPPSpawnX, dy = at.Y - P::name::kKPPSpawnY;
+        // The shared reader, not a second hand-rolled one: its pawn is the registry's LOCAL
+        // player, where this drill's own copy took the first mainPlayer_C the array offered --
+        // correct on a solo host with no puppets and wrong the moment one exists.
+        const DeathSnapshot s = ReadDeathState();
+        aliveAfter = s.haveState && !s.dead;
+        if (s.haveLoc) {
+            const float dx = s.locX - P::name::kKPPSpawnX, dy = s.locY - P::name::kKPPSpawnY;
             atKppAfter = (dx * dx + dy * dy) < (600.f * 600.f);
         }
     });

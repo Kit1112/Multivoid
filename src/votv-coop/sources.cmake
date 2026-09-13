@@ -488,6 +488,7 @@ set(VOTVCOOP_SOURCES
     src/harness/autotest/autotest_damage.cpp
     src/harness/autotest/autotest_dmghazard.cpp
     src/harness/autotest/autotest_playerdmg.cpp
+    src/harness/autotest/death_state_probe.cpp
     src/harness/autotest/autotest_death.cpp
     src/harness/autotest/autotest_puppetframe.cpp
     src/harness/autotest/autotest_ragdoll.cpp

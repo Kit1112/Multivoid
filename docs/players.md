@@ -223,7 +223,7 @@ dead peer through the ragdoll bit of its next pose.
 | Limit | Evidence |
 |---|---|
 | No chat line announces a death | `[V]` `coop/comms/chat_sync` carries no such kind |
-| After a revive the player can drift horizontally from the base gate, metres over seconds; the cause is unmeasured | `[V]` `harness/autotest/autotest_death.cpp` reads the position back |
+| After a revive the player can drift horizontally from the base gate, metres over seconds; the cause is unmeasured | `[V]` `harness/autotest/death_state_probe.cpp` reads the position back |
 | Damage a puppet takes on another machine is dropped by design; only the victim's own contacts count | `[V]` `coop/player/player_damage` |
 | A third-party bundle pak cannot be discovered: bundle membership is a fixed table | `[V]` `coop/player/skin_registry` |
 | Bans are by address, so a banned player with a new address is a new player | `[V]` `coop/moderation/ban_list` |
@@ -244,4 +244,4 @@ dead peer through the ragdoll bit of its next pose.
 | sleep | `coop/player/sleep_sync` |
 | inventory | `coop/items/player_inventory_sync` |
 | moderation | `coop/moderation/moderation`, `coop/moderation/ban_list`, `coop/moderation/seen_players` |
-| tests | `harness/autotest/autotest_death.cpp`, `autotest_damage.cpp`, `autotest_playerdmg.cpp`, `autotest_ragdoll.cpp`, `autotest_puppetframe.cpp` |
+| tests | `harness/autotest/autotest_death.cpp` (the drill) + `death_state_probe.cpp` (the reads it and `autotest_runend.cpp` share), `autotest_damage.cpp`, `autotest_playerdmg.cpp`, `autotest_ragdoll.cpp`, `autotest_puppetframe.cpp` |
