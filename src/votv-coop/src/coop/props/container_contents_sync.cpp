@@ -239,6 +239,11 @@ void NeuterNestedIndex(SR::SaveRecord& r) {
     r.ints[0][0] = -1;
 }
 
+// Does this record still carry a slot number from wherever it came from?
+bool CarriesForeignIndex(const SR::SaveRecord& r) {
+    return !r.ints.empty() && !r.ints[0].empty() && r.ints[0][0] != -1;
+}
+
 // The blob grammar.
 
 void AppU16(std::vector<uint8_t>& b, uint16_t v) {
@@ -534,11 +539,27 @@ Ingest ParseAndApply(const std::vector<uint8_t>& blob, uint32_t& outEid, uint8_t
         return Ingest::Handled;
     }
     std::vector<SR::SaveRecord> recs(n);
+    size_t foreignIndices = 0;
     for (auto& r : recs) {
         if (!W::DeSave(blob, o, r)) {
             UE_LOGW("container_contents: eid=%u malformed record stream -- dropped", outEid);
             return Ingest::Handled;
         }
+        // BOUNDARY 2, the INBOUND half. The send side neuters a nested container's own GObjStack
+        // index because it names a slot in the SENDER's array; enforcing that outbound alone trusts
+        // every sender to be this build. Written through unchanged, prop_container::loadData reads
+        // ints[0][0] unguarded and the nested container would bind whatever sits in that slot on
+        // THIS machine -- another container's contents, or a player's inventory.
+        if (RecordIsNestedContainer(r)) {
+            if (CarriesForeignIndex(r)) ++foreignIndices;
+            NeuterNestedIndex(r);
+        }
+    }
+    if (foreignIndices) {
+        // No peer of this build sends one, so a hit is a peer that is not this build -- or a lane
+        // that grew a second producer without the boundary.
+        UE_LOGW("container_contents: eid=%u -- %zu nested-container record(s) arrived carrying a "
+                "foreign GObjStack index; neutered before the write", outEid, foreignIndices);
     }
     const uint64_t contentHash = ContentHash(outEid, recs);
     const Ingest outcome = ApplyContents(outEid, recs, contentHash);

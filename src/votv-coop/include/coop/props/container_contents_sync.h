@@ -3,14 +3,16 @@
 // because breaking either destroys player data: a container whose propInventory_C.Player reads
 // true, OR whose offset will not resolve, is SKIPPED (personal inventory shares the same global
 // GObjStack array, and a write over another peer's slice wipes that player's inventory); and a
-// nested container ships with ints[] CLEARED, since its index names a slot in the SENDER's array.
-// The edge is ue_wrap/core/script_gate on addObject and takeObj, marking the component dirty. Apply
-// raw-writes the receiver's own GObjStack slot, then re-derives the setter-managed state through
+// nested container's own GObjStack index rides as the sentinel -1, on the way out AND on the way
+// in, since a real value there names a slot in the SENDER's array. The edge is
+// ue_wrap/core/script_gate on addObject and takeObj, marking the component dirty. Apply raw-writes
+// the receiver's own GObjStack slot, then re-derives the setter-managed state through
 // updateVolumesAndMass and recalculateNames; addObject cannot be the apply verb (it takes a live
 // AActor* and serialises it itself) and checkObjectsVolume is not called (an overflow ejector, it
 // would destroy contents). Wire: ReliableKind::ContainerContents, a BlobChunkPayload whose blob is
-// [u8 op=0][u32 eid][u16 n] then n records in the coop/items/save_record_wire grammar. Never
-// refanned; receivers accept senderSlot 0 only. Game thread throughout.
+// [u8 op=0][u32 eid][u64 baseHash][u16 n] then n records in the coop/items/save_record_wire
+// grammar. Never refanned: a client accepts slot 0 and nothing else, and the host accepts only a
+// non-zero slot, which is a client-authored slice it arbitrates. Game thread throughout.
 
 #pragma once
 
