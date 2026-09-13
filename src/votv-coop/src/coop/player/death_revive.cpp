@@ -1,6 +1,6 @@
-// coop/player/death_revive.cpp -- the coop death: the native death runs to completion, the level
-// travel it ends in is refused, and the player is revived in place. The design and the bounds
-// are in the header.
+// coop/player/death_revive.cpp -- the coop run-ending: the native ending runs to completion, the
+// travel it ends in is cancelled by coop/player/run_end_travel, and the player is revived in
+// place. The design and the bounds are in the header.
 
 #include "coop/player/death_revive.h"
 
@@ -10,25 +10,23 @@
 #include "coop/session/teleport_client.h"
 #include "ue_wrap/actors/vitals.h"
 #include "ue_wrap/core/call.h"
-#include "ue_wrap/core/field_io.h"
 #include "ue_wrap/core/log.h"
 #include "ue_wrap/core/game_thread.h"
 #include "ue_wrap/core/reflection.h"
 #include "ue_wrap/core/sdk_profile.h"
 #include "ue_wrap/core/sdk_profile_names.h"
 #include "ue_wrap/engine/engine.h"
-#include "ue_wrap/engine/level_travel.h"
 
 #include <windows.h>
 
 #include <atomic>
 #include <cmath>
+#include <string>
 
 namespace coop::death_revive {
 namespace {
 
 namespace E = ue_wrap::engine;
-namespace LT = ue_wrap::engine::level_travel;
 namespace R = ue_wrap::reflection;
 namespace P = ue_wrap::profile;
 namespace V = ue_wrap::vitals;
@@ -39,37 +37,33 @@ namespace V = ue_wrap::vitals;
 // IsInViewport, never findability.
 constexpr const wchar_t* kBlackScreenClass = L"blackScreen_C";
 
-// ui_menu_C.screenSwi's in-game value: the widget sets 1 for itself outside the menu level, and
-// lib.loadLevel stomps it to 0 on the way to the menu.
-constexpr int32_t kScreenSwitcherInGameIndex = 1;
-
-// ESlateVisibility::Collapsed: canvas_loading is authored Collapsed, and the only writer in the
-// game is lib.loadLevel, which sets it Visible, so the restore value is a constant off the asset.
+// ESlateVisibility::Collapsed: ui_damageIndicator_C authors dmg_full Collapsed and only the
+// death branch of its Tick ever writes Visible, so the restore value is a constant off the asset.
 constexpr uint8_t kSlateCollapsed = 1;
 
 // How close to the KPP the player must land for the reposition to count. The teleport either
 // lands or falls through its tiers, so this is an assertion, not a drift tolerance.
 constexpr float kAtKppToleranceCm = 300.f;
 
-// The veto's inputs, published by Tick and read by the detour: plain values only, since the veto
-// may not dispatch, allocate or lock.
 std::atomic<coop::net::Session*> g_session{nullptr};
-std::atomic<void*>    g_pawn{nullptr};
-std::atomic<int32_t>  g_pawnIdx{-1};
 std::atomic<int32_t>  g_deadByte{-1};
 std::atomic<uint8_t>  g_deadMask{0};
 std::atomic<bool>     g_armed{false};          // this death is ours to answer
-std::atomic<bool>     g_revivePending{false};  // the detour refused a travel; the pump owes a revive
-std::atomic<uint64_t> g_vetoAtMsAtomic{0};     // when it refused -- stamped IN the veto (see Watchdog)
+std::atomic<bool>     g_revivePending{false};  // the seam cancelled a travel; the pump owes a revive
+std::atomic<uint64_t> g_cancelAtMsAtomic{0};   // when it cancelled -- stamped AT the cancel (see Watchdog)
+std::atomic<bool>     g_verbsResolved{false};  // ResolveVerbs succeeded (read off the game thread)
+std::atomic<bool>     g_seamReady{false};      // run_end_travel can cancel a run-ending travel
 
-std::atomic<bool>     g_installed{false};    // written from the timeline tick AND the pump
-std::atomic<bool>     g_installDone{false};  // install attempted (success or permanent failure)
+// The ending that asked to travel, for the revive's line. Written at the cancel and read on the
+// next pump task, both on the game thread.
+std::wstring g_pendingAuthorClass;
+bool         g_pendingAuthorIsLocalPawn = false;
 
 // Pump-side state, game thread only.
 bool  g_wasDead = false;
 bool  g_lastReviveOk = false;
 bool  g_reviveRanThisDeath = false;
-uint64_t g_vetoAtMs = 0;
+uint64_t g_cancelAtMs = 0;
 
 // The revive is six synchronous writes on one tick, so past a few ticks it is failure, not
 // slowness. While dead the player can neither pause nor quit, so this window has no manual
@@ -88,43 +82,33 @@ struct Verbs {
     void* removeFromParent = nullptr;  // UWidget::RemoveFromParent
     void* isInViewport = nullptr;      // UUserWidget::IsInViewport
     void* setVisibility = nullptr;     // UWidget::SetVisibility
-    void* setActiveIdx = nullptr;      // UWidgetSwitcher::SetActiveWidgetIndex
-    int32_t offPauseMenu = -1;         // mainGamemode_C.pause_mainMenu
-    int32_t offCanvasLoading = -1;     // ui_menu_C.canvas_loading
-    int32_t offScreenSwi = -1;         // ui_menu_C.screenSwi
     // The damage indicator's four directional accumulators. Add Player Damage accumulates
     // damage/maxHealth*4 into the quadrant of the hit, so the killing hit leaves red on screen past
     // a revive to full health.
     int32_t offPlayerInterface = -1;   // mainGamemode_C.playerInterface  (ui_UI_C)
     int32_t offDamageIndicator = -1;   // ui_UI_C.umg_damageIndicator     (ui_damageIndicator_C)
     int32_t offDmgUp = -1, offDmgDown = -1, offDmgLeft = -1, offDmgRight = -1;
-    // The two writes the cancelled travel leaves behind. See ReconcileCancelledTravel().
+    // The one write the run ending leaves behind that nothing else disposes of. See
+    // ReconcileRunEndLatches().
     int32_t offDmgFull = -1;        // ui_damageIndicator_C.dmg_full  (UImage*)
-    int32_t offTravelOption = -1;   // mainGameInstance_C.NewVar_1    (FString)
 };
 Verbs g_verbs;
 
 // FindFunction is exact-owner, so each engine verb resolves off the class that declares it:
-// Widget for RemoveFromParent and SetVisibility, UserWidget for IsInViewport, WidgetSwitcher
-// for SetActiveWidgetIndex. Off the BP class they return null.
+// Widget for RemoveFromParent and SetVisibility, UserWidget for IsInViewport. Off the BP class
+// they return null.
 bool ResolveVerbs() {
     if (g_verbs.resolved) return true;
     Verbs v;
     void* widgetCls = R::FindClass(P::name::WidgetClass);
     void* userWidgetCls = R::FindClass(P::name::UserWidgetClass);
-    void* switcherCls = R::FindClass(L"WidgetSwitcher");
     void* gmCls = R::FindClass(P::name::GamemodeClass);
-    void* menuCls = R::FindClass(L"ui_menu_C");
     if (widgetCls) {
         v.removeFromParent = R::FindFunction(widgetCls, L"RemoveFromParent");
         v.setVisibility = R::FindFunction(widgetCls, P::name::WidgetSetVisibilityFn);
     }
     if (userWidgetCls) v.isInViewport = R::FindFunction(userWidgetCls, L"IsInViewport");
-    if (switcherCls)   v.setActiveIdx = R::FindFunction(switcherCls, L"SetActiveWidgetIndex");
-    if (gmCls) {
-        v.offPauseMenu = R::FindPropertyOffset(gmCls, L"pause_mainMenu");
-        v.offPlayerInterface = R::FindPropertyOffset(gmCls, L"playerInterface");
-    }
+    if (gmCls) v.offPlayerInterface = R::FindPropertyOffset(gmCls, L"playerInterface");
     if (void* uiCls = R::FindClass(L"ui_UI_C"))
         v.offDamageIndicator = R::FindPropertyOffset(uiCls, L"umg_damageIndicator");
     if (void* dmgCls = R::FindClass(L"ui_damageIndicator_C")) {
@@ -133,56 +117,18 @@ bool ResolveVerbs() {
         v.offDmgLeft = R::FindPropertyOffset(dmgCls, L"damage_left");
         v.offDmgRight = R::FindPropertyOffset(dmgCls, L"damage_right");
     }
-    if (menuCls) {
-        v.offCanvasLoading = R::FindPropertyOffset(menuCls, L"canvas_loading");
-        v.offScreenSwi = R::FindPropertyOffset(menuCls, L"screenSwi");
-    }
     if (void* dmgCls2 = R::FindClass(L"ui_damageIndicator_C"))
         v.offDmgFull = R::FindPropertyOffset(dmgCls2, L"dmg_full");
-    if (void* giCls = R::FindClass(P::name::GameInstanceClass))
-        v.offTravelOption = R::FindPropertyOffset(giCls, L"NewVar_1");
-    const bool ok = v.removeFromParent && v.isInViewport && v.setVisibility &&
-                    v.setActiveIdx && v.offPauseMenu >= 0 && v.offCanvasLoading >= 0 &&
-                    v.offScreenSwi >= 0;
+    const bool ok = v.removeFromParent && v.isInViewport && v.setVisibility;
     if (!ok) return false;  // classes load with gameplay; retry next tick, quietly
     v.resolved = true;
     g_verbs = v;
+    g_verbsResolved.store(true, std::memory_order_release);
     UE_LOGI("death_revive: revive verbs resolved (remove=%p inViewport=%p setVis=%p "
-            "setIdx=%p pause_mainMenu=0x%X canvas_loading=0x%X screenSwi=0x%X)",
-            v.removeFromParent, v.isInViewport, v.setVisibility, v.setActiveIdx,
-            v.offPauseMenu, v.offCanvasLoading, v.offScreenSwi);
+            "playerInterface=0x%X dmg_full=0x%X)",
+            v.removeFromParent, v.isInViewport, v.setVisibility,
+            v.offPlayerInterface, v.offDmgFull);
     return true;
-}
-
-// The veto, data only, inside the OpenLevel detour. Every early return lets the travel proceed,
-// the fail-closed direction: a player at the menu is recoverable, a player stranded in a world
-// we refused to leave for a reason we could not evaluate is not.
-bool VetoOpenLevel(void* /*worldContextObject*/, uint64_t /*levelName*/, bool /*bAbsolute*/) {
-    if (!g_armed.load(std::memory_order_acquire)) return false;
-
-    // The session test, which is why no authorship bracket exists: our own flees call Session::Stop
-    // before travelling, so a flee's travel arrives with running() false and passes.
-    coop::net::Session* s = g_session.load(std::memory_order_relaxed);
-    if (!s || !s->running()) return false;
-
-    // A slot read: no dispatch, no lock, and a recycled or PendingKill slot is rejected without
-    // touching the pawn's memory.
-    void* pawn = g_pawn.load(std::memory_order_acquire);
-    const int32_t idx = g_pawnIdx.load(std::memory_order_relaxed);
-    if (!pawn || !R::IsLiveByIndex(pawn, idx)) return false;
-
-    const int32_t off = g_deadByte.load(std::memory_order_relaxed);
-    const uint8_t mask = g_deadMask.load(std::memory_order_relaxed);
-    if (off < 0 || mask == 0) return false;
-    if ((*(reinterpret_cast<uint8_t*>(pawn) + off) & mask) == 0)
-        return false;  // not a death travel -- a quit, a save load, the backrooms
-
-    g_revivePending.store(true, std::memory_order_release);
-    // The clock is stamped in the veto, not the pump: the watchdog must bound "a travel refused and
-    // the pump never came back", and a deadline armed by the pump cannot bound a failure of the
-    // pump.
-    g_vetoAtMsAtomic.store(::GetTickCount64(), std::memory_order_release);
-    return true;  // CANCEL: SetClientTravel never runs, so no travel is ever requested
 }
 
 // The revive's individual writes.
@@ -213,52 +159,20 @@ bool ClearBlackScreen() {
     return !inViewport;
 }
 
-// Undo lib.loadLevel's menu prep. pause_mainMenu is added to the viewport once at gamemode init
-// and stays on the screen tree all session, merely Collapsed, so loadLevel's two writes stick,
-// and a revived player pressing ESC would get a loading screen instead of the pause menu.
-bool RestoreMenuPrep() {
-    void* gm = R::FindObjectByClass(P::name::GamemodeClass);
-    if (!gm || !R::IsLive(gm)) return false;
-    void* menu = *reinterpret_cast<void* const*>(reinterpret_cast<uint8_t*>(gm) +
-                                                 g_verbs.offPauseMenu);
-    if (!menu || !R::IsLive(menu)) return false;
-    auto* menuBytes = reinterpret_cast<uint8_t*>(menu);
-    void* canvas = *reinterpret_cast<void* const*>(menuBytes + g_verbs.offCanvasLoading);
-    void* switcher = *reinterpret_cast<void* const*>(menuBytes + g_verbs.offScreenSwi);
-    if (!canvas || !switcher || !R::IsLive(canvas) || !R::IsLive(switcher)) return false;
-
-    bool ok = true;
-    {
-        ue_wrap::ParamFrame f(g_verbs.setVisibility);
-        if (!f.valid()) return false;
-        f.Set<uint8_t>(L"InVisibility", kSlateCollapsed);
-        ok = ue_wrap::Call(canvas, f) && ok;
-    }
-    {
-        ue_wrap::ParamFrame f(g_verbs.setActiveIdx);
-        if (!f.valid()) return false;
-        f.Set<int32_t>(L"Index", kScreenSwitcherInGameIndex);
-        ok = ue_wrap::Call(switcher, f) && ok;
-    }
-    return ok;
-}
-
-// Reconcile what the cancelled travel would have made moot: the OpenLevel we refuse is how the
-// game disposes of every one-way write the death made. Every persistent write of the death
-// episode (Add Player Damage, ragdollMode, the ubergraph death chain, lib_C::loadLevel) was
-// enumerated and classified; three are undone by nothing, and two are handled here.
-// [1] ui_damageIndicator_C.dmg_full.Visibility: the Tick's death branch sets it Visible while
-// the widget authors it Collapsed, and the alive path never writes it, so once dead for a single
-// tick a full-screen red image draws over everything for good.
-// [2] mainGameInstance_C.NewVar_1: the death's loadLevel stores its menu option on the game
-// instance, which outlives every level, and the next level's gamemode reads and clears it.
-// Vetoed, it stays armed, and one branch off it reaches lib_C::end while paused; "" is the
-// game's own reset value.
-// The third, gameInstance.subArea := None, is left alone: the revive puts the player at the KPP,
+// The one-way writes a cancelled run-ending leaves behind. In the August build the cut was at
+// `OpenLevel`, so `lib_C::loadLevel` had already run and its four writes had to be undone here.
+// The cut is now the `loadLevel` body itself, so those writes never happen: the menu prep
+// (`canvas_loading`, `screenSwi`) and the death signal (`NewVar_1`, whose armed-and-never-consumed
+// branch reached `lib_C::end` while paused) are disposed of at the root rather than reconciled.
+// What is left is the one latch the ENDING itself writes:
+// [1] ui_damageIndicator_C.dmg_full.Visibility: the Tick's death branch sets it Visible while the
+// widget authors it Collapsed, and the alive path never writes it, so once dead for a single tick
+// a full-screen red image draws over everything for good.
+// gameInstance.subArea := None is still left alone: the revive puts the player at the KPP,
 // outdoors, where None is correct, and the trigger volumes re-establish it.
 // Best-effort: a failure here is cosmetic or latent, never a reason to strand the player, so it
 // is not a term of the revive's conjunction.
-void ReconcileCancelledTravel() {
+void ReconcileRunEndLatches() {
     if (ReconcileDisabled()) {
         UE_LOGI("death_revive: RECONCILE SUPPRESSED (VOTVCOOP_DEATH_NO_RECONCILE=1) -- the "
                 "death's un-disposed writes are being LEFT for the write-diff instrument to "
@@ -293,16 +207,20 @@ void ReconcileCancelledTravel() {
             }
         }
     }
+}
 
-    // [2] the death signal the cancelled travel never delivered.
-    if (g_verbs.offTravelOption >= 0) {
-        void* gi = R::FindObjectByClass(P::name::GameInstanceClass);
-        if (gi && R::IsLive(gi)) {
-            const bool ok = ue_wrap::field_io::WriteFStringField(gi, g_verbs.offTravelOption, L"");
-            UE_LOGI("death_revive: gameInstance.NewVar_1 cleared (the 'PQXYyeofZ8cr5rJD4YXLVw' "
-                    "death option a vetoed travel leaves armed) ok=%d", ok ? 1 : 0);
-        }
-    }
+// The pause four of the five run-endings set before their delay (gameover_C, SKEL_C, birch_C,
+// npc_angryErieFlesh_C all call SetGamePaused(true); the death chain never pauses). The travel
+// they asked for is what used to undo it, through mainGamemode::transition's own
+// SetGamePaused(false) -- and that hop no longer runs. coop/session/pause_guard owns this axis in
+// the steady state, but its scope is Session::connected(), so a host with no client connected --
+// which this lane has always counted as a session -- would be left in a paused world behind a
+// black screen. One shot, here, as this episode's residue; the invariant stays pause_guard's.
+void ClearRunEndPause() {
+    if (!E::IsGamePaused()) return;
+    const bool ok = E::SetGamePaused(false);
+    UE_LOGI("death_revive: the run-ending paused the world and the travel that would have "
+            "un-paused it was cancelled -- un-paused ok=%d", ok ? 1 : 0);
 }
 
 // Clear the damage indicator's four accumulators. Best-effort: not in the arm gate and not in
@@ -409,8 +327,11 @@ bool RunRevive(coop::net::Session& session, void* pawn) {
     float redBefore = 0.f;
     ClearDamageIndicator(&redBefore);
 
-    // 1c. What the cancelled travel would have disposed of. Best-effort; not a conjunction term.
-    ReconcileCancelledTravel();
+    // 1c. The latches the ending leaves that nothing disposes of. Best-effort; not a conjunction
+    //     term.
+    ReconcileRunEndLatches();
+    // 1d. And the pause an ending set, which the cancelled travel no longer undoes.
+    ClearRunEndPause();
     float bloodTimeBefore = 0.f;
     const float bloodActors = ExpireBloodLoss(&bloodTimeBefore);
 
@@ -433,10 +354,8 @@ bool RunRevive(coop::net::Session& session, void* pawn) {
     const bool teleReported = coop::teleport_client::ApplyLocally(
         {P::name::kKPPSpawnX, P::name::kKPPSpawnY, P::name::kKPPSpawnZ, 0.f, 0.f, 0.f});
 
-    // 5. The menu prep loadLevel left behind.
-    const bool menuRestored = RestoreMenuPrep();
-
-    // 6. Only now the flag.
+    // 5. Only now the flag. (The menu-prep restore that used to sit here is gone with the writes
+    //    it undid: cancelling the loadLevel body means they are never made.)
     const bool deadCleared = ClearDeadFlag(pawn);
 
     // The conjunction. The position is readable in the same frame as the write: the game's own
@@ -454,15 +373,18 @@ bool RunRevive(coop::net::Session& session, void* pawn) {
     // four saw the same-frame IsInViewport read after RemoveFromParent still true, and a living
     // player was thrown to the main menu over a widget that had not detached yet. The screen
     // artifacts are retried on the following pump ticks instead.
-    const bool ok = vitalsOk && wokeUp && teleReported && menuRestored &&
+    const bool ok = vitalsOk && wokeUp && teleReported &&
                     deadCleared && haveState && !isRagdoll && !deadNow && haveHp && hp > 0.f &&
                     atKpp;
 
-    UE_LOGI("death_revive: REVIVE %s -- vitals=%d wake=%d tele=%d menu=%d deadClr=%d "
+    UE_LOGI("death_revive: REVIVE %s after a run-ending authored by %ls -- vitals=%d wake=%d "
+            "tele=%d deadClr=%d "
             "| screen (retried, NOT a gate): black=%d dmgRed=%.2f bloodLoss=%.0f actor(s) @%.1fs "
             "| readback: ragdoll=%d dead=%d hp=%.1f distKPP=%.0f cm (tol %.0f)",
-            ok ? "OK" : "FAILED", vitalsOk ? 1 : 0, wokeUp ? 1 : 0,
-            teleReported ? 1 : 0, menuRestored ? 1 : 0, deadCleared ? 1 : 0, blackCleared ? 1 : 0, redBefore, bloodActors, bloodTimeBefore,
+            ok ? "OK" : "FAILED",
+            g_pendingAuthorClass.empty() ? L"(unrecorded)" : g_pendingAuthorClass.c_str(),
+            vitalsOk ? 1 : 0, wokeUp ? 1 : 0,
+            teleReported ? 1 : 0, deadCleared ? 1 : 0, blackCleared ? 1 : 0, redBefore, bloodActors, bloodTimeBefore,
             haveState ? (isRagdoll ? 1 : 0) : -1, haveState ? (deadNow ? 1 : 0) : -1,
             haveHp ? hp : -1.f, dist, kAtKppToleranceCm);
     (void)session;
@@ -484,13 +406,13 @@ bool TickScreenCleanup() {
     return black && red <= 0.f && bloodActors <= 0.f;
 }
 
-// The failure exit. The flee's teardown includes Session::Stop, which is exactly what stands
-// the veto down (its first term is a live session), so the travel it then authors passes
-// through this seam with no special case.
+// The failure exit. The flee's teardown includes Session::Stop, which is exactly what stands the
+// seam down (its session test), and the flee travels through mainGamemode::transition rather than
+// loadLevel, so it never reaches the seam at all.
 void GiveUpAndLeave(coop::net::Session& session, const char* why) {
     g_armed.store(false, std::memory_order_release);
     g_revivePending.store(false, std::memory_order_release);
-    g_vetoAtMsAtomic.store(0, std::memory_order_release);
+    g_cancelAtMsAtomic.store(0, std::memory_order_release);
     UE_LOGW("death_revive: %s -- falling back to the main-menu flee", why);
     coop::net_pump::FleeToMainMenuOnDeath(session, why);
 }
@@ -498,41 +420,44 @@ void GiveUpAndLeave(coop::net::Session& session, const char* why) {
 }  // namespace
 
 void Install(coop::net::Session* session) {
-    // The cached Session is always refreshed: the veto reads it.
+    // The cached Session is always refreshed: the arm and ReviveAvailable read it.
     g_session.store(session, std::memory_order_release);
-    // Both outcomes latch: this runs on the unconditional timeline tick, and a permanently failing
-    // install (a stale signature) must not retry forever.
-    if (g_installDone.exchange(true, std::memory_order_acq_rel)) return;
-    if (!LT::Install()) return;  // logged there; ArmedForThisDeath() stays false forever
-    LT::SetVeto(&VetoOpenLevel);
-    g_installed.store(true, std::memory_order_release);
-    UE_LOGI("death_revive: travel veto published -- a coop death now keeps the world "
-            "(single-player is untouched: the veto's first term is a live session, so with "
-            "no session the seam is armed and refuses nothing)");
+}
+
+bool ReviveAvailable() {
+    coop::net::Session* s = g_session.load(std::memory_order_acquire);
+    return g_verbsResolved.load(std::memory_order_acquire) &&
+           g_deadByte.load(std::memory_order_relaxed) >= 0 && s && s->running();
+}
+
+void NoteRunEndSeamReady(bool ready) { g_seamReady.store(ready, std::memory_order_release); }
+
+void NoteRunEndCancelled(void* author, const wchar_t* authorClass, bool authorIsLocalPawn) {
+    (void)author;
+    g_pendingAuthorClass = authorClass ? authorClass : L"";
+    g_pendingAuthorIsLocalPawn = authorIsLocalPawn;
+    g_revivePending.store(true, std::memory_order_release);
+    // The clock is stamped at the cancel, not by the pump: the watchdog must bound "a travel was
+    // cancelled and the pump never came back", and a deadline armed by the pump cannot bound a
+    // failure of the pump.
+    g_cancelAtMsAtomic.store(::GetTickCount64(), std::memory_order_release);
 }
 
 void OnSessionStart() {
     g_armed.store(false, std::memory_order_release);
     g_revivePending.store(false, std::memory_order_release);
-    g_vetoAtMsAtomic.store(0, std::memory_order_release);
+    g_cancelAtMsAtomic.store(0, std::memory_order_release);
     g_wasDead = false;
     g_reviveRanThisDeath = false;
     g_lastReviveOk = false;
-    g_vetoAtMs = 0;
+    g_cancelAtMs = 0;
     g_screenCleanupLeft = 0;
+    g_pendingAuthorClass.clear();
+    g_pendingAuthorIsLocalPawn = false;
 }
 
 void Tick(coop::net::Session& session, void* localPawn) {
     Install(&session);  // idempotent; also refreshes the cached Session pointer
-
-    // Publish the veto's pawn every tick from state the caller validated this tick.
-    if (localPawn) {
-        g_pawn.store(localPawn, std::memory_order_release);
-        g_pawnIdx.store(R::InternalIndexOf(localPawn), std::memory_order_relaxed);
-    } else {
-        g_pawn.store(nullptr, std::memory_order_release);
-        g_pawnIdx.store(-1, std::memory_order_relaxed);
-    }
 
     // The dead byte and mask, resolved once (the layout is stable per game build) through
     // FindBoolProperty rather than the plain-byte read the sender path uses: this side writes it,
@@ -551,42 +476,44 @@ void Tick(coop::net::Session& session, void* localPawn) {
     const bool haveState = localPawn && E::ReadMainPlayerRagdollState(localPawn, isRagdoll, dead);
 
     // The arm decision, on the rising edge of dead: about ten seconds before the travel, and the
-    // same decision as whether net_pump flees.
+    // same decision as whether net_pump flees. It answers ONLY for the death chain -- the five
+    // run-endings that never set `dead` reach the seam without ever passing here, and the pump
+    // has no flee to stand down for them.
     if (haveState && dead && !g_wasDead) {
-        const bool canRevive = g_installed.load(std::memory_order_acquire) && verbsOk &&
-                               session.running() &&
+        const bool seamReady = g_seamReady.load(std::memory_order_acquire);
+        const bool canRevive = seamReady && verbsOk && session.running() &&
                                g_deadByte.load(std::memory_order_relaxed) >= 0;
         g_reviveRanThisDeath = false;
         if (canRevive) {
             g_armed.store(true, std::memory_order_release);
             UE_LOGI("death_revive: local death ARMED -- the native death runs to completion "
-                    "(~10 s: sound, black screen at +5 s) and the level travel will be refused");
+                    "(~10 s: sound, black screen at +5 s) and its travel will be cancelled");
         } else {
             g_armed.store(false, std::memory_order_release);
             UE_LOGW("death_revive: local death NOT armed (seam=%d verbs=%d session=%d deadOff=%d) "
                     "-- net_pump's flee handles this death",
-                    g_installed.load(std::memory_order_acquire) ? 1 : 0, verbsOk ? 1 : 0,
+                    seamReady ? 1 : 0, verbsOk ? 1 : 0,
                     session.running() ? 1 : 0,
                     g_deadByte.load(std::memory_order_relaxed));
         }
     }
     if (haveState && !dead && g_wasDead) {
-        // The death ended; disarmed so a later unrelated travel is never refused by a stale arm.
+        // The death ended; disarmed so the pump's flee owns the next one if the seam has gone.
         g_armed.store(false, std::memory_order_release);
-        g_vetoAtMs = 0;
+        g_cancelAtMs = 0;
     }
     if (haveState) g_wasDead = dead;
 
     // The deferred revive.
     if (g_revivePending.load(std::memory_order_acquire)) {
-        if (g_vetoAtMs == 0) {
-            g_vetoAtMs = ::GetTickCount64();
-            UE_LOGI("death_revive: level travel REFUSED at UGameplayStatics::OpenLevel -- the "
-                    "world is kept; reviving on this pump task");
+        if (g_cancelAtMs == 0) {
+            g_cancelAtMs = ::GetTickCount64();
+            UE_LOGI("death_revive: the run-ending travel was cancelled -- the world is kept; "
+                    "reviving on this pump task");
         }
         if (!localPawn || !R::IsLive(localPawn)) {
-            if (::GetTickCount64() - g_vetoAtMs > kReviveDeadlineMs)
-                GiveUpAndLeave(session, "no local pawn to revive after the travel was refused");
+            if (::GetTickCount64() - g_cancelAtMs > kReviveDeadlineMs)
+                GiveUpAndLeave(session, "no local pawn to revive after the travel was cancelled");
             return;
         }
         g_revivePending.store(false, std::memory_order_release);
@@ -594,8 +521,8 @@ void Tick(coop::net::Session& session, void* localPawn) {
         g_lastReviveOk = RunRevive(session, localPawn);
         if (g_lastReviveOk) {
             g_armed.store(false, std::memory_order_release);
-            g_vetoAtMs = 0;
-            g_vetoAtMsAtomic.store(0, std::memory_order_release);
+            g_cancelAtMs = 0;
+            g_cancelAtMsAtomic.store(0, std::memory_order_release);
             g_screenCleanupLeft = kScreenCleanupTicks;
         } else {
             GiveUpAndLeave(session, "the revive did not complete its conjunction");
@@ -619,45 +546,42 @@ void Tick(coop::net::Session& session, void* localPawn) {
         }
     }
 
-    // The deadline: an armed death still holding dead this long after the refused travel is a
+    // The deadline: an armed death still holding dead this long after the cancelled travel is a
     // failure, and the player has no manual exit while dead, so this is their exit.
-    if (g_vetoAtMs != 0 && haveState && dead && g_reviveRanThisDeath &&
-        ::GetTickCount64() - g_vetoAtMs > kReviveDeadlineMs) {
+    if (g_cancelAtMs != 0 && haveState && dead && g_reviveRanThisDeath &&
+        ::GetTickCount64() - g_cancelAtMs > kReviveDeadlineMs) {
         GiveUpAndLeave(session, "still dead past the revive deadline");
     }
 }
 
 void Watchdog() {
-    // The one failure this lane cannot have: a travel refused, then nothing. The revive runs from
-    // Tick, which net_pump calls only while a session runs and the local death is unhandled; if
-    // that stops between the veto and the revive, the pending flag is never consumed, the pump's
-    // deadline never starts, and the player is dead in a world we refused to leave, with no pause
-    // menu. A failure of Tick cannot be covered inside Tick, so this lives on the unconditional
-    // timeline tick.
+    // The one failure this lane cannot have: a travel cancelled, then nothing. The revive runs
+    // from Tick, which net_pump calls only while a session runs and the local death is unhandled;
+    // if that stops between the cancel and the revive, the pending flag is never consumed, the
+    // pump's deadline never starts, and the player is stranded in a world we refused to leave,
+    // with no pause menu. A failure of Tick cannot be covered inside Tick, so this lives on the
+    // unconditional timeline tick.
     if (!g_revivePending.load(std::memory_order_acquire)) return;
-    const uint64_t at = g_vetoAtMsAtomic.load(std::memory_order_acquire);
+    const uint64_t at = g_cancelAtMsAtomic.load(std::memory_order_acquire);
     if (at == 0) return;
     if (::GetTickCount64() - at <= kWatchdogDeadlineMs) return;
 
     // The flag is taken first so this fires once; the flee is posted to the game thread, since
     // every op inside it is game-thread-only.
     g_revivePending.store(false, std::memory_order_release);
-    g_vetoAtMsAtomic.store(0, std::memory_order_release);
+    g_cancelAtMsAtomic.store(0, std::memory_order_release);
     g_armed.store(false, std::memory_order_release);
-    UE_LOGE("death_revive: WATCHDOG -- a level travel was refused %llu ms ago and no revive ever "
-            "ran (the pump stopped ticking between the veto and the revive). Leaving the world "
-            "rather than stranding a dead player who cannot even open the pause menu.",
+    UE_LOGE("death_revive: WATCHDOG -- a run-ending travel was cancelled %llu ms ago and no "
+            "revive ever ran (the pump stopped ticking between the cancel and the revive). "
+            "Leaving the world rather than stranding a player with no pause menu.",
             static_cast<unsigned long long>(kWatchdogDeadlineMs));
     ue_wrap::game_thread::Post([] {
         if (coop::net::Session* s = g_session.load(std::memory_order_acquire))
-            coop::net_pump::FleeToMainMenuOnDeath(*s, "revive never ran after a refused travel");
+            coop::net_pump::FleeToMainMenuOnDeath(*s, "revive never ran after a cancelled travel");
     });
 }
 
 bool ArmedForThisDeath() { return g_armed.load(std::memory_order_acquire); }
-bool SeamInstalled() { return LT::IsInstalled(); }
-unsigned long long TravelsRefused() { return LT::VetoCount(); }
-unsigned long long TravelsSeen() { return LT::SeenCount(); }
 bool LastReviveSucceeded() { return g_lastReviveOk; }
 
 bool ReconcileDisabled() {

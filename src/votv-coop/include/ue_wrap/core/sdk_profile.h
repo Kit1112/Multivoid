@@ -104,21 +104,6 @@ inline constexpr const char* kSigD3D12ViewportPresentInternal =
     "48 89 5C 24 08 48 89 74 24 10 57 48 83 EC 20 33 DB 8B F2 48 "
     "8B F9 85 D2 75 10 38 59 54 75 0B 38";
 
-// UGameplayStatics::OpenLevel(WorldContextObject, FName LevelName, bool bAbsolute, FString
-// Options): the level-travel seam, the one native hop of the game's death chain (every hop above
-// it is EX_LocalVirtualFunction / EX_Context, invisible to the detour;
-// docs/coop-dispatch-visibility.md). The C++ function is detoured, not the exec thunk, so the
-// parameters arrive parsed and a cancel is `return;`: SetClientTravel is the whole effect, so
-// nothing half-started needs unwinding. OpenLevelBySoftObjectPtr calls the same function;
-// nothing else in the image does. ABI: RCX = WorldContextObject, RDX = FName by value, R8B =
-// bAbsolute, R9 = FString* Options, which the callee destroys (a cancel frees it; a trampoline
-// call must not). Prologue through `mov rsi, rax` with the GEngine load and the
-// GetWorldFromContextObject rel32 wildcarded: occ=1 at 0x142B530B0.
-inline constexpr const char* kSigOpenLevel =
-    "48 89 54 24 10 55 53 56 41 56 48 8D 6C 24 C1 48 81 EC E8 00 00 00 41 0F B6 D8 "
-    "48 8B D1 48 8B 0D ?? ?? ?? ?? 41 B8 01 00 00 00 4D 8B F1 E8 ?? ?? ?? ?? 48 89 "
-    "45 9F 48 8B F0";
-
 // ---- struct offsets (stable within UE4.27; re-check on an engine bump) ----
 namespace off {
 inline constexpr size_t UObject_ObjectFlags = 0x08;   // int32 EObjectFlags -- RF_BeginDestroyed 1<<15 / RF_FinishDestroyed 1<<16 name the destruction STAGE

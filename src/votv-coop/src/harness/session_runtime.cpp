@@ -38,6 +38,7 @@
 #include "coop/save/save_transfer.h"
 #include "coop/session/join_progress.h"
 #include "coop/player/death_revive.h"
+#include "coop/player/run_end_travel.h"
 #include "coop/session/net_pump.h"
 #include "coop/session/player_handshake.h"
 #include "coop/text/utf8_codec.h"
@@ -93,12 +94,13 @@ bool BanAcceptFilter(const char* remoteIp, char* whyOut, int whyLen) {
 void TickShutdownHooks() {
     coop::shutdown::Install(&g_session);
     coop::shutdown::UpdateWindowTitle();
-    // The level-travel seam is armed here, unconditionally, not lazily from the pump: armed only
-    // while a session runs, the single-player guarantee would rest on the hook's absence rather
-    // than on the veto's own session test, and a negative-control run would grade a hook that was
-    // never there. The detour is a pass-through until a death arms it, one atomic load on a rare
-    // function. Idempotent; safe off the game thread.
+    // The run-ending seam is registered here, unconditionally, not lazily from the pump:
+    // registered only while a session runs, the single-player guarantee would rest on the watch's
+    // absence rather than on the seam's own session test, and a negative-control run would grade
+    // a watch that was never there. It judges nothing without a live session, and the gate itself
+    // stays disabled until the lane's own tick enables it. Idempotent; safe off the game thread.
     coop::death_revive::Install(&g_session);
+    coop::player::run_end_travel::Install(&g_session);
     // And the watchdog that covers a failure of the pump itself.
     coop::death_revive::Watchdog();
 }

@@ -47,6 +47,7 @@
 #include "ue_wrap/core/reflection.h"
 #include "ue_wrap/core/sdk_profile.h"
 #include "coop/player/death_revive.h"
+#include "coop/player/run_end_travel.h"
 #include "coop/session/teleport_client.h"  // the checkpoint join spawn (the client pawn-Set edge)
 #include "ue_wrap/engine/world_identity.h"
 #include "ue_wrap/core/types.h"
@@ -187,7 +188,8 @@ void OnSessionStart() {
     g_wasConnectedBySlot.fill(false);
     g_localDeathHandled = false;
     g_fleeing = false;  // re-arm the one-shot flee for this new session
-    coop::death_revive::OnSessionStart();  // the travel veto's arm + per-death latches
+    coop::death_revive::OnSessionStart();          // the arm + per-death latches
+    coop::player::run_end_travel::OnSessionStart();  // the run-ending seam's counters + one-shots
     coop::registry_reaper::OnSessionStart();  // the been-in-gameplay latch (menu guard)
     coop::local_streams::OnSessionStart();  // held-prop + ragdoll edge detectors
 }

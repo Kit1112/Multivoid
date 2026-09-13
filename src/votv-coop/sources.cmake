@@ -116,7 +116,6 @@ set(VOTVCOOP_SOURCES
     src/ue_wrap/actors/vitals.cpp
     src/ue_wrap/world/game_rules.cpp
     src/ue_wrap/engine/spawn_menu.cpp
-    src/ue_wrap/engine/level_travel.cpp
     src/coop/player/movement_ledger.cpp
     src/coop/player/remote_player.cpp
     src/coop/player/remote_player_ragdoll.cpp
@@ -193,6 +192,7 @@ set(VOTVCOOP_SOURCES
     src/coop/player/player_damage.cpp
     src/coop/player/ragdoll_gate.cpp
     src/coop/player/death_revive.cpp
+    src/coop/player/run_end_travel.cpp
     src/coop/player/skin_preview.cpp
     src/coop/player/flashlight_click_sound.cpp
     src/coop/props/prop_sound.cpp
@@ -509,6 +509,7 @@ set(VOTVCOOP_SOURCES
     src/harness/autotest/autotest_kickprobe.cpp
     src/harness/autotest/autotest_floodprobe.cpp
     src/harness/autotest/autotest_scriptgate.cpp
+    src/harness/autotest/autotest_runend.cpp
     src/harness/autotest/autotest_move_osc.cpp
     src/harness/autotest/autotest_saveui.cpp
     src/ui/input_focus.cpp
