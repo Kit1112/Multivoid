@@ -126,13 +126,23 @@ which the peer applies on its own pawn, armour and inventory mitigation included
 stream and hurt flash follow.
 
 Death is per peer and runs natively to its end: the sound, the dead flag, the black screen. The
-cut is the last stage, the level travel that would unload the world. A detour on the engine's
-level-open call refuses it when the local player is dead inside a co-op session, and the mod
-writes a revive in its place: the position at the base gate, health, the dead flag, the ragdoll,
-and the screen artifacts the travel used to dispose of, the damage quadrants and the blood-loss
-effect (`coop/player/death_revive`, `ue_wrap/engine/level_travel`). A host that dies is revived
-the same way, so a host death no longer ends the session; a revive that fails returns to the
-menu, and on a host that ends the lobby. Other peers see the death through the ragdoll bit.
+cut is the last stage, the travel that would unload the world.
+
+The game ends a run by travelling to the menu level, and dying is only one of the ways it gets
+there: a handful of blueprints -- the game-over actor the Evil and the bad sun spawn, the flesh
+NPC's catch, the birch, the skeleton, the tutorial spikes -- travel to the same place without
+ever setting the dead flag. Every one of them, dying included, asks for that travel through one
+function, and it carries the blueprint that asked as an argument. The mod watches that function
+at the script-body gate and reads the author: the pause menu's own quit is allowed through,
+because the player asked to leave, and anything else in a live co-op session is refused
+(`coop/player/run_end_travel`).
+
+A refused run-ending is answered with a revive in its place: the position at the base gate,
+health, the dead flag, the ragdoll, the pause an ending set, and the screen artifacts the travel
+used to dispose of -- the damage quadrants, the red overlay and the blood-loss effect
+(`coop/player/death_revive`). A host that dies is revived the same way, so a host death no longer
+ends the session; a revive that fails returns to the menu, and on a host that ends the lobby.
+Other peers see the death through the ragdoll bit.
 
 ### Sleep
 
@@ -180,7 +190,7 @@ setting), the shape of MTA's join-flood protection (`coop/net/connect_history`).
 | the hand item, the flashlight | that peer | on change, mirrored for display |
 | damage from contact | the victim's machine | other bodies' impact entries are cancelled |
 | damage from enemies | the host detects, the victim applies | a reliable relay to the hit peer |
-| death and revive | that peer | the native chain, the travel refused |
+| death and revive | that peer | the native chain; the run-ending travel refused by its author |
 | sleep | each peer reports; the host tallies, accelerates and ends | |
 | inventory | that peer; the host stores it | never on the wire as gameplay |
 | roster, kick, ban | the host | rows asserted as state; a ban at the accept filter |
@@ -230,7 +240,7 @@ dead peer through the ragdoll bit of its next pose.
 | name, colour, nameplate | `coop/player/nameplate`, `coop/player/nick_color`, `ui/hud`, `ui/scoreboard` |
 | skins | `coop/player/client_model`, `coop/player/skin_registry`, `coop/player/skin_effects`, `coop/player/local_body`, `coop/player/skin_preview`, `ui/skins_panel`, `assets/paks/` |
 | held and toggled items | `coop/player/hand_item`, `coop/player/item_activate`, `coop/player/flashlight_click_sound` |
-| damage and death | `coop/player/player_damage`, `coop/player/death_revive`, `coop/player/ragdoll_gate`, `ue_wrap/engine/level_travel` |
+| damage and death | `coop/player/player_damage`, `coop/player/death_revive`, `coop/player/run_end_travel`, `coop/player/ragdoll_gate` |
 | sleep | `coop/player/sleep_sync` |
 | inventory | `coop/items/player_inventory_sync` |
 | moderation | `coop/moderation/moderation`, `coop/moderation/ban_list`, `coop/moderation/seen_players` |
