@@ -31,11 +31,14 @@ void Init();
 // about 10 Hz, the full form at about 1 Hz; the full walk at frame rate would be the per-frame
 // full-array scan this project bans. Never from the window procedure or the render thread.
 //
-// The full walk runs only while a UI input mode is up, and that is not a throttle: with the
-// game in game-only input the engine has focused the viewport, so there is no widget for the
-// walk to find and its answer is no without a call. Unconditional, it asked ~3,700 widgets two
-// reflected questions each -- 7,466 dispatches and 9 to 15 ms inside ONE frame, once a second,
-// on an 8.6 ms frame, four fifths of every reflected call this mod made.
+// The full walk runs only while a widget can hold focus at all -- a precondition, not a throttle:
+// in game-only input the engine has focused the viewport and the walk has nothing to find.
+// Unconditional, it cost up to 7,626 dispatches and 5.7 to 16.1 ms inside ONE frame, once a
+// second, on a 8.4 to 9.1 ms frame.
+//
+// The walk ITSELF is unchanged and still owed a fix: with a UI up it costs one such pass whenever
+// focus is not on the remembered widget. The proper fix remains to answer at the hotkey edge
+// rather than sweep for the answer; not done, since a naive move makes a press pay the walk.
 void TickGameThread(bool doFullScan);
 
 // Render thread, once per frame, from the overlay: does one of our text fields have focus

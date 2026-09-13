@@ -38,16 +38,25 @@ std::atomic<bool> g_overlayOwnsText{false};
 // The game thread has not been observed yet, so nothing is known and MayTakeKey says no.
 std::atomic<bool> g_everTicked{false};
 
-// Whether the game has a UI input mode up, learned from the game's own three verbs instead of
-// polled. The engine's contract is the load-bearing half: SetInputMode_GameOnly focuses the game
-// viewport, so no UMG widget holds user-0 focus and the scan below cannot find one; every menu
-// surface in this game announces itself with SetInputMode_UIOnlyEx or _GameAndUIEx first (46 call
-// sites, every one a final call into a native, which the Func seam sees on every route).
+// Whether a widget can hold focus at all, learned from the game's own verbs instead of polled.
+// Two families arm it and one parks it, all natives reached by final calls the Func seam sees:
+// SetInputMode_UIOnlyEx / _GameAndUIEx put a UI surface up, SetKeyboardFocus / SetUserFocus /
+// SetFocus hand a widget the focus directly, and SetInputMode_GameOnly moves focus to the game
+// viewport.
+//
+// The focus family is here because the input mode alone is NOT an engine guarantee: game-only
+// input moves focus once, it does not forbid a later move, and this cook has twenty focus-taking
+// call sites in twelve classes. Listening to those too is what makes the park a property of the
+// engine's own announcements rather than of a census that a recook expires.
 //
 // Starts SET, so an unheard verb costs a scan rather than a wrong answer: until the game says it
 // is in game-only input, unknown reads as "a UI may own text", the direction every other unknown
 // in this file fails toward.
 std::atomic<bool> g_uiInputMode{true};
+// Set only when EVERY verb above is patched. A partial seam must not park: an arming verb that
+// did not install with a parking verb that did would turn the scan off and never turn it back on,
+// which is a typed key taken from a focused field -- the one failure this file exists to prevent.
+std::atomic<bool> g_seamComplete{false};
 
 // Diagnostics only.
 char g_ownerName[64] = "-";
@@ -78,8 +87,14 @@ void OnUiInputMode(void*, void*, void*) {
         UE_LOGI("input_owner: a UI input mode is up -- the focus scan is armed");
 }
 void OnGameInputMode(void*, void*, void*) {
+    if (!g_seamComplete.load(std::memory_order_relaxed)) return;  // a partial seam may not park
     if (g_uiInputMode.exchange(false, std::memory_order_relaxed))
         UE_LOGI("input_owner: game-only input -- the focus scan is parked");
+    // Published here rather than at the next pass, so a menu's conclusion does not stand over live
+    // gameplay for up to a second. The engine applies its own focus move through a deferred Slate
+    // reply, so for at most one frame this says no owner while a widget may still hold focus --
+    // the one place in this file that leads the game instead of trailing it, and it is the frame
+    // in which the player has just dismissed the surface.
     g_scanOwnsText.store(false, std::memory_order_relaxed);
 }
 
@@ -105,31 +120,77 @@ bool UiInputModeUp() {
 // issues is spoken to nobody and the latch stays armed for the session -- measured: a host whose
 // level came up three seconds before the overlay's first present scanned for the whole run while
 // the client, which joined later, parked immediately. So it installs from Init on the first
-// posted task, and the tick retries until it takes.
-bool g_modeSeamOk = false;
-int  g_modeSeamTries = 0;
+// posted task, and the 1 Hz tick retries a BOUNDED number of times.
+//
+// Bounded, and on the slow cadence, because a retry is not cheap: FindFunction has no result
+// cache and walks every UObject per call, so an unbounded 10 Hz retry would cost several times
+// what the scan it gates ever did. A seam that has not taken in ten tries is not going to.
+enum class SeamState { Pending, Installed, GaveUp };
+SeamState g_seam = SeamState::Pending;
+int  g_seamTries = 0;
+constexpr int kSeamMaxTries = 10;
 
 void InstallInputModeSeam() {
-    if (g_modeSeamOk) return;
-    ++g_modeSeamTries;
-    void* wbl = R::FindClass(L"WidgetBlueprintLibrary");
-    void* uiOnly    = wbl ? R::FindFunction(wbl, L"SetInputMode_UIOnlyEx") : nullptr;
-    void* gameAndUi = wbl ? R::FindFunction(wbl, L"SetInputMode_GameAndUIEx") : nullptr;
-    void* gameOnly  = wbl ? R::FindFunction(wbl, L"SetInputMode_GameOnly") : nullptr;
+    if (g_seam != SeamState::Pending) return;
+    ++g_seamTries;
     namespace UH = ue_wrap::ufunction_hook;
-    g_modeSeamOk = uiOnly && gameAndUi && gameOnly &&
-                   UH::InstallPostHook(uiOnly, OnUiInputMode) &&
-                   UH::InstallPostHook(gameAndUi, OnUiInputMode) &&
-                   UH::InstallPostHook(gameOnly, OnGameInputMode);
-    if (g_modeSeamOk)
-        UE_LOGI("input_owner: input-mode seam installed on try %d (UIOnlyEx, GameAndUIEx, "
-                "GameOnly) -- the focus scan now runs only while a UI mode is up, shadow=%d",
-                g_modeSeamTries, ShadowMode());
-    else if (g_modeSeamTries == 100)
-        UE_LOGE("input_owner: the input-mode verbs did not patch in 100 tries (UMG=%p UIOnlyEx=%p "
-                "GameAndUIEx=%p GameOnly=%p) -- the focus scan stays unconditional, which is a "
-                "whole frame a second and is exactly what this seam exists to stop.",
-                wbl, uiOnly, gameAndUi, gameOnly);
+    void* wbl = R::FindClass(L"WidgetBlueprintLibrary");
+    void* widget = R::FindClass(L"Widget");
+    struct Verb { const wchar_t* name; void* cls; ue_wrap::ufunction_hook::PostNativeCallback cb;
+                  bool required; void* fn; bool patched; };
+    // Every verb is attempted rather than short-circuited: leaving the arming half live with the
+    // parking half absent is the one asymmetry this seam must never ship.
+    //
+    // REQUIRED is the input-mode trio, because the park rests on it and the arm has to cover every
+    // surface the park can silence. The focus trio is a belt over that: it removes the gate's
+    // dependence on this cook happening to announce an input mode around each of its twenty
+    // focus-taking sites. A missing belt is logged and the gate still stands on the trio; a missing
+    // trio pins the latch armed and there is no gate at all.
+    Verb verbs[] = {
+        {L"SetInputMode_UIOnlyEx",    wbl,    OnUiInputMode,   true,  nullptr, false},
+        {L"SetInputMode_GameAndUIEx", wbl,    OnUiInputMode,   true,  nullptr, false},
+        {L"SetInputMode_GameOnly",    wbl,    OnGameInputMode, true,  nullptr, false},
+        {L"SetKeyboardFocus",         widget, OnUiInputMode,   false, nullptr, false},
+        {L"SetUserFocus",             widget, OnUiInputMode,   false, nullptr, false},
+        {L"SetFocus",                 widget, OnUiInputMode,   false, nullptr, false},
+    };
+    bool all = true;
+    int belt = 0;
+    for (Verb& v : verbs) {
+        v.fn = v.cls ? R::FindFunction(v.cls, v.name) : nullptr;
+        v.patched = v.fn && UH::InstallPostHook(v.fn, v.cb);
+        if (v.required) all = all && v.patched;
+        else if (v.patched) ++belt;
+    }
+    if (all && belt < 3)
+        UE_LOGW("input_owner: %d of 3 focus verbs patched -- the gate stands on the input-mode "
+                "trio alone, so a surface that focuses a widget without announcing an input mode "
+                "would not arm the scan.", belt);
+    if (all) {
+        g_seam = SeamState::Installed;
+        g_seamComplete.store(true, std::memory_order_relaxed);
+        UE_LOGI("input_owner: verb seam installed on try %d (3 input-mode, %d of 3 focus) -- the "
+                "focus scan now runs only while a widget can hold focus, shadow=%d",
+                g_seamTries, belt, ShadowMode());
+        return;
+    }
+    if (g_seamTries < kSeamMaxTries) return;
+    // Given up: the latch stays pinned armed, so the scan keeps its old unconditional behaviour
+    // and no key is ever taken from a focused field. The line names resolve and patch separately,
+    // since a full hook table and a renamed verb need different fixes.
+    g_seam = SeamState::GaveUp;
+    g_uiInputMode.store(true, std::memory_order_relaxed);
+    std::string detail;
+    for (const Verb& v : verbs) {
+        char buf[128];
+        std::snprintf(buf, sizeof(buf), " %ls=%s/%s", v.name, v.fn ? "resolved" : "MISSING",
+                      v.patched ? "patched" : "NOT-PATCHED");
+        detail += buf;
+    }
+    UE_LOGE("input_owner: the required input-mode verbs did not install in %d tries (UMG=%p "
+            "Widget=%p)%s -- the "
+            "focus scan stays unconditional, a whole frame a second, which is exactly what this "
+            "seam exists to stop.", kSeamMaxTries, wbl, widget, detail.c_str());
 }
 
 void ResolveOnce() {
@@ -238,8 +299,8 @@ bool CallBoolNoArgs(void* widget, void* fn) {
 // 1 Hz scan issued about 9,300 reflected HasKeyboardFocus dispatches per pass, in one frame; with
 // it, 3,733 -- and since a widget that answers no is then asked the second question, the pass
 // still costs 7,466 dispatches and 9-15 ms in that one frame, measured on an idle two-peer
-// session whose own frame is 8.6 ms. The filter is a reduction, not a fix. The cached class is pointer-compared; ClassNameOf
-// allocates.
+// session whose own frame is 8.6 ms. The filter is a reduction, not a fix. The cached class is
+// pointer-compared; ClassNameOf allocates.
 bool IsLiveWidgetInstance(void* o) {
     void* outer = R::OuterOf(o);
     for (int d = 0; outer && d < 8; ++d) {
@@ -311,12 +372,6 @@ void LogOwnerEdge() {
 
 }  // namespace
 
-// Two cadences. The fast path is a pointer read plus one UFunction call and covers every
-// surface reached through Enter Interface (the console, the notebook, the laptop, the
-// inventory). The full path walks GUObjectArray and catches the menu-only fields (the
-// save-slot rename, the settings search); at 10 Hz that would be a per-frame full-array scan,
-// so it runs at 1 Hz, and a field in one of those surfaces can be focused for up to a second
-// before a hotkey stops taking its key.
 void Init() {
     // Posted, not called: InstallPostHook patches a UFunction's native slot and is game-thread
     // only, and this runs from the mod's boot thread. The pump drains at the first top-level
@@ -324,6 +379,13 @@ void Init() {
     ue_wrap::game_thread::Post([] { InstallInputModeSeam(); });
 }
 
+// Two cadences. The fast path is a pointer read plus one UFunction call and covers every
+// surface reached through Enter Interface (the console, the notebook, the laptop, the
+// inventory). The full path walks GUObjectArray and catches the menu-only fields (the
+// save-slot rename, the settings search); at 10 Hz that would be a per-frame full-array scan,
+// so it runs at 1 Hz -- and only while a widget can hold focus at all. A field in one of those
+// surfaces can be focused for up to a second
+// before a hotkey stops taking its key.
 void TickGameThread(bool doFullScan) {
     // Both cadences ride one bucket. The fast path is two field reads, so the bucket's ms/second
     // is what ONE full scan costs -- the number the scan's own array walk and its two reflected
@@ -336,7 +398,9 @@ void TickGameThread(bool doFullScan) {
     // after they resume must already know the new world, or it resolves the pawn against the
     // previous one, the dead-pawn read this term exists to refuse.
     (void)ue_wrap::world_identity::CurrentWorld();
-    InstallInputModeSeam();  // one bool load once it has taken
+    // On the slow cadence only: once installed this is one compare, but a retry walks the object
+    // array, so it may not ride the 10 Hz path.
+    if (doFullScan) InstallInputModeSeam();
     ResolveOnce();
     if (!g_fnHasKeyboardFocus || !g_clsUserWidget) {
         // Unresolved means unknown, and unknown reads as "the game might own text", so MayTakeKey
