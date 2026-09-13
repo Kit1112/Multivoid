@@ -92,8 +92,8 @@ bool Call(void* object, ParamFrame& frame);
 // ParamFrame that resolved a frame size (a malformed UFunction is refused and logged, and is not
 // one), `allocs` the subset that heap-allocated -- so `frames - allocs` is exactly the zero-size
 // frames, which allocate nothing -- and `bytes` is what those allocations asked for. `le` buckets
-// an allocating frame by size and `maxSize` is the largest seen, which is what an inline buffer
-// would have to cover.
+// an allocating frame into one DISJOINT size band -- a frame is counted once, not in every band
+// it fits -- and `maxSize` is the largest seen, which is what an inline buffer would have to cover.
 //
 // Always counted, unlike MTA's own per-call instrument, which returns early unless somebody is
 // watching and disarms itself once nobody has looked for fifteen seconds
@@ -105,7 +105,7 @@ struct FrameStats {
     unsigned long long frames;   // ParamFrame constructions that resolved a frame size
     unsigned long long allocs;   // constructions that allocated (frameSize > 0)
     unsigned long long bytes;    // total bytes those allocations asked for
-    unsigned long long le[5];    // allocating frames with frameSize <= 16 / 32 / 64 / 128 / 256
+    unsigned long long bucket[5];  // frameSize bands 0-16, 17-32, 33-64, 65-128, 129-256
     int32_t maxSize;             // the largest frame size seen
 };
 FrameStats GetFrameStats();

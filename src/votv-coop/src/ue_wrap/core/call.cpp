@@ -79,11 +79,11 @@ const ParamFrame::Metadata* GetOrBuildMetadata(void* fn) {
 // The frame counters behind GetFrameStats. Relaxed adds: each is read once a second by the perf
 // probe, and no reader needs one counter to be consistent with another at an instant.
 std::atomic<unsigned long long> g_frames{0}, g_allocs{0}, g_bytes{0};
-std::atomic<unsigned long long> g_le[5]{};
+std::atomic<unsigned long long> g_bucket[5]{};
 std::atomic<int32_t> g_maxSize{0};
 
-// Bucket an allocating frame by size, so the number can answer what an inline buffer would cover
-// and not only how often one would be used.
+// Band an allocating frame by size -- disjoint, first match wins -- so the number can answer what
+// an inline buffer would cover and not only how often one would be used.
 void NoteFrame(int32_t frameSize) {
     g_frames.fetch_add(1, std::memory_order_relaxed);
     if (frameSize <= 0) return;
@@ -91,7 +91,7 @@ void NoteFrame(int32_t frameSize) {
     g_bytes.fetch_add(static_cast<unsigned long long>(frameSize), std::memory_order_relaxed);
     const int32_t edges[5] = {16, 32, 64, 128, 256};
     for (int i = 0; i < 5; ++i) {
-        if (frameSize <= edges[i]) { g_le[i].fetch_add(1, std::memory_order_relaxed); break; }
+        if (frameSize <= edges[i]) { g_bucket[i].fetch_add(1, std::memory_order_relaxed); break; }
     }
     int32_t seen = g_maxSize.load(std::memory_order_relaxed);
     while (frameSize > seen &&
@@ -107,7 +107,7 @@ FrameStats GetFrameStats() {
     s.frames = g_frames.load(std::memory_order_relaxed);
     s.allocs = g_allocs.load(std::memory_order_relaxed);
     s.bytes  = g_bytes.load(std::memory_order_relaxed);
-    for (int i = 0; i < 5; ++i) s.le[i] = g_le[i].load(std::memory_order_relaxed);
+    for (int i = 0; i < 5; ++i) s.bucket[i] = g_bucket[i].load(std::memory_order_relaxed);
     s.maxSize = g_maxSize.load(std::memory_order_relaxed);
     return s;
 }

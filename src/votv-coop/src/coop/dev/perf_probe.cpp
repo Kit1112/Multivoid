@@ -29,7 +29,9 @@ namespace {
 namespace GT = ue_wrap::game_thread;
 namespace R = ue_wrap::reflection;
 
-bool  g_armed     = false;   // set by Init() from the ini; read by Armed()
+// Atomic because the readers are on two threads: Scope/AddTicks run on the game thread and
+// from the overlay's present path on the render thread.
+std::atomic<bool> g_armed{false};  // set by Init() from the ini; read by Armed()
 bool  g_selfTime  = false;
 bool  g_initDone  = false;
 int   g_resDropAfterS = 0;   // perf_probe_resdrop: samples before the render-res collapse
@@ -75,7 +77,7 @@ bool Enabled() {
     return s;
 }
 
-bool Armed() { return g_armed; }
+bool Armed() { return g_armed.load(std::memory_order_relaxed); }
 
 double TicksToMs(unsigned long long ticks) {
     const long long f = QpcFreq();
@@ -89,12 +91,12 @@ unsigned long long NowTicks() {
 }
 
 void AddTicks(Bucket b, unsigned long long ticks) {
-    if (!g_armed) return;
+    if (!Armed()) return;
     const size_t i = static_cast<size_t>(b);
     if (i < g_buckets.size()) g_buckets[i].fetch_add(ticks, std::memory_order_relaxed);
 }
 
-Scope::Scope(Bucket b) : b_(b), on_(g_armed), t0_(0) {
+Scope::Scope(Bucket b) : b_(b), on_(Armed()), t0_(0) {
     if (on_) t0_ = NowTicks();
 }
 Scope::~Scope() {
@@ -105,7 +107,7 @@ void Init() {
     if (g_initDone) return;
     g_initDone = true;
     if (!Enabled()) return;
-    g_armed = true;
+    g_armed.store(true, std::memory_order_relaxed);
     g_selfTime = coop::config::ResolveFlag(::coop::config_registry::rows::perf_probe_selftime);
     g_resDropAfterS = static_cast<int>(coop::config::ResolveInt(::coop::config_registry::rows::perf_probe_resdrop));
     g_bypassAfterS  = static_cast<int>(coop::config::ResolveInt(::coop::config_registry::rows::perf_probe_bypass));
@@ -142,16 +144,21 @@ void NoteFrame() {
         sNextPost = now + 1000;
         ue_wrap::game_thread::Post([] { Init(); Sample(); });
     }
-    if (!g_armed) return;
+    if (!Armed()) return;
     g_frames.fetch_add(1, std::memory_order_relaxed);
 }
 
 void Sample() {
-    if (!g_armed) return;
+    if (!Armed()) return;
     const auto now = std::chrono::steady_clock::now();
     if (!g_haveBaseline) {
         g_haveBaseline = true;
         g_lastSample = now;
+        // The reflected-call counters are cumulative from process start, so a window that begins
+        // at zero reports the whole boot as one second's rate. Seed them with the clock.
+        g_lastCalls = R::CoopCallCountTotal();
+        const ue_wrap::FrameStats fs0 = ue_wrap::GetFrameStats();
+        g_lastPfFrames = fs0.frames; g_lastPfAllocs = fs0.allocs; g_lastPfBytes = fs0.bytes;
         return;  // establish the first baseline; report from the next window
     }
     const double elapsed = std::chrono::duration<double>(now - g_lastSample).count();
@@ -327,13 +334,18 @@ void Sample() {
         g_lastCalls = calls; g_lastPfFrames = fs.frames;
         g_lastPfAllocs = fs.allocs; g_lastPfBytes = fs.bytes;
         const double allocPerSec = dAlloc / elapsed;
+        // The size cells are DISJOINT bands, not nested thresholds: a frame lands in exactly one,
+        // and the last cell is the residue above the largest band, printed so the reader never has
+        // to subtract.
+        unsigned long long banded = 0;
+        for (int i = 0; i < 5; ++i) banded += fs.bucket[i];
         UE_LOGW("[perf] reflected calls=%.0f/s (%.1f/frame) | ParamFrame=%.0f/s alloc=%.0f/s "
-                "(%.1f KB/s) | sizes <=16:%llu <=32:%llu <=64:%llu <=128:%llu <=256:%llu "
-                "max=%d (cumulative %llu allocs of %llu frames)",
+                "(%.1f KB/s) | sizes 0-16:%llu 17-32:%llu 33-64:%llu 65-128:%llu 129-256:%llu "
+                "over-256:%llu max=%d (cumulative %llu allocs of %llu frames)",
                 dCalls / elapsed, dFr > 0 ? static_cast<double>(dCalls) / dFr : 0.0,
                 dPf / elapsed, allocPerSec, (dBytes / elapsed) / 1024.0,
-                fs.le[0], fs.le[1], fs.le[2], fs.le[3], fs.le[4], fs.maxSize,
-                fs.allocs, fs.frames);
+                fs.bucket[0], fs.bucket[1], fs.bucket[2], fs.bucket[3], fs.bucket[4],
+                fs.allocs - banded, fs.maxSize, fs.allocs, fs.frames);
     }
 
     if (g_dispatch) {
