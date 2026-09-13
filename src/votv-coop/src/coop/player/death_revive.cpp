@@ -99,6 +99,11 @@ Verbs g_verbs;
 // they return null.
 bool ResolveVerbs() {
     if (g_verbs.resolved) return true;
+    // Throttled while unresolved: each attempt is three FindClass calls, and a MISS walks every
+    // UObject slot and is never cached, so an unthrottled retry is a full-array scan per frame for
+    // as long as the widget classes are not loaded. ~1 Hz of the 125 Hz pump.
+    static uint32_t sThrottle = 0;
+    if ((sThrottle++ % 125) != 0) return false;
     Verbs v;
     void* widgetCls = R::FindClass(P::name::WidgetClass);
     void* userWidgetCls = R::FindClass(P::name::UserWidgetClass);
