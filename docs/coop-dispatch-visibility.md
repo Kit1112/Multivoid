@@ -115,6 +115,8 @@ post it. `[V]`
 | the desk's audio components' play and activate | virtual calls on native targets | yes, to the native seam | the effect forward `[V]` |
 | deck playback | stubs into the graph; the sound component's activate and deactivate | yes, to the native seam | the play and stop edges `[V]` |
 | the drive-chain, database and module verbs | `EX_LocalVirtualFunction` | no | the script-body gate brackets, then a poll `[RD]` |
+| the UI input-mode verbs (`SetInputMode_UIOnlyEx`, `_GameAndUIEx`, `_GameOnly`) | `EX_FinalFunction` into a UMG native -- all 46 call sites in the cook, no other route exists | not to a ProcessEvent observer; YES to the native seam | the post-hook tells the mod when a UI surface can hold focus, which is what lets `input_owner` stop sweeping every UObject once a second `[V]` |
+| the widget focus verbs (`SetKeyboardFocus`, `SetUserFocus`, `SetFocus` on `UWidget`) | `EX_FinalFunction` into a native -- 20 sites in 12 classes, 9 of which announce no input mode | the same | watched beside the input-mode trio, because the mode alone is a census of this cook and not an engine guarantee. NOTE a mouse click that moves Slate focus calls NONE of them: Slate handles it internally, and only the surface's input-mode announcement covers that case `[V]` |
 
 ## How to pick a seam
 
