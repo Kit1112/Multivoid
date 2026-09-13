@@ -200,6 +200,10 @@ void SpawnEnvGatedTests(coop::net::Role role) {
     // The script-body gate drill: Blueprint verbs refused per call on one of two signal servers,
     // on every dispatch route, with state observables and a negative arm.
     SpawnIf("VOTVCOOP_RUN_SCRIPT_GATE_DRILL", "script-body gate drill", &ScriptGateDrillThread, role);
+
+    // The run-ending drill: a real menu travel from a non-UI author must be refused, the world
+    // kept and the player revived and un-paused, while the pause menu's own quit stays allowed.
+    SpawnIf("VOTVCOOP_RUN_RUNEND_DRILL", "run-ending seam drill", &RunEndDrillThread, role);
 }
 
 }  // namespace harness::autotest

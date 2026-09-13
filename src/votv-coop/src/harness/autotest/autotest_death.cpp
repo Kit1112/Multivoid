@@ -16,6 +16,8 @@
 #include "coop/config/config.h"
 #include "coop/dev/death_write_diff.h"
 #include "coop/player/death_revive.h"
+#include "coop/player/run_end_travel.h"
+#include "ue_wrap/core/script_gate.h"
 #include "coop/player/players_registry.h"
 #include "harness/session_runtime.h"
 #include "ue_wrap/actors/vitals.h"
@@ -38,6 +40,8 @@
 
 namespace harness::autotest {
 namespace {
+
+namespace RET = coop::player::run_end_travel;
 
 namespace GT = ue_wrap::game_thread;
 namespace E = ue_wrap::engine;
@@ -922,11 +926,12 @@ DWORD WINAPI DeathTestThread(LPVOID) {
             dead.SlopeMbPerSec(), dead.peakMb, alive.SlopeMbPerSec(),
             dead.SlopeMbPerSec() - alive.SlopeMbPerSec());
 
-    UE_LOGI("death_test: SEAM -- installed=%d travelsSeen=%llu travelsRefused=%llu lastReviveOk=%d "
-            "sessionRunning=%d (the seam is process-wide; the SESSION is what gates the veto)",
-            coop::death_revive::SeamInstalled() ? 1 : 0,
-            coop::death_revive::TravelsSeen(),
-            coop::death_revive::TravelsRefused(),
+    UE_LOGI("death_test: SEAM -- watching=%d gateEnabled=%d travelsSeen=%llu menuTravels=%llu "
+            "cancelled=%llu lastReviveOk=%d sessionRunning=%d (the watch is process-wide; the "
+            "SESSION is what gates the verdict, and the gate's enable is session-scoped)",
+            RET::WatchInstalled() ? 1 : 0,
+            ue_wrap::script_gate::IsEnabled() ? 1 : 0,
+            RET::TravelsSeen(), RET::MenuTravelsSeen(), RET::TravelsCancelled(),
             coop::death_revive::LastReviveSucceeded() ? 1 : 0,
             last.sessionRunning ? 1 : 0);
 
@@ -1042,15 +1047,20 @@ DWORD WINAPI DeathTestThread(LPVOID) {
         // Refusing nothing is only half the claim: a seam that never saw the travel refuses
         // nothing either, and D3 above has already established that a travel ran. So the pass
         // needs both terms -- the detour saw it, and let it through.
-        const bool seamSaw = coop::death_revive::TravelsSeen() > 0;
-        const bool seamQuiet = coop::death_revive::TravelsRefused() == 0;
+        // Refusing nothing is only half the claim: a seam that never saw the travel refuses
+        // nothing either, and D3 has already established that a travel ran. So the pass needs
+        // both terms -- the seam SAW a menu travel, and let it through. That is the single-player
+        // guarantee resting on the verdict's own session test rather than on the watch being
+        // absent, which is what 11.2 item 1 asks of this control.
+        const bool seamSaw = RET::MenuTravelsSeen() > 0;
+        const bool seamQuiet = RET::TravelsCancelled() == 0;
         Verdict("D5 seam-quiet", seamSaw && seamQuiet,
-                !seamSaw ? "the travel ran but NEVER reached the seam -- the detour is not on "
-                           "the path, so this run proves nothing about the veto"
+                !seamSaw ? "the travel ran but never reached the seam's verdict -- this run "
+                           "proves nothing about what the seam does with no session"
                          : seamQuiet
-                           ? "the travel reached the seam and passed: refused nothing in a "
-                             "sessionless run"
-                           : "the seam REFUSED a travel with no session running");
+                           ? "the travel reached the verdict and was ALLOWED: single player is "
+                             "untouched by the session test itself, not by an absent watch"
+                           : "the seam CANCELLED a travel with no session running");
     }
 
     const double diff = dead.SlopeMbPerSec() - alive.SlopeMbPerSec();
