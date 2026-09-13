@@ -4,6 +4,8 @@
 #include "harness/autotest_dispatch.h"
 
 #include "harness/autotest.h"
+
+#include "harness/autotest/slip_drill.h"
 #include "coop/session/join_seed.h"  // the inline seed selftest
 #include "coop/config/config.h"
 #include "coop/dev/director/director.h"
@@ -204,6 +206,10 @@ void SpawnEnvGatedTests(coop::net::Role role) {
     // The run-ending drill: a real menu travel from a non-UI author must be refused, the world
     // kept and the player revived and un-paused, while the pause menu's own quit stays allowed.
     SpawnIf("VOTVCOOP_RUN_RUNEND_DRILL", "run-ending seam drill", &RunEndDrillThread, role);
+
+    // The slip drill: a zero-damage ragdoll with `dead` already set must be shown to re-enter the
+    // death chain (F-94), and our seam shown to refuse the menu travel it asks for.
+    SpawnIf("VOTVCOOP_RUN_SLIP_DRILL", "slip / death re-entry drill", &SlipDrillThread, role);
 }
 
 }  // namespace harness::autotest
