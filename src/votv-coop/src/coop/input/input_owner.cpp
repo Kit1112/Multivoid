@@ -17,6 +17,7 @@
 #include "ue_wrap/core/game_thread.h"
 #include "ue_wrap/core/log.h"
 #include "ue_wrap/core/reflection.h"
+#include "ue_wrap/core/ufunction_hook.h"
 #include "ue_wrap/engine/world_identity.h"
 
 namespace R = ue_wrap::reflection;
@@ -36,6 +37,17 @@ std::atomic<bool> g_scanOwnsText{false};
 std::atomic<bool> g_overlayOwnsText{false};
 // The game thread has not been observed yet, so nothing is known and MayTakeKey says no.
 std::atomic<bool> g_everTicked{false};
+
+// Whether the game has a UI input mode up, learned from the game's own three verbs instead of
+// polled. The engine's contract is the load-bearing half: SetInputMode_GameOnly focuses the game
+// viewport, so no UMG widget holds user-0 focus and the scan below cannot find one; every menu
+// surface in this game announces itself with SetInputMode_UIOnlyEx or _GameAndUIEx first (46 call
+// sites, every one a final call into a native, which the Func seam sees on every route).
+//
+// Starts SET, so an unheard verb costs a scan rather than a wrong answer: until the game says it
+// is in game-only input, unknown reads as "a UI may own text", the direction every other unknown
+// in this file fails toward.
+std::atomic<bool> g_uiInputMode{true};
 
 // Diagnostics only.
 char g_ownerName[64] = "-";
@@ -57,6 +69,68 @@ void* g_pcForScan = nullptr;
 const char* g_scanTerm = "-";
 int32_t g_activeInterfaceOff = -2;
 bool g_resolved = false;
+
+// The two edges. Deep inside an engine dispatch, so each is one relaxed store. The game-only
+// edge also publishes the scan term: focus has just left every widget, and waiting up to a second
+// for the next pass to say so would leave a menu's conclusion standing over live gameplay.
+void OnUiInputMode(void*, void*, void*) {
+    if (!g_uiInputMode.exchange(true, std::memory_order_relaxed))
+        UE_LOGI("input_owner: a UI input mode is up -- the focus scan is armed");
+}
+void OnGameInputMode(void*, void*, void*) {
+    if (g_uiInputMode.exchange(false, std::memory_order_relaxed))
+        UE_LOGI("input_owner: game-only input -- the focus scan is parked");
+    g_scanOwnsText.store(false, std::memory_order_relaxed);
+}
+
+// VOTVCOOP_INPUT_OWNER_SHADOW: 1 sweeps even when the latch says no UI mode and reports any
+// disagreement, which is what would catch the engine contract above being false in this game; 2
+// additionally pins the latch clear, so the same instrument can be shown RED with a menu open.
+int ShadowMode() {
+    static int s = -1;
+    if (s == -1) {
+        char v[8]{};
+        s = ::GetEnvironmentVariableA("VOTVCOOP_INPUT_OWNER_SHADOW", v, sizeof(v)) > 0
+                ? (v[0] - '0') : 0;
+        if (s < 0 || s > 2) s = 0;
+    }
+    return s;
+}
+
+bool UiInputModeUp() {
+    return ShadowMode() == 2 ? false : g_uiInputMode.load(std::memory_order_relaxed);
+}
+
+// The seam has to exist BEFORE the game enters a world, or the game-only verb that world entry
+// issues is spoken to nobody and the latch stays armed for the session -- measured: a host whose
+// level came up three seconds before the overlay's first present scanned for the whole run while
+// the client, which joined later, parked immediately. So it installs from Init on the first
+// posted task, and the tick retries until it takes.
+bool g_modeSeamOk = false;
+int  g_modeSeamTries = 0;
+
+void InstallInputModeSeam() {
+    if (g_modeSeamOk) return;
+    ++g_modeSeamTries;
+    void* wbl = R::FindClass(L"WidgetBlueprintLibrary");
+    void* uiOnly    = wbl ? R::FindFunction(wbl, L"SetInputMode_UIOnlyEx") : nullptr;
+    void* gameAndUi = wbl ? R::FindFunction(wbl, L"SetInputMode_GameAndUIEx") : nullptr;
+    void* gameOnly  = wbl ? R::FindFunction(wbl, L"SetInputMode_GameOnly") : nullptr;
+    namespace UH = ue_wrap::ufunction_hook;
+    g_modeSeamOk = uiOnly && gameAndUi && gameOnly &&
+                   UH::InstallPostHook(uiOnly, OnUiInputMode) &&
+                   UH::InstallPostHook(gameAndUi, OnUiInputMode) &&
+                   UH::InstallPostHook(gameOnly, OnGameInputMode);
+    if (g_modeSeamOk)
+        UE_LOGI("input_owner: input-mode seam installed on try %d (UIOnlyEx, GameAndUIEx, "
+                "GameOnly) -- the focus scan now runs only while a UI mode is up, shadow=%d",
+                g_modeSeamTries, ShadowMode());
+    else if (g_modeSeamTries == 100)
+        UE_LOGE("input_owner: the input-mode verbs did not patch in 100 tries (UMG=%p UIOnlyEx=%p "
+                "GameAndUIEx=%p GameOnly=%p) -- the focus scan stays unconditional, which is a "
+                "whole frame a second and is exactly what this seam exists to stop.",
+                wbl, uiOnly, gameAndUi, gameOnly);
+}
 
 void ResolveOnce() {
     if (g_resolved) return;
@@ -243,6 +317,13 @@ void LogOwnerEdge() {
 // save-slot rename, the settings search); at 10 Hz that would be a per-frame full-array scan,
 // so it runs at 1 Hz, and a field in one of those surfaces can be focused for up to a second
 // before a hotkey stops taking its key.
+void Init() {
+    // Posted, not called: InstallPostHook patches a UFunction's native slot and is game-thread
+    // only, and this runs from the mod's boot thread. The pump drains at the first top-level
+    // dispatch, which is many seconds before a world exists.
+    ue_wrap::game_thread::Post([] { InstallInputModeSeam(); });
+}
+
 void TickGameThread(bool doFullScan) {
     // Both cadences ride one bucket. The fast path is two field reads, so the bucket's ms/second
     // is what ONE full scan costs -- the number the scan's own array walk and its two reflected
@@ -255,6 +336,7 @@ void TickGameThread(bool doFullScan) {
     // after they resume must already know the new world, or it resolves the pawn against the
     // previous one, the dead-pawn read this term exists to refuse.
     (void)ue_wrap::world_identity::CurrentWorld();
+    InstallInputModeSeam();  // one bool load once it has taken
     ResolveOnce();
     if (!g_fnHasKeyboardFocus || !g_clsUserWidget) {
         // Unresolved means unknown, and unknown reads as "the game might own text", so MayTakeKey
@@ -286,6 +368,21 @@ void TickGameThread(bool doFullScan) {
         // No interface owns focus; the last full scan's conclusion stands, since this cadence has
         // not looked at the surfaces the fast path cannot see.
         g_everTicked.store(true, std::memory_order_relaxed);
+        return;
+    }
+
+    // The scan's precondition, and the whole reason this file stopped spending a frame a
+    // second: with no UI input mode up there is nothing for the sweep to find, so its answer
+    // is no and it is reached without a single dispatch. The shadow drill sweeps anyway and
+    // compares, so the engine contract this rests on is checked in a run, not assumed.
+    const bool uiUp = UiInputModeUp();
+    if (!uiUp && ShadowMode() == 0) {
+        g_scanOwnsText.store(false, std::memory_order_relaxed);
+        g_lastOwner.Reset();
+        g_ownerName[0] = '-', g_ownerName[1] = '\0';
+        g_scanTerm = "-";
+        g_everTicked.store(true, std::memory_order_relaxed);
+        LogOwnerEdge();
         return;
     }
 
@@ -338,6 +435,18 @@ void TickGameThread(bool doFullScan) {
     }
     if (!owns) g_lastOwner.Reset();
     if (!owns) g_ownerName[0] = '-', g_ownerName[1] = '\0';
+    // The drill's verdict. A widget owning focus with no UI input mode up is the one way
+    // the precondition above can be wrong, and it says so in a line rather than in a dead
+    // hotkey.
+    if (ShadowMode() != 0 && !uiUp) {
+        if (owns)
+            UE_LOGW("input_owner SHADOW MISMATCH: '%s' owns focus via %s while no UI input "
+                    "mode is up -- the gate would have answered no and a typed key would be "
+                    "taken.", g_ownerName, g_scanTerm);
+        else
+            UE_LOGI("input_owner shadow: agree (no UI input mode, %d widgets asked, no "
+                    "owner)", asked);
+    }
     g_scanOwnsText.store(owns, std::memory_order_relaxed);
     g_everTicked.store(true, std::memory_order_relaxed);
     LogOwnerEdge();

@@ -11,25 +11,31 @@
 // halves: the player's active interface is valid (the game's own guard: its key handler
 // focuses that interface and presses the key through a virtual user, which is how the in-world
 // screens receive text), evaluated at each hotkey edge; and a game widget holds user-zero
-// focus, the 1 Hz backstop. The widget's has-keyboard-focus alone is blind to the virtual
-// user, so it answers false at every in-world screen.
+// focus, the 1 Hz backstop, which runs only while the game has put a UI input mode up and is
+// blind to the virtual user, so it answers false at every in-world screen.
 
 #pragma once
 
 namespace coop::input::input_owner {
+
+// Boot. Installs the seam on the game's three input-mode verbs, which is what tells this module
+// whether a UI surface can hold focus at all; call it once from the mod's boot, before a world
+// exists. Idempotent, and the tick retries until it takes.
+void Init();
 
 // Publishers.
 
 // Game thread. `doFullScan` picks the cadence: false is the fast path only (a pointer read and
 // one UFunction call, covering everything reachable through the active interface), true also
 // walks the object array for any focused game widget, the census outliers. The fast form at
-// about 10 Hz, the full form at about 1 Hz; the full walk at frame rate would be the
-// per-frame full-array scan this project bans. Never from the window procedure or the render
-// thread. The full scan is most of the blueprint calls this mod makes, and as one posted task
-// they land in a single frame, a stutter rather than a per-frame tax; the widget templates
-// inside blueprint classes are rejected before the focus queries, since they can never hold
-// focus. The proper fix is to stop polling and answer at the hotkey edge, which runs on the
-// game thread; not done, since a naive move makes a hotkey press pay the whole scan.
+// about 10 Hz, the full form at about 1 Hz; the full walk at frame rate would be the per-frame
+// full-array scan this project bans. Never from the window procedure or the render thread.
+//
+// The full walk runs only while a UI input mode is up, and that is not a throttle: with the
+// game in game-only input the engine has focused the viewport, so there is no widget for the
+// walk to find and its answer is no without a call. Unconditional, it asked ~3,700 widgets two
+// reflected questions each -- 7,466 dispatches and 9 to 15 ms inside ONE frame, once a second,
+// on an 8.6 ms frame, four fifths of every reflected call this mod made.
 void TickGameThread(bool doFullScan);
 
 // Render thread, once per frame, from the overlay: does one of our text fields have focus

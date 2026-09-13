@@ -15,6 +15,7 @@
 #include "harness/mod_environment.h"
 #include "harness/sdk_check.h"
 #include "coop/dev/freecam.h"
+#include "coop/input/input_owner.h"
 #include "coop/dev/object_overlay.h"
 #include "coop/dev/ragdoll_bone_overlay.h"
 #include "coop/save/save_transfer.h"
@@ -415,6 +416,12 @@ DWORD WINAPI TimelineThread(LPVOID param) {
 void Start() {
     // F12 takes a toast-free screenshot into coop-screenshots/; always on, for hands-on testing.
     screenshot::StartHotkeyWatcher();
+
+    // Who owns a typed key. Only the input-mode seam installs here, and it installs HERE rather
+    // than on the module's own first tick because that tick rides the overlay's present, which
+    // begins after the game has already entered a world and spoken the verb this seam listens
+    // for; a host that missed it scanned every UObject once a second for the whole session.
+    coop::input::input_owner::Init();
 
     // The dev free camera: HOME toggles it under [dev] freecam=1, and the F1 menu toggles it under
     // [dev] devkeys; a no-op at boot otherwise.
