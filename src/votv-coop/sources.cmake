@@ -335,6 +335,7 @@ set(VOTVCOOP_SOURCES
     src/coop/items/inventory_wire.cpp
     src/coop/items/save_record_wire.cpp
     src/coop/props/container_contents_sync.cpp
+    src/coop/props/container_write_policy.cpp
     src/coop/dev/delivery_census_probe.cpp
     src/coop/dev/store_table_probe.cpp
     src/coop/dev/order_selftest.cpp

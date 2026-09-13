@@ -6,6 +6,7 @@
 
 #include "coop/props/prop_save_data.h"
 #include "coop/props/container_contents_sync.h"
+#include "coop/props/container_write_policy.h"
 
 #include "coop/element/registry.h"
 #include "coop/items/save_record_wire.h"
@@ -36,6 +37,7 @@ namespace R  = ue_wrap::reflection;
 namespace SR = ue_wrap::save_record;
 namespace W  = coop::save_record_wire;
 namespace sg = ue_wrap::script_gate;
+namespace wp = coop::props::container_write_policy;
 
 using coop::element::LivePropActor;
 
@@ -69,12 +71,6 @@ coop::blob_chunks::Assembler g_asm;
 // edge and the drain, and an eid re-resolves forward, so a destroyed container stops resolving.
 std::set<uint32_t> g_dirty;
 
-// Host: the content most recently published for an eid by any route, fan-out or a targeted
-// connect seed. This is the compare-and-swap baseline ("what did I tell that peer the world looked
-// like"); g_sentHash answers a different question ("may I skip the next fan-out"), and a targeted
-// send must not answer yes to that one.
-std::map<uint32_t, uint64_t> g_publishedHash;
-
 // The hash of the last blob sent and of the last applied, per eid. Skipping an unchanged blob is
 // what bounds the orphaned-buffer cost: a steady-state re-broadcast applies and allocates nothing.
 std::map<uint32_t, uint64_t> g_sentHash;
@@ -93,18 +89,6 @@ std::map<std::wstring, void*> g_classMemo;
 
 // Containers whose broadcast the transport refused; retried by the sweep.
 std::set<uint32_t> g_retry;
-
-// This peer's own last verb edge per eid; the host uses it to detect a client write that raced a
-// host-side change.
-std::map<uint32_t, uint64_t> g_localChangeMs;
-
-// A client write is refused within this window of a host-side change.
-constexpr uint64_t kConflictWindowMs = 1500;
-
-// How many client writes the host has refused. There is no rollback: a refused write is corrected
-// by the host re-publishing its truth and the loser sees the container snap back; whether that is
-// ever noticeable is empirical, and this counter answers it.
-uint64_t g_conflictRejects = 0;
 
 // The takeObj-in-flight latch: armed at the verb's entry, consumed by prop_drop_intent at the
 // extracted item's FinishSpawn enqueue (the item spawns inside the takeObj call, so the latch is
@@ -362,7 +346,7 @@ bool BroadcastContainer(coop::net::Session* s, uint32_t eid, void* inv, int toSl
         // baseline a later client write is judged against. With the two maps fused the host refused
         // every client write after a join: the seed is targeted, g_sentHash stayed empty, and the
         // CAS compared against 0 for every container in the world.
-        if (IsHost()) g_publishedHash[eid] = h;
+        if (IsHost()) wp::NotePublished(eid, h);
         // The author of a mutation re-derives its own volume, mass and names here: the host
         // excludes the author from the relay, and the native take path does not call
         // updateVolumesAndMass, so the mutator's own displayed volume went stale while every other
@@ -524,40 +508,6 @@ Ingest ApplyContents(uint32_t eid, const std::vector<SR::SaveRecord>& recs, uint
     return Ingest::Applied;
 }
 
-// Host: may this client-authored slice be applied. The compare-and-swap that keeps a stale author
-// from erasing a change it never saw; false, and logged, when refused.
-bool HostAcceptsClientWrite(uint32_t eid, uint64_t baseHash, uint8_t authorSlot) {
-    // An up-to-date author edited from what the host last published; an author that never received
-    // anything sends 0 and is refused rather than trusted.
-    uint64_t published = 0;
-    auto it = g_publishedHash.find(eid);
-    if (it != g_publishedHash.end()) published = it->second;
-
-    const bool baseMatches = (baseHash != 0 && baseHash == published);
-    bool hostChangeInFlight = false;
-    if (baseMatches) {
-        // The author edited the published world; still refused if the host changed this container
-        // inside the conflict window, a change in flight the author provably had not seen.
-        auto lc = g_localChangeMs.find(eid);
-        hostChangeInFlight = (lc != g_localChangeMs.end() &&
-                              NowMs() - lc->second <= kConflictWindowMs);
-        if (!hostChangeInFlight) return true;
-    }
-
-    ++g_conflictRejects;
-    // The failed condition is named: reported together, a never-published container once read as a
-    // racing host change.
-    UE_LOGW("container_contents: CONFLICT eid=%u slot %u -- %s (author base=%llu, host published=%llu). "
-            "Write REFUSED; re-publishing host truth to the author. Total refused this session: %llu",
-            eid, static_cast<unsigned>(authorSlot),
-            hostChangeInFlight ? "a HOST-side change is in flight within the conflict window"
-                               : "the author edited a state the host has not published (STALE BASE)",
-            static_cast<unsigned long long>(baseHash),
-            static_cast<unsigned long long>(published),
-            static_cast<unsigned long long>(g_conflictRejects));
-    return false;
-}
-
 Ingest ParseAndApply(const std::vector<uint8_t>& blob, uint32_t& outEid, uint8_t senderSlot) {
     size_t o = 0;
     uint8_t op = 0;
@@ -567,7 +517,8 @@ Ingest ParseAndApply(const std::vector<uint8_t>& blob, uint32_t& outEid, uint8_t
     if (!RdU64(blob, o, baseHash)) return Ingest::Handled;
     // Host arbitration before anything is touched; a refusal is answered by re-publishing the
     // host's truth to the author, so it converges instead of sitting on a divergent view.
-    if (IsHost() && senderSlot != 0 && !HostAcceptsClientWrite(outEid, baseHash, senderSlot)) {
+    if (IsHost() && senderSlot != 0 &&
+        wp::Accept(outEid, baseHash, senderSlot, NowMs()) != wp::Decision::Accept) {
         auto* s = g_session.load(std::memory_order_acquire);
         void* actor = LivePropActor(outEid);
         void* inv = actor && IsContainerActor(actor) ? InventoryOf(actor) : nullptr;
@@ -654,7 +605,7 @@ sg::Verdict OnVerbEntry(const sg::Call& br) {
     if (eid == static_cast<uint32_t>(coop::element::kInvalidId)) return sg::Verdict::Run;
     g_dirty.insert(eid);   // resolve identity AT THE EDGE; deref nothing later
     // The local change is stamped, so the host can tell a stale client write from a clean one.
-    g_localChangeMs[eid] = NowMs();
+    wp::NoteLocalChange(eid, NowMs());
     // And the applied hash is dropped: it means "an identical blob is a no-op" only while our state
     // still equals what we applied, and after our own mutation a corrective re-publish of the
     // unchanged host truth would look like a duplicate; a client whose write was refused once kept
@@ -822,12 +773,10 @@ bool ContentsDigest(uint32_t eid, int32_t& outCount, float& outVol) {
 void OnDisconnect() {
     g_dirty.clear();
     g_retry.clear();
-    g_localChangeMs.clear();
-    g_conflictRejects = 0;
+    wp::Reset();
     g_parked.clear();
     g_joinBracketOpen = false;  // session state must not survive the session
     g_sentHash.clear();
-    g_publishedHash.clear();
     g_baseHash.clear();
     g_appliedHash.clear();
     g_asm.Clear();
