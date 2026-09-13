@@ -42,6 +42,9 @@ constexpr const wchar_t* kMenuLevel = L"menu";
 // The class that owns the travel author, and the discriminator against its namesake.
 constexpr const wchar_t* kTravelAuthorClass = L"lib_C";
 
+// Gameplay ticks between class-resolve attempts (the pump runs at 125 Hz, so ~1 Hz).
+constexpr uint32_t kResolveEveryNTicks = 125;
+
 // The one author allowed to reach the menu from inside a session: the pause menu's own quit.
 // The discrimination has to happen here because the author is a PARAMETER of `loadLevel` -- all
 // 26 sites pass `this` as `__WorldContext` -- and it is gone one hop later, where `transition`
@@ -62,6 +65,11 @@ std::atomic<unsigned long long> g_cancelled{0};
 // Rate latch for the sub-level line: a trigger volume can fire its travel more than once, and this
 // seam does not act on those at all, so they are logged as a trail rather than per call.
 unsigned long long g_subLevelLogged = 0;
+
+// The class resolve runs at ~1 Hz of the gameplay tick, not every tick: a FindClass MISS walks
+// every UObject slot and is never cached, so an unthrottled retry is a full-array scan per frame
+// for as long as the widget class is not loaded. The player_damage / wisp_attack Install shape.
+uint32_t g_resolveThrottle = 0;
 
 // One-shot warnings, so a permanent shortfall says so once instead of once per travel.
 bool g_saidNoQuitClass = false;
@@ -215,7 +223,8 @@ void Tick() {
     // This lane owns its own enable: the gate's switch is shared, and riding another consumer's
     // would leave this watch green and its callback silent the moment that consumer retired.
     sg::SetEnabled(true);
-    if (!g_quitAuthorClass.load(std::memory_order_relaxed)) {
+    if (!g_quitAuthorClass.load(std::memory_order_relaxed) &&
+        (g_resolveThrottle++ % kResolveEveryNTicks) == 0) {
         if (void* c = R::FindClass(kQuitAuthorClass)) {
             g_quitAuthorClass.store(c, std::memory_order_release);
             UE_LOGI("run_end_travel: %ls resolved (%p) -- the player's own quit-to-menu is now "
