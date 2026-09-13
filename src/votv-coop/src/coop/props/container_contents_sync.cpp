@@ -6,6 +6,7 @@
 
 #include "coop/props/prop_save_data.h"
 #include "coop/props/container_contents_sync.h"
+#include "coop/props/container_park.h"
 #include "coop/props/container_write_policy.h"
 
 #include "coop/element/registry.h"
@@ -38,6 +39,7 @@ namespace SR = ue_wrap::save_record;
 namespace W  = coop::save_record_wire;
 namespace sg = ue_wrap::script_gate;
 namespace wp = coop::props::container_write_policy;
+namespace pk = coop::props::container_park;
 
 using coop::element::LivePropActor;
 
@@ -97,17 +99,6 @@ std::set<uint32_t> g_retry;
 // live exactly then). Atomic exchange, so the consume is one-shot. A personal-inventory take arms
 // it too, harmlessly; the drain's own gates filter those.
 std::atomic<bool> g_takeObjInFlight{false};
-
-// Inbound blobs for an eid not yet resolvable (birth skew, a mid-activity join).
-struct Parked { std::vector<uint8_t> blob; std::chrono::steady_clock::time_point at; };
-std::map<uint32_t, Parked> g_parked;
-constexpr int kParkTtlSec = 30;
-// Park aging is event-anchored, not wall clock from arrival: a contents slice rides the normal
-// lane while its PropSpawn rides bulk, so under backpressure the contents systematically arrive
-// first, and a slow link can hold the bulk stream past any fixed TTL with no wire loss. While our
-// own join snapshot is in flight parks do not age; at Complete every park is re-stamped and the
-// TTL runs from there as a leak guard (Complete is lane-ordered after every PropSpawn it brackets).
-bool g_joinBracketOpen = false;
 
 uint64_t NowMs() {
     return static_cast<uint64_t>(
@@ -564,24 +555,12 @@ Ingest ParseAndApply(const std::vector<uint8_t>& blob, uint32_t& outEid, uint8_t
     return outcome;
 }
 
-void SweepParked() {
-    if (g_parked.empty()) return;
-    const auto now = std::chrono::steady_clock::now();
-    for (auto it = g_parked.begin(); it != g_parked.end();) {
-        uint32_t eid = 0;
-        // A parked blob is always one a receiver could not resolve; the host never parks a client
-        // write, so slot 0 is the author for every replay.
-        if (ParseAndApply(it->second.blob, eid, /*senderSlot=*/0) != Ingest::Park) {
-            it = g_parked.erase(it);
-        } else if (!g_joinBracketOpen &&
-                   now - it->second.at > std::chrono::seconds(kParkTtlSec)) {
-            UE_LOGW("container_contents: parked eid=%u expired after %ds unresolved -- dropped",
-                    it->first, kParkTtlSec);
-            it = g_parked.erase(it);
-        } else {
-            ++it;
-        }
-    }
+// The park's replay: true when the blob was dealt with, false while its container still does not
+// resolve. A parked blob is always one a receiver could not resolve; the host never parks a client
+// write, so slot 0 is the author for every replay.
+bool ReplayParked(const std::vector<uint8_t>& blob) {
+    uint32_t eid = 0;
+    return ParseAndApply(blob, eid, /*senderSlot=*/0) != Ingest::Park;
 }
 
 // The verb edge.
@@ -630,17 +609,7 @@ sg::Verdict OnVerbEntry(const sg::Call& br) {
 }  // namespace
 
 // From event_feed's client-side SnapshotBegin and SnapshotComplete dispatch, on the game thread.
-void NoteJoinSnapshotBracket(bool open) {
-    if (g_joinBracketOpen == open) return;
-    g_joinBracketOpen = open;
-    if (!open) {
-        const auto now = std::chrono::steady_clock::now();
-        for (auto& kv : g_parked) kv.second.at = now;
-        if (!g_parked.empty())
-            UE_LOGI("container_contents: snapshot bracket closed -- %zu park(s) re-stamped, "
-                    "TTL runs from now (leak-guard)", g_parked.size());
-    }
-}
+void NoteJoinSnapshotBracket(bool open) { pk::NoteJoinBracket(open); }
 
 // Read-and-clear of the takeObj-in-flight latch; prop_drop_intent consumes it at a FinishSpawn
 // enqueue to admit that birth, and only that birth, as a host-authoritative drop intent. One-shot
@@ -692,7 +661,7 @@ void Tick() {
     // Both peers drain: the host fans its changes out, a client ships the container it mutated to
     // the host, which arbitrates and relays. A client also sweeps its parked inbound blobs.
     DrainDirty(s);
-    if (!IsHost()) SweepParked();
+    if (!IsHost()) pk::Sweep(&ReplayParked);
 }
 
 void OnContentsChunk(const coop::net::BlobChunkPayload& p, uint8_t senderSlot) {
@@ -717,8 +686,7 @@ void OnContentsChunk(const coop::net::BlobChunkPayload& p, uint8_t senderSlot) {
     if (outcome == Ingest::Park) {
         // The container's element is not bound yet: parked (latest wins per eid) and retried by the
         // sweep until the TTL.
-        g_parked[eid] = Parked{std::move(blob), std::chrono::steady_clock::now()};
-        UE_LOGI("container_contents: eid=%u not resolvable yet -- parked (TTL %ds)", eid, kParkTtlSec);
+        pk::Admit(eid, std::move(blob));
         return;
     }
     // Only what the host applied is relayed: a refused, malformed, non-container, boundary-refused
@@ -787,8 +755,7 @@ void OnDisconnect() {
     g_dirty.clear();
     g_retry.clear();
     wp::Reset();
-    g_parked.clear();
-    g_joinBracketOpen = false;  // session state must not survive the session
+    pk::Reset();
     g_sentHash.clear();
     g_baseHash.clear();
     g_appliedHash.clear();
