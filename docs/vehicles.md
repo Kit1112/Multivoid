@@ -27,7 +27,7 @@ pose through the game's own teleport. This is MTA's vehicle shape, and the one t
 not do is author collision damage: the seven hit delegates are intercepted on a peer that does
 not own the rig's tick and dispatched with a zeroed impulse, so the notification runs whole and
 only the damage dies (`coop/interactables/atv_hit_guard`). Cancelling the wheel delegates
-outright cost a mirror its rig shape, a sag of thirty to forty centimetres, until the cause was
+outright cost a mirror its rig shape, a sag of twenty-five to forty centimetres, until the cause was
 found.
 
 ### Two predicates

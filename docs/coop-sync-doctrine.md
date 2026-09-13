@@ -97,6 +97,25 @@ restorable; a latch that cannot restore what it took is worse than one that refu
 - Never park by neutering the entity, deleting constraints or swapping in a fake actor class:
   keep the engine's entity and drive it, the parallel class hierarchy.
 
+Classify a parking before writing it, in a comment at the site. A parking is the root-cause fix
+when it removes a **second author**: the parked side was independently rolling a non-authoritative
+outcome, the state it would have produced is replicated, and afterwards exactly one peer authors
+it. It is a crutch when the parked side goes quiet because it is **blind**: the state was never
+replicated, and the parking hides the gap rather than the divergence. What decides it is the count
+of authors before and after, never how small the parking is.
+
+Two things follow. The order is forced: while a state is unreplicated, parking its producer is a
+blindfold, so the state crosses first and the parking follows it. And when the parked body carries
+side effects the receiver still needs, park the one authored **output** instead of the body: the
+ATV's seven collision delegates dispatch whole with a zeroed impulse, because cancelling them also
+destroyed `wheelsOnSurface` and sank the mirror 25-40 cm into the ground.
+
+Three shapes look like parkings and are not, so they do not take this test: an intent (a local verb
+refused and relayed, the authority's result coming back), an echo suppression (the applying peer
+silencing its own observer while it writes a received value), and a wrong-subject cancel (a body
+dispatched on a mirror that would write a per-machine singleton, which the subject's own machine
+computes for itself).
+
 ## Step 5: identity at birth, one row per actor
 
 Identity is assigned at the birth seam, a spawn catch, a drop intent or a birth channel, never

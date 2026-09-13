@@ -77,6 +77,24 @@ performs (`coop/props/prop_drop_intent`):
 
 Any other keyed prop a client creates is dropped at that door and never reaches the host.
 
+### The data row a prop carries
+
+A prop resolves one row of the game's master table when it initialises -- `list_props`, 2,471 rows,
+keyed by the prop's own name -- and copies the whole row into `propData` (all but one path: a prop
+spawned with `ingoreFix` set takes only the mesh from the row and keeps its own flags). Four of
+its seventeen fields are switches the game itself reads on the interaction path: `heavy` picks
+lift versus drag,
+`canHold` refuses the grab with the same "too heavy" hint a heavy prop gets, `canCollect` keeps the
+prop out of the pocket, and `ignoreInteractions` makes the prop no target at all -- the use press
+plays the deny sound and returns, and the look-at prompt never appears over it. In the shipped
+table 188 rows are heavy, 196 refuse holding, 28 refuse collecting and 8 ignore interactions; a
+prop whose name matches no row is holdable and collectable.
+
+This mod reads exactly one of them, `heavy`. That costs nothing wherever the game's own trace
+chooses the subject, because the game applies the rest itself; it costs something wherever a lane
+picks the subject on its own, which today is the client's pile cone described in
+[piles.md](piles.md).
+
 ### Holding, throwing, dropping
 
 While a prop is held, its holder owns it. The holder streams the held prop's world transform

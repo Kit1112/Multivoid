@@ -1,14 +1,18 @@
-// coop/interactables/garbage_sync.cpp -- stop the open-container per-tick crash when picking
-// up a garbage pile on the client. The open container's tick and pickup check walk an array
-// of contained actors every tick; on the client, after a save load and a per-peer divergent
-// underground spawner, the array holds pointers to entities the host spawned but the client
-// never did (or the reverse), and walking them dereferences a freed actor. Local-only pickup
-// mechanics (the container's mesh, collision and physics-handle grab) do not need that
-// blueprint body; cancelling it on the client removes the crash without touching the
-// held-pose stream or the prop pose and release sync that already works for these actors.
-// The cancel is gated on class: only the garbage container (and any future garbage-only
-// subclass of the open container) cancels; storage suitcases, drawers and other open
-// containers tick normally.
+// coop/interactables/garbage_sync.cpp -- the client's garbage container runs no brain of its own.
+// ONE body is cancelled, prop_openContainer_C::ReceiveTick, on instances whose class is exactly
+// prop_garbageContainer_C; every other open container ticks normally.
+//
+// Read from the cook: upright and not held, that body walks a fresh Box.GetOverlappingActors query
+// every 0.25 s and APPENDS each accepted prop to itemsInside, calling setPropProps and
+// K2_AttachToActor on it; propAwoken then unfreezes every prop in the array and writes the
+// container's own velocities into it, most often when a player grabs one of them rather than on a
+// tip-over. So the cancel stops a real second author (on a client those props are mirrors) AND
+// blinds the client, which never learns its contents -- docs/piles.md has the visible half, the
+// crutch register the root fix and the crash claim it still owes.
+//
+// checkPickup is NOT hooked and cannot be: its three callers are EX_LocalVirtualFunction inside
+// the ubergraph, invisible to a ProcessEvent interceptor (docs/coop-dispatch-visibility.md). The
+// canHold/canCollect flags freeze because the tick that reaches them is cancelled.
 
 #include "coop/interactables/garbage_sync.h"
 
@@ -44,8 +48,8 @@ std::atomic<bool> g_installed{false};
 // every dispatch, on the blueprint dispatch hot path, one heap allocation per frame per open
 // container; a pointer compare allocates nothing. Only the garbage container is the
 // open-container subclass that matters (the garbage bag derives from the prop base and the
-// bin from the container class, neither on the intercepted target); a future garbage-only
-// subclass would need the superclass walk here.
+// bin from the container class, neither on the intercepted target). The compare is EXACT, so a
+// future garbage-only subclass of it would not be caught and would need a descendant test here.
 void* g_garbageContainerCls = nullptr;
 
 bool IsGarbageInstance(void* self) {
@@ -62,27 +66,15 @@ bool OnOpenContainerReceiveTickPre(void* self, void* /*params*/) {
     // function-body cancel self-restores once gated on running.
     if (!s || !s->running() || s->role() != coop::net::Role::Client) return false;
     if (!IsGarbageInstance(self)) return false;
-    // A throttled cancel log, so the path proves it fires the first few times while a 60 Hz
-    // tick over many garbage containers does not drown the log. The same throttle policy as the
-    // grab observer's per-tick logs.
+    // A throttled cancel log, so the path proves it fires the first few times while a 4 Hz tick
+    // (the class's own TickInterval is 0.25 s) over many garbage containers does not drown the
+    // log. The same throttle policy as the grab observer's per-tick logs.
     static std::atomic<uint64_t> sCount{0};
     const uint64_t n = sCount.fetch_add(1, std::memory_order_relaxed) + 1;
     if (n <= 3 || (n % 300) == 0) {
         UE_LOGI("garbage_sync[ReceiveTick PRE]: cancelling BP body on client garbage container %p (call #%llu)",
                 self, static_cast<unsigned long long>(n));
     }
-    return true;
-}
-
-bool OnOpenContainerCheckPickupPre(void* self, void* /*params*/) {
-    auto* s = LoadSession();
-    // Gated on running, not a bare role: the role is the config's, and the stop never resets it,
-    // so a bare role gate keeps cancelling in solo play after a client session ends. A
-    // function-body cancel self-restores once gated on running.
-    if (!s || !s->running() || s->role() != coop::net::Role::Client) return false;
-    if (!IsGarbageInstance(self)) return false;
-    UE_LOGI("garbage_sync[checkPickup PRE]: cancelling BP body on client garbage container %p",
-            self);
     return true;
 }
 
@@ -246,40 +238,37 @@ void Install() {
         if ((sSpawnerTry++ % 125) == 0) InstallSpawnerSuppressors();
     }
     if (g_installed.load(std::memory_order_acquire)) return;
-    void* cls = R::FindClass(L"prop_openContainer_C");
-    if (!cls) {
+    // The filter class is also the resolve subject: ask it which body ITS instances run, so a cook
+    // that ever gives the garbage container its own ReceiveTick is hooked on that one instead of on
+    // the base it would override (the R-11 rule; the declarer is logged when it is not this class).
+    void* garbageCls = R::FindClass(L"prop_garbageContainer_C");
+    if (!garbageCls) {
         // The class is not loaded yet; retry on the next Install call. No noise: the class loads on
         // the first world enter, so this is expected for the first seconds after boot.
         return;
     }
-    // Resolve and cache the garbage-container class for the per-tick filter. Gating the install
-    // on both classes being loaded avoids the interceptors firing while the class is null, which
-    // would let the body run on a garbage container (the filter false-negative) and re-trigger
-    // the crash this module exists to prevent. Both classes load at world enter from the same
-    // asset tree, so they typically resolve together.
-    void* garbageCls = R::FindClass(L"prop_garbageContainer_C");
-    if (!garbageCls) {
-        // The same quiet retry as the open-container case above.
-        return;
-    }
     g_garbageContainerCls = garbageCls;
-    void* tickFn      = R::FindFunction(cls, L"ReceiveTick");
-    void* checkPickup = R::FindFunction(cls, L"checkPickup");
-    if (!tickFn || !checkPickup) {
-        UE_LOGW("garbage_sync: UFunction(s) not found on prop_openContainer_C (tick=%p checkPickup=%p) -- BP class loaded but missing the expected names; CXX dump may be stale",
-                tickFn, checkPickup);
+    void* declarer = nullptr;
+    void* tickFn = R::FindDispatchFunction(garbageCls, L"ReceiveTick", &declarer);
+    if (!tickFn) {
+        UE_LOGW("garbage_sync: ReceiveTick not found on prop_garbageContainer_C or its supers -- "
+                "BP class loaded but missing the expected name; the CXX dump may be stale");
         return;
     }
-    const bool okTick  = GT::RegisterInterceptor(tickFn,      &OnOpenContainerReceiveTickPre);
-    const bool okPick  = GT::RegisterInterceptor(checkPickup, &OnOpenContainerCheckPickupPre);
-    if (!okTick || !okPick) {
-        UE_LOGE("garbage_sync: RegisterInterceptor failed (tick=%d checkPickup=%d) -- interceptor table full?",
-                okTick ? 1 : 0, okPick ? 1 : 0);
+    if (declarer != garbageCls) {
+        UE_LOGI("garbage_sync: ReceiveTick is declared on %ls -- one object for that family, so the "
+                "callback filters on the instance",
+                R::ToString(R::NameOf(declarer)).c_str());
+    }
+    const bool okTick = GT::RegisterInterceptor(tickFn, &OnOpenContainerReceiveTickPre);
+    if (!okTick) {
+        UE_LOGE("garbage_sync: RegisterInterceptor(ReceiveTick) failed -- interceptor table full?");
         return;
     }
     g_installed.store(true, std::memory_order_release);
-    UE_LOGI("garbage_sync: installed -- prop_openContainer_C::ReceiveTick + checkPickup PRE-interceptors (client-side, garbageContainer UClass=%p)",
-            g_garbageContainerCls);
+    UE_LOGI("garbage_sync: installed -- ReceiveTick PRE-interceptor (client-side, garbageContainer "
+            "UClass=%p, declared on %ls)",
+            g_garbageContainerCls, R::ToString(R::NameOf(declarer)).c_str());
 }
 
 }  // namespace coop::garbage_sync

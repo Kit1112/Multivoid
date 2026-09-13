@@ -154,8 +154,8 @@ during the window arrives as a position correction after the snapshot.
 |---|---|
 | The clump mirror is a static-mesh stand-in, not the engine's actor with its brain parked; two mirror implementations of one concept compile together, and the aim cone that exists only because a proxy cannot be looked at survives with it | `[V]` `coop/props/trash_proxy`, `coop/props/native_pile_mirror`; the rebuild is described under "What replaces it" above and queued on [roadmap.md](roadmap.md) |
 | The proxy has no collision: a player walks through a carried or flying clump, and the aim cone ignores walls | `[V]` `coop/props/trash_proxy` |
-| A client's grab resolves the aimed pile by testing every pile proxy against a camera cone, on each press | `[V]` `coop/props/trash_use_intercept` |
-| Trash dropped into a garbage container updates the container only for the peer who dropped it; the container's contents are not synced, and the client skips the Blueprint that would walk a stale list | `[V]` `coop/interactables/garbage_sync` |
+| A client's grab resolves the aimed pile by testing every pile proxy against a camera cone, on each press. The cone is a dot product and nothing else, so unlike the game's own trace it is stopped by no wall and consults none of the per-prop interaction flags the game's data table carries | `[V]` `coop/props/trash_use_intercept`, `coop/props/trash_proxy`; the flags and their native readers are listed in [props.md](props.md) |
+| Trash dropped into a garbage container updates the container on the host only: every client's container has its brain cancelled, so none of them -- not even the one whose player dropped the trash -- ever learns what is inside it, and the two pickup flags the game writes from those contents stay frozen | `[V]` `coop/interactables/garbage_sync`, and the cancelled Blueprint body read from the cook |
 | Dispenser piles born by an event carry per-process keys and never resolve across peers | `[V]` `coop/props/trash_pile_sync` |
 | The join-window bind is by save-time position; the sidecar that replaces it is off by default | `[V]` see [join.md](join.md) |
 
