@@ -129,10 +129,14 @@ effect and the destroy binding are the game's (`coop/props/prop_stick_sync`).
 
 A container's contents are not on the container: every container reads them from one global
 per-peer array in the save object, addressed by an index the container holds, and every mutating
-verb runs inside the Blueprint where no hook sees it. So the host authors the contents
-(`coop/props/container_contents_sync`): one slice of its array per live container is sent at a
-joiner's ready edge and on change, and an extraction on a client is a container-extract birth
-through the intent door above. The open and closed state is a keyed-device channel like a
+verb runs inside the Blueprint, below the two dispatch seams a hook can intercept. The
+script-body gate does see it -- that is how this lane learns a container changed -- but it runs on
+the presser's own machine, and no local body can wait for an answer from across the network. So
+the peer whose verb fired authors the contents and the host arbitrates them (`coop/props/container_contents_sync`): one slice of its
+array per live container is sent at a joiner's ready edge and on change, a client's slice is
+accepted only if its author could have reached that container, has not sent more in the last
+second than an honest client produces, and edited the truth the host last published, and an
+extraction on a client is a container-extract birth through the intent door above. The open and closed state is a keyed-device channel like a
 door's ([devices.md](devices.md)). The full break-and-spill behaviour, and the single-slot verbs, are reverse-engineered
 and designed and not built.
 

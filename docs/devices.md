@@ -43,15 +43,16 @@ the state.
 A container's contents are not on the container. Every one of them reads from a single global
 per-peer array, `saveSlot.GObjStack`, addressed by an index the actor holds alongside a cached
 volume. That array reaches a client once, inside the join save-transfer blob, and never again on
-its own, because every verb that mutates it dispatches internally to the Blueprint and so is
-invisible to both hook seams (`docs/coop-dispatch-visibility.md`). Without a lane of its own, a
+its own, because every verb that mutates it dispatches internally to the Blueprint, where neither
+hook seam can intercept it and only the script-body gate can watch it
+(`docs/coop-dispatch-visibility.md`). Without a lane of its own, a
 drone delivery landed full on the host and empty on the client.
 
 The seam is a gate on the Blueprint body of the add and take verbs, and it only marks the
 container dirty -- it reads no arguments and takes no action, which is what makes it correct for
 every caller. The peer whose verb fired then authors the slice on the next sweep. There is no
-request the host could refuse: the item has already moved on the presser before any seam of ours
-exists. So the host arbitrates instead, and a client's slice has to pass four things: the author
+request the host could refuse: the gate fires at the body's entry, on the presser's own machine,
+and the item has moved there before an answer from anywhere else could arrive. So the host arbitrates instead, and a client's slice has to pass four things: the author
 is close enough to have used the container (the game's own reach, widened by the container's size
 and by how far a player can move while their position is in flight), it has not sent more slices
 in the last second than any honest client can produce, it edited the truth the host last
