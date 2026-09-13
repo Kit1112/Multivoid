@@ -1,6 +1,7 @@
 // coop/world/event_fire_sync.h -- HOST-AUTHORITATIVE scheduled-event replay channel.
 // VOTV's scripted story events (list_events DataTable, 69 rows) fire through saveSlot::settime
-// -> eventer.runEvent, a BP->BP EX_LocalVirtualFunction chain invisible to every hook we own,
+// -> eventer.runEvent, a BP->BP EX_LocalVirtualFunction chain below both hook seams (the
+// script-body gate watches such bodies; neither ProcessEvent nor a Func patch sees this one),
 // and level-placed event flips ride no other lane. Three mechanisms carry the channel, the
 // first two bytecode-verified: the HOST polls saveSlot.passEvents for GROWTH, because settime
 // appends each fired row there while runEvent never touches the array; the CLIENT holds

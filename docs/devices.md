@@ -191,7 +191,8 @@ puppet included (`coop/items/coingun_sync`). The client is told the result.
 
 A base runs dozens of signal boxes, and the game breaks them on its own timer. Nothing about that
 is replicated, so each peer's breaker would fire on its own dice and author a false "server down"
-on one screen only. The break and fix verbs are Blueprint-internal and cannot be intercepted, so
+on one screen only. The break and fix verbs run inside the Blueprint, where the script-body gate can watch them but
+only on the machine running them -- a watch cannot make the other peers roll the same dice -- so
 the state is mirrored instead: the host polls the per-box broken flag and the three totals the
 gamemode keeps for the farm, broadcasts on a change, and a client writes the flag and calls the
 box's own re-skin, which is notify-free and so repaints without firing the notice a real break

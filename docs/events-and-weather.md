@@ -36,7 +36,7 @@ fog controller, the super fog) that ramps the height-fog density over its own du
 destroys itself; the host mirrors the actor's life (`coop/world/weather_fog`). A lightning
 strike is a transient actor; the host observes its spawn and sends the location
 (`coop/world/weather_lightning`). The red sky is a story event actor whose organic trigger is a
-one-percent roll in the new-day handler on every peer, dispatched where no hook sees it, so the
+one-percent roll in the new-day handler on every peer, dispatched inside the Blueprint, so the
 host polls the state field for the edge and the client's own roll is killed at birth: every
 new-day weather birth (red sky, black fog, rolling fog) funnels through the engine's
 finish-spawning call, where a client-side catch destroys any birth the host did not command

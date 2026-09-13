@@ -2,7 +2,8 @@
 // Aprop_C, so no prop lane synced a coin: a client's sale spun up coins on its own machine and
 // credited a local balance the host's next broadcast erased, while the sold prop's destroy
 // replicated. The shape is a presser-authored outcome with a host-derived value: the client's
-// verb cannot be cancelled, so its own coins are captured at the FinishSpawningActor POST and
+// verb is not cancelled -- the sale is legitimate, only its VALUE is the host's -- so its own
+// coins are captured at the FinishSpawningActor POST and
 // destroyed at the next net-pump barrier (never inside the verb's bracket), commit-or-release per
 // shot; the client sends CoinGunSell naming the prop by save key, eid as the keyless fallback,
 // ahead of its unchanged PropDestroy on the same lane, so the host handles the sale while its

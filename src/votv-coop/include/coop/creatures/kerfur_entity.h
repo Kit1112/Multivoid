@@ -5,10 +5,10 @@
 // verbs copy no id), so re-deriving identity from class and nearest pose on every conversion
 // across two eid spaces produced the duplicate-and-drop loop. The fix, the MTA set-model
 // shape: one host-allocated, host-range kerfur id per logical kerfur, spanning both forms.
-// The radial-menu conversion is invisible to the dispatch detour, so the client's local
-// conversion is unavoidable and claim-and-adopt stays, anchored to this stable id; clients
-// never mint a kerfur eid. The registry model: a kerfur entity is a host-only authority
-// element (its id reserved through the host allocator), held in a host-only table and not
+// A peer's radial-menu conversion has already happened by the time any watch of ours could
+// answer, so the client's local conversion is unavoidable and claim-and-adopt stays, anchored to
+// this stable id; clients never mint a kerfur eid. The registry model: a kerfur entity is a
+// host-only authority element (its id reserved through the host allocator), held in a table and not
 // in the NPC or prop mirror managers; the rendered form is a normal NPC or prop mirror at its
 // own per-form host-range eid in the existing managers, so the pose and physics pipelines
 // are unchanged. The kerfur id is the durable handle; the per-form eids are the wire eids,

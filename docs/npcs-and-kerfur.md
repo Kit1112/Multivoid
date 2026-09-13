@@ -90,7 +90,7 @@ is what follows.
 It has two forms of two classes: the active robot, `kerfurOmega_C`, a character; and the
 powered-off object, `prop_kerfurOmega_C`, a prop. Turning it off spawns the prop at the robot's
 transform and destroys the character; turning it on does the reverse. Both run inside the
-Blueprint where no hook fires, and the game gives the kerfur no stable identity: its key is
+Blueprint, and the game gives the kerfur no stable identity: its key is
 re-minted at random on every peer at every load. So the mod keeps one host-only kerfur id per
 logical robot across both forms (`coop/creatures/kerfur_entity`). The rendered form is an
 ordinary character or prop mirror at its own element id, and on a conversion the kerfur id is
@@ -154,7 +154,7 @@ wisp in flight is transient and owes nothing.
 | The Omega's take-object, pat, equipment, kill and sit-on-the-ATV verbs are not synced | `[V]` `coop/creatures/kerfur_command`, the verb table |
 | The Omega's floppy state is not synced, so a relayed get-reports diverges on its result; its accessories and carried object likewise | `[V]` no lane under `coop/creatures` carries them |
 | Only one stalker class is owned per peer so far | `[V]` `coop/creatures/owner_entity_sync`, the member table |
-| The conversion is detected by a poll, five times a second, not at the verb | `[V]` `coop/creatures/kerfur_convert`; the verb is invisible to every seam that can cancel |
+| The conversion is detected by a poll, five times a second, not at the verb | `[V]` `coop/creatures/kerfur_convert`; the lane reads the result rather than the call, because a peer's own conversion has already happened by the time any watch of ours runs |
 | Ten ambient spawner families are neither mirrored nor parked, so each peer grows its own deer, hexahives, walking trees and the rest | `[V]` they appear in no lane under `coop/creatures` and in no row of `coop/world/spawn_authority` |
 
 ## Code map

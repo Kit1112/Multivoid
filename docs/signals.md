@@ -25,8 +25,9 @@ tape caddy accrues two reels that the daily task grades; and every catch slews a
 big dishes to one target. Two terms of the rate formula and the dish slews were per-peer
 randomness, which is where the divergence came from.
 
-Every desk verb dispatches inside the Blueprint where no hook fires, so the lanes poll the
-resulting state instead of intercepting the verb. The desk's keyboard enters through one widget's
+Every desk verb dispatches inside the Blueprint. The lanes poll the resulting state rather than
+intercepting the verb, because the state is what the other peers need and a watch fires only on
+the machine that ran the body. The desk's keyboard enters through one widget's
 key router, the one seam the engine dispatches, and the desk's sounds are played by
 presser-local paths, so the effects are forwarded at the native audio seam.
 

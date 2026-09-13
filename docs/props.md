@@ -28,7 +28,7 @@ Nothing about a prop is reflected as replication, so the mod watches four seams:
 |---|---|
 | came from the save | the shared discovery pass at world start (`coop/element/object_scan_hub`, over the object index the engine's own notifications keep) |
 | was born by a spawner (mushrooms, pinecones, forage) | the prop's initialisation on the host; a client's shared-world spawners are parked (`coop/world/spawn_authority`) and the host mirrors what its own produce (`coop/props/host_spawn_watcher`) |
-| was spawned by the spawn menu or extracted from a container on the host | the engine's finish-spawning call, because those births run their initialisation inside the Blueprint where no hook sees it |
+| was spawned by the spawn menu or extracted from a container on the host | the engine's finish-spawning call, because those births run their initialisation inside the Blueprint and that call is where the actor is finished |
 | was destroyed | the engine's destroy call on either role: eaten, broken, picked up into a pocket (`coop/props/prop_lifecycle`); a prop that vanishes inside a Blueprint (the truck, culling, a lifespan) is caught by the host's death-watch and destroyed by id on every peer (`coop/props/registry_reaper`) |
 
 A birth message carries the prop's class, key, id, transform and physics flags. For a class that
@@ -173,7 +173,7 @@ lane did not have in front of it:
   Set it on every mirror, in the deferred window before the spawn finishes. This bites hardest on
   the HOST, which holds mirrors of hooks its clients fired and owns the only save in the session.
 - **Transitions are polled, not caught at a spawn hook.** The player's fire path is
-  Blueprint-internal and invisible to the dispatch layer, and the player already holds a pointer
+  Blueprint-internal, and the player already holds a pointer
   to their own deployed hook. One field read is the whole discovery channel, and it is more
   precise than a class scan: a variant of the hook class is placed by the level and attaches
   itself on every peer, so a scan that adopts by class doubles it.
