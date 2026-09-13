@@ -25,16 +25,17 @@ struct ClassDesc {
     int32_t offDirection = -1;  // TEnumAsByte<ETimelineDirection> right after alpha
     void*   updateFn = nullptr;     // a__UpdateFunc (rotates the axis from alpha)
     void*   finishedFn = nullptr;   // a__FinishedFunc (locker: close-slam + collision restore)
+    void*   verbFn = nullptr;       // the family's own apply verb, resolved WITH the class
     int32_t offTimeline = -1;   // UTimelineComponent* A
     int32_t offTrigger = -1;    // locker only: AActor* triggerOnOpen (the davyJones gate)
 };
 
-ClassDesc g_locker;   // Alocker_C (+ subclasses locker_personal_C / locker_death_C)
-ClassDesc g_console;  // AdroneConsole_C
-void* g_lockerOpenFn = nullptr;         // Alocker_C::Open(bool opened) -- the full native verb
-void* g_consoleButtonsFn = nullptr;     // AdroneConsole_C::setButtonsCollision()
+ClassDesc g_locker;   // Alocker_C (+ subclasses locker_personal_C / locker_death_C); verb = Open(bool)
+ClassDesc g_console;  // AdroneConsole_C; verb = setButtonsCollision()
 void* g_timelinePlayFn = nullptr;       // UTimelineComponent::Play
 void* g_timelineReverseFn = nullptr;    // UTimelineComponent::Reverse
+int   g_timelineTries = 0;              // bounded: the component class is engine-side and always up
+constexpr int kMaxTimelineTries = 5;
 std::atomic<bool> g_anyResolved{false};
 
 // Alpha 0.9.0-n fallbacks (CXXHeaderDump locker.hpp / droneConsole.hpp; the
@@ -61,12 +62,19 @@ struct Verify {
 };
 std::vector<Verify> g_verify;  // GT-only
 
-bool ResolveClass(ClassDesc& d, const wchar_t* clsName,
+// Everything a family needs is resolved on the ONE tick its class first appears, verb included:
+// a verb resolved later, under a latch that another family already closed, is a verb never
+// resolved at all -- whichever class streams in second used to lose its own.
+bool ResolveClass(ClassDesc& d, const wchar_t* clsName, const wchar_t* verbName,
                   int32_t fbOpened, int32_t fbAlpha, int32_t fbDir, int32_t fbTimeline) {
     if (d.cls) return true;
     void* cls = R::FindClass(clsName);
     if (!cls) return false;
     d.cls = cls;
+    d.verbFn = R::FindFunction(cls, verbName);
+    if (!d.verbFn)
+        UE_LOGW("door_box: %ls::%ls unresolved -- that family's apply degrades to snap-only",
+                clsName, verbName);
     d.offOpened = R::FindPropertyOffset(cls, L"opened");
     if (d.offOpened < 0) d.offOpened = fbOpened;
     d.offAlpha = fbAlpha;          // GUID-mangled name -- dump offset is authoritative
@@ -110,46 +118,47 @@ void ForceSnap(void* actor, const ClassDesc& d, bool want) {
     if (d.finishedFn) { ParamFrame f(d.finishedFn); if (f.valid()) Call(actor, f); }
 }
 
+// The timeline verbs belong to no family, so they get their own bounded retry rather than a ride
+// on whichever class latched first. Bounded because a miss is a whole object-array walk and this
+// runs per pump tick.
+void ResolveTimelineVerbs() {
+    if (g_timelinePlayFn || g_timelineTries >= kMaxTimelineTries) return;
+    ++g_timelineTries;
+    if (void* tc = R::FindClass(L"TimelineComponent")) {
+        g_timelinePlayFn    = R::FindFunction(tc, L"Play");
+        g_timelineReverseFn = R::FindFunction(tc, L"Reverse");
+    }
+    if (!g_timelinePlayFn && g_timelineTries >= kMaxTimelineTries)
+        UE_LOGW("door_box: UTimelineComponent Play/Reverse unresolved in %d tries -- swings snap "
+                "instead of animating", kMaxTimelineTries);
+}
+
 }  // namespace
 
 bool EnsureResolved() {
-    if (g_anyResolved.load(std::memory_order_acquire)) {
-        // Keep trying the OTHER class lazily (cheap: FindClass early-outs once
-        // both are cached in their descs).
-        ResolveClass(g_locker, L"locker_C", kLockerOpened, kLockerAlpha,
-                     kLockerDirection, kLockerTimeline);
-        ResolveClass(g_console, L"droneConsole_C", kConsoleOpened, kConsoleAlpha,
-                     kConsoleDirection, kConsoleTimeline);
-        return true;
-    }
-    const bool l = ResolveClass(g_locker, L"locker_C", kLockerOpened, kLockerAlpha,
-                                kLockerDirection, kLockerTimeline);
-    const bool c = ResolveClass(g_console, L"droneConsole_C", kConsoleOpened, kConsoleAlpha,
-                                kConsoleDirection, kConsoleTimeline);
-    if (!l && !c) return false;
-
-    if (l && !g_lockerOpenFn) {
-        // FName case flips with load order (cooked export 'open' vs live 'Open');
-        // NameEquals is case-sensitive -- try both, log which hit.
-        g_lockerOpenFn = R::FindFunction(g_locker.cls, L"Open");
-        if (!g_lockerOpenFn) g_lockerOpenFn = R::FindFunction(g_locker.cls, L"open");
-        if (!g_lockerOpenFn)
-            UE_LOGW("door_box: locker Open verb unresolved -- locker apply degraded to snap-only");
-    }
-    if (c && !g_consoleButtonsFn)
-        g_consoleButtonsFn = R::FindFunction(g_console.cls, L"setButtonsCollision");
-    if (!g_timelinePlayFn) {
-        if (void* tc = R::FindClass(L"TimelineComponent")) {
-            g_timelinePlayFn    = R::FindFunction(tc, L"Play");
-            g_timelineReverseFn = R::FindFunction(tc, L"Reverse");
+    // Both families are tried until each has its class: whichever streams in second resolves its
+    // own verb on its own edge, which a latch shared with the first would have denied it forever.
+    // A class already held costs one pointer test; a MISS costs a whole object-array walk, and this
+    // runs per pump tick, so the attempts are throttled to one in 125 while anything is missing.
+    static uint32_t sTry = 0;
+    if (!g_locker.cls || !g_console.cls || !g_timelinePlayFn) {
+        if ((sTry++ % 125) == 0) {
+            ResolveClass(g_locker, L"locker_C", L"Open", kLockerOpened, kLockerAlpha,
+                         kLockerDirection, kLockerTimeline);
+            ResolveClass(g_console, L"droneConsole_C", L"setButtonsCollision",
+                         kConsoleOpened, kConsoleAlpha, kConsoleDirection, kConsoleTimeline);
+            ResolveTimelineVerbs();
         }
     }
+    if (g_anyResolved.load(std::memory_order_acquire)) return true;
+    if (!g_locker.cls && !g_console.cls) return false;
+
     g_anyResolved.store(true, std::memory_order_release);
     UE_LOGI("door_box: resolved locker=%p (opened@0x%04X open=%p upd=%p fin=%p) "
             "console=%p (opened@0x%04X buttons=%p) timeline Play=%p Reverse=%p",
-            g_locker.cls, g_locker.offOpened, g_lockerOpenFn, g_locker.updateFn,
+            g_locker.cls, g_locker.offOpened, g_locker.verbFn, g_locker.updateFn,
             g_locker.finishedFn, g_console.cls, g_console.offOpened,
-            g_consoleButtonsFn, g_timelinePlayFn, g_timelineReverseFn);
+            g_console.verbFn, g_timelinePlayFn, g_timelineReverseFn);
     return true;
 }
 
@@ -181,10 +190,10 @@ bool ApplyOpened(void* actor, bool want) {
     const bool triggerWired =
         isLocker && d->offTrigger >= 0 &&
         *reinterpret_cast<void* const*>(reinterpret_cast<const char*>(actor) + d->offTrigger) != nullptr;
-    if (isLocker && g_lockerOpenFn && !triggerWired) {
+    if (isLocker && g_locker.verbFn && !triggerWired) {
         // The full native verb: writes opened, plays the sound, swings the
         // Timeline, sets door collision.
-        ParamFrame f(g_lockerOpenFn);
+        ParamFrame f(g_locker.verbFn);
         if (!f.valid()) return false;
         f.Set<bool>(L"opened", want);
         if (!Call(actor, f)) return false;
@@ -199,8 +208,8 @@ bool ApplyOpened(void* actor, bool want) {
         // opened := want, refresh the button/blinklight collision, drive the
         // swing natively via the Timeline component.
         *reinterpret_cast<bool*>(reinterpret_cast<char*>(actor) + d->offOpened) = want;
-        if (d == &g_console && g_consoleButtonsFn) {
-            ParamFrame f(g_consoleButtonsFn);
+        if (d == &g_console && g_console.verbFn) {
+            ParamFrame f(g_console.verbFn);
             if (f.valid()) Call(actor, f);
         }
         void* tl = *reinterpret_cast<void* const*>(
