@@ -118,6 +118,11 @@ bool SetSpotLightInnerConeAngle(void* spotLight, float newAngle);
 // AmainPlayer_C::isRagdoll (the AnimBP gate) and ::dead; false, outs untouched, while unresolved.
 bool ReadMainPlayerRagdollState(void* mainPlayer, bool& isRagdoll, bool& dead);
 
+// Write the same `dead` bool, and read it back: wrote is not holds. The one writer of this field
+// in our layer -- death_revive clears it to end an episode, a drill sets it to author one -- so the
+// masked write and its offset live here, beside the read, instead of once per caller.
+bool WriteMainPlayerDead(void* mainPlayer, bool dead);
+
 // AmainPlayer_C::ragdollMode(ragdoll, passOut, death); (true, true, false) is the faint pose, which
 // works on an unpossessed puppet.
 bool SetMainPlayerRagdollMode(void* mainPlayer, bool ragdoll, bool passOut, bool death);

@@ -80,11 +80,6 @@ struct DeathSnapshot {
 // no UObject state and belong to the caller's own instant.
 DeathSnapshot ReadDeathState();
 
-// A BP bool by name off a live object (byte and mask). Game thread only. Exported because the
-// drills set and clear the same flags they read -- the banana drill's whole precondition is
-// `dead` true on a player who is still walking.
-bool ReadBpBool(void* obj, const wchar_t* name, bool& out);
-
 // Every UUserWidget-descended object on the viewport, by class name: a probe aimed at a suspect
 // cannot find a source nobody thought of, an enumeration can. One array walk, once per run.
 std::wstring CensusViewportWidgets();

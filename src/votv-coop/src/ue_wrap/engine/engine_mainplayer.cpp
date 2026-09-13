@@ -439,6 +439,25 @@ bool ReadMainPlayerRagdollState(void* mainPlayer, bool& isRagdoll, bool& dead) {
     return true;
 }
 
+bool WriteMainPlayerDead(void* mainPlayer, bool dead) {
+    if (!mainPlayer || !R::IsLive(mainPlayer)) return false;
+    // FindBoolProperty, not the plain-byte offset the READ above uses: a UE bool property can be a
+    // bitfield sharing its byte with its neighbours, and a byte-wide store would clear them. The
+    // read can afford the shortcut; a write cannot. Resolved once per class, then a masked store.
+    static void* sCls = nullptr;
+    static int32_t sByte = -1;
+    static uint8_t sMask = 0;
+    void* cls = R::ClassOf(mainPlayer);
+    if (cls != sCls || sMask == 0) {
+        int32_t b = -1; uint8_t m = 0;
+        if (!R::FindBoolProperty(cls, L"dead", b, m)) return false;
+        sCls = cls; sByte = b; sMask = m;
+    }
+    uint8_t* p = reinterpret_cast<uint8_t*>(mainPlayer) + sByte;
+    if (dead) *p |= sMask; else *p &= static_cast<uint8_t>(~sMask);
+    return ((*p & sMask) != 0) == dead;   // read BACK: wrote is not holds
+}
+
 bool SetMainPlayerRagdollMode(void* mainPlayer, bool ragdoll, bool passOut, bool death) {
     if (!mainPlayer || !R::IsLive(mainPlayer)) return false;
     ResolveRagdollFns();

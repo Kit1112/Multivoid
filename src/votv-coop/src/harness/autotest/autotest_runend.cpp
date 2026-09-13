@@ -15,6 +15,7 @@
 #include "harness/autotest.h"
 
 #include "harness/autotest/death_state_probe.h"
+#include "harness/autotest/gt_task.h"
 
 #include "coop/player/death_revive.h"
 #include "coop/player/run_end_travel.h"
@@ -51,14 +52,6 @@ void Check(bool ok, const char* name, const char* why) {
     (ok ? g_v.pass : g_v.fail)++;
     if (ok) UE_LOGI("[RUNEND] PASS %s -- %s", name, why);
     else    UE_LOGE("[RUNEND] FAIL %s -- %s", name, why);
-}
-
-// Post `body` to the game thread and wait for it (the pauseguard pattern).
-template <typename Fn>
-void RunGT(Fn&& body) {
-    auto done = std::make_shared<std::atomic<int>>(0);
-    GT::Post([done, body]() mutable { body(); done->store(1); });
-    for (int i = 0; i < 2000 && done->load() == 0; ++i) ::Sleep(5);
 }
 
 const wchar_t* JudgementName(RET::Judgement j) {
@@ -113,7 +106,7 @@ void RunRunEndDrill() {
 
     // The ALLOW direction, by judgement: the pause menu's own quit must stay allowed. Asserting it
     // by dispatch would end the run and take the rest of the drill with it.
-    RunGT([] {
+    RunOnGameThread([] {
         void* menu = R::FindObjectByClass(L"ui_menu_C");
         if (!menu) {
             Check(false, "B1 quit-allowed", "no live ui_menu_C to judge -- the pause menu widget "
@@ -133,17 +126,23 @@ void RunRunEndDrill() {
     // pause menu, which is true of all five.
     const unsigned long long cancelledBefore = RET::TravelsCancelled();
     const unsigned long long menuSeenBefore  = RET::MenuTravelsSeen();
-    std::wstring worldBefore, worldAfter;
-    bool pausedAfter = true, aliveAfter = false, atKppAfter = false;
+    // Outputs are shared_ptr, never `&local`: RunOnGameThread's wait is bounded but the posted
+    // task is not, and the ProcessEvent detour's transparent bypass parks the queue for up to 30 s
+    // -- which is exactly what a travel this drill failed to cancel would arm.
+    auto worldBefore = std::make_shared<std::wstring>();
+    auto worldAfter  = std::make_shared<std::wstring>();
+    auto pausedAfter = std::make_shared<bool>(true);
+    auto aliveAfter  = std::make_shared<bool>(false);
+    auto atKppAfter  = std::make_shared<bool>(false);
 
-    RunGT([&worldBefore] {
-        if (void* w = R::FindObjectByClass(P::name::WorldClass)) worldBefore = R::ToString(R::NameOf(w));
+    RunOnGameThread([worldBefore] {
+        if (void* w = R::FindObjectByClass(P::name::WorldClass)) *worldBefore = R::ToString(R::NameOf(w));
         // Four of the five endings pause before their delay; the cancelled travel is what no
         // longer un-pauses. Reproduce that state through the game's own verb.
         E::SetGamePaused(true);
         UE_LOGI("[RUNEND] world '%ls', paused=%d -- dispatching a run-ending travel authored by "
                 "the gamemode (the stand-in for the five endings)",
-                worldBefore.c_str(), E::IsGamePaused() ? 1 : 0);
+                worldBefore->c_str(), E::IsGamePaused() ? 1 : 0);
         void* gm = R::FindObjectByClass(P::name::GamemodeClass);
         if (!gm) { UE_LOGE("[RUNEND] no mainGamemode_C to author with"); return; }
         DispatchMenuTravel(gm);
@@ -152,19 +151,27 @@ void RunRunEndDrill() {
     // The revive runs on the next pump task, and the screen cleanup after it; a second is plenty.
     ::Sleep(3000);
 
-    RunGT([&worldAfter, &pausedAfter, &aliveAfter, &atKppAfter] {
-        if (void* w = R::FindObjectByClass(P::name::WorldClass)) worldAfter = R::ToString(R::NameOf(w));
-        pausedAfter = E::IsGamePaused();
+    const bool readBack = RunOnGameThread([worldAfter, pausedAfter, aliveAfter, atKppAfter] {
+        if (void* w = R::FindObjectByClass(P::name::WorldClass)) *worldAfter = R::ToString(R::NameOf(w));
+        *pausedAfter = E::IsGamePaused();
         // The shared reader, not a second hand-rolled one: its pawn is the registry's LOCAL
         // player, where this drill's own copy took the first mainPlayer_C the array offered --
         // correct on a solo host with no puppets and wrong the moment one exists.
         const DeathSnapshot s = ReadDeathState();
-        aliveAfter = s.haveState && !s.dead;
+        *aliveAfter = s.haveState && !s.dead;
         if (s.haveLoc) {
             const float dx = s.locX - P::name::kKPPSpawnX, dy = s.locY - P::name::kKPPSpawnY;
-            atKppAfter = (dx * dx + dy * dy) < (600.f * 600.f);
+            *atKppAfter = (dx * dx + dy * dy) < (600.f * 600.f);
         }
     });
+    if (!readBack) {
+        // Every C-row below reads this snapshot. Unread is not "false": an unread window satisfies
+        // world-kept and player-alive by default, which is the shape of an instrument grading
+        // itself green.
+        UE_LOGE("[RUNEND] the post-cancel read never reached the game thread -- the rows below "
+                "would be asserted on unread state");
+        Check(false, "C0 read-back", "the game thread did not answer within the budget");
+    }
 
     const unsigned long long cancelled = RET::TravelsCancelled() - cancelledBefore;
     const unsigned long long menuSeen  = RET::MenuTravelsSeen() - menuSeenBefore;
@@ -177,19 +184,19 @@ void RunRunEndDrill() {
           cancelled >= 1 ? "the run-ending travel was REFUSED"
                          : "the travel was ALLOWED -- a run-ending nobody asked for would end the "
                            "session for every peer");
-    Check(!worldAfter.empty() && worldAfter == worldBefore, "C3 world-kept",
-          (!worldAfter.empty() && worldAfter == worldBefore)
+    Check(!worldAfter->empty() && *worldAfter == *worldBefore, "C3 world-kept",
+          (!worldAfter->empty() && *worldAfter == *worldBefore)
               ? "the same UWorld is still live: nothing travelled"
               : "the world CHANGED -- the travel went through");
-    Check(aliveAfter, "C4 player-alive",
-          aliveAfter ? "the local player reads not-dead after the cancel"
+    Check(*aliveAfter, "C4 player-alive",
+          *aliveAfter ? "the local player reads not-dead after the cancel"
                      : "the player is dead or unreadable after the cancel");
-    Check(!pausedAfter, "C5 un-paused",
-          !pausedAfter ? "the pause the ending set is gone: the revive disposed of it"
+    Check(!*pausedAfter, "C5 un-paused",
+          !*pausedAfter ? "the pause the ending set is gone: the revive disposed of it"
                        : "the world is STILL PAUSED -- the travel that used to un-pause it was "
                          "cancelled and nothing took over");
-    Check(atKppAfter, "C6 at-kpp",
-          atKppAfter ? "the revive repositioned the player to the KPP"
+    Check(*atKppAfter, "C6 at-kpp",
+          *atKppAfter ? "the revive repositioned the player to the KPP"
                      : "the player is not at the KPP -- the revive's teleport did not land");
 
     UE_LOGI("[RUNEND] SEAM -- watch=%d travelsSeen=%llu menuTravels=%llu cancelled=%llu "

@@ -27,6 +27,15 @@ namespace P = ue_wrap::profile;
 // full-screen black image that never removes itself. Whoever cancels the travel inherits it.
 constexpr const wchar_t* kBlackScreenClass = L"blackScreen_C";
 
+// A BP bool by name off a live object (byte and mask).
+bool ReadBpBool(void* obj, const wchar_t* name, bool& out) {
+    if (!obj || !R::IsLive(obj)) return false;
+    int32_t byteOff = -1; uint8_t mask = 0;
+    if (!R::FindBoolProperty(R::ClassOf(obj), name, byteOff, mask)) return false;
+    out = (*(reinterpret_cast<uint8_t*>(obj) + byteOff) & mask) != 0;
+    return true;
+}
+
 // An object-pointer property by name off a live object, and whether it points at something live.
 bool ReadBpObjectValid(void* obj, const wchar_t* name, bool& outValid) {
     if (!obj || !R::IsLive(obj)) return false;
@@ -182,15 +191,6 @@ void ReadMenuPrep(int32_t& outSwiIdx, int32_t& outCanvasVis) {
 }
 
 }  // namespace
-
-// A BP bool by name off a live object (byte and mask).
-bool ReadBpBool(void* obj, const wchar_t* name, bool& out) {
-    if (!obj || !R::IsLive(obj)) return false;
-    int32_t byteOff = -1; uint8_t mask = 0;
-    if (!R::FindBoolProperty(R::ClassOf(obj), name, byteOff, mask)) return false;
-    out = (*(reinterpret_cast<uint8_t*>(obj) + byteOff) & mask) != 0;
-    return true;
-}
 
 // Every UUserWidget-descended object on the viewport, by class name: a probe aimed at a suspect
 // cannot find a source nobody thought of, an enumeration can. One array walk, once per run.
@@ -389,7 +389,10 @@ std::wstring CensusRenderState() {
             out += BlendablesOf(c, L"Settings", L"gm.PostProcess");
         }
     }
-    for (void* v2 : R::FindObjectsByClass(L"PostProcessVolume"))
+    // One walk, three readers: FindObjectsByClass is a full GUObjectArray pass and this function
+    // asked for the same set three times.
+    const auto ppVolumes = R::FindObjectsByClass(L"PostProcessVolume");
+    for (void* v2 : ppVolumes)
         out += BlendablesOf(v2, L"Settings", R::ToString(R::NameOf(v2)).c_str());
     // And the camera's own settings, the last stop before the frame.
     if (void* mp3 = R::FindObjectByClass(P::name::MainPlayerClass)) {
@@ -413,7 +416,7 @@ std::wstring CensusRenderState() {
 
     // 4. Every PostProcessVolume with a non-zero blend.
     int vols = 0, hot = 0;
-    for (void* v : R::FindObjectsByClass(L"PostProcessVolume")) {
+    for (void* v : ppVolumes) {
         if (!v || !R::IsLive(v)) continue;
         ++vols;
         const int32_t oW = R::FindPropertyOffset(R::ClassOf(v), L"BlendWeight");
@@ -421,7 +424,7 @@ std::wstring CensusRenderState() {
     }
     _snwprintf_s(buf, _TRUNCATE, L" | PostProcessVolumes=%d (blend>0: %d)", vols, hot);
     out += buf;
-    for (void* v : R::FindObjectsByClass(L"PostProcessVolume")) {
+    for (void* v : ppVolumes) {
         if (!v || !R::IsLive(v)) continue;
         void* vc = R::ClassOf(v);
         const int32_t oW = R::FindPropertyOffset(vc, L"BlendWeight");
@@ -523,14 +526,20 @@ DeathSnapshot ReadDeathState() {
         s.haveImmortal = ReadBpBool(gm, L"immortal", s.immortal);
     float hp = -1.f;
     if (V::Read(V::Field::Health, &hp)) s.health = hp;
-    if (void* bs = R::FindObjectByClass(kBlackScreenClass)) {
+    // EVERY live blackScreen_C, OR-ed. FindObjectByClass is first-by-index with no liveness and
+    // no world filter, so after one menu-to-gameplay cycle a departed world's instance sits at a
+    // lower index and answers for the live one -- and "is the black screen up" is a term two
+    // drills assert on.
+    for (void* bs : R::FindObjectsByClass(kBlackScreenClass)) {
+        if (!bs || !R::IsLive(bs)) continue;
         s.blackScreen = true;
         void* userWidgetCls = R::FindClass(P::name::UserWidgetClass);
         void* fnInView = userWidgetCls ? R::FindFunction(userWidgetCls, L"IsInViewport") : nullptr;
-        if (fnInView && R::IsLive(bs)) {
-            ue_wrap::ParamFrame f(fnInView);
-            if (f.valid() && ue_wrap::Call(bs, f))
-                s.blackScreenInViewport = f.Get<bool>(L"ReturnValue");
+        if (!fnInView) break;
+        ue_wrap::ParamFrame f(fnInView);
+        if (f.valid() && ue_wrap::Call(bs, f) && f.Get<bool>(L"ReturnValue")) {
+            s.blackScreenInViewport = true;
+            break;
         }
     }
     // The gameplay world's leaf name contains "ntitled" (untitled_1.Untitled_1); the menu and
