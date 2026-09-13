@@ -3,6 +3,7 @@
 #include "ue_wrap/core/log.h"
 #include "ue_wrap/core/reflection.h"
 
+#include <atomic>
 #include <cstring>
 #include <mutex>
 #include <unordered_map>
@@ -75,7 +76,41 @@ const ParamFrame::Metadata* GetOrBuildMetadata(void* fn) {
     return &it->second;
 }
 
+// The frame counters behind GetFrameStats. Relaxed adds: each is read once a second by the perf
+// probe, and no reader needs one counter to be consistent with another at an instant.
+std::atomic<unsigned long long> g_frames{0}, g_allocs{0}, g_bytes{0};
+std::atomic<unsigned long long> g_le[5]{};
+std::atomic<int32_t> g_maxSize{0};
+
+// Bucket an allocating frame by size, so the number can answer what an inline buffer would cover
+// and not only how often one would be used.
+void NoteFrame(int32_t frameSize) {
+    g_frames.fetch_add(1, std::memory_order_relaxed);
+    if (frameSize <= 0) return;
+    g_allocs.fetch_add(1, std::memory_order_relaxed);
+    g_bytes.fetch_add(static_cast<unsigned long long>(frameSize), std::memory_order_relaxed);
+    const int32_t edges[5] = {16, 32, 64, 128, 256};
+    for (int i = 0; i < 5; ++i) {
+        if (frameSize <= edges[i]) { g_le[i].fetch_add(1, std::memory_order_relaxed); break; }
+    }
+    int32_t seen = g_maxSize.load(std::memory_order_relaxed);
+    while (frameSize > seen &&
+           !g_maxSize.compare_exchange_weak(seen, frameSize, std::memory_order_relaxed,
+                                            std::memory_order_relaxed)) {
+    }
+}
+
 }  // namespace
+
+FrameStats GetFrameStats() {
+    FrameStats s{};
+    s.frames = g_frames.load(std::memory_order_relaxed);
+    s.allocs = g_allocs.load(std::memory_order_relaxed);
+    s.bytes  = g_bytes.load(std::memory_order_relaxed);
+    for (int i = 0; i < 5; ++i) s.le[i] = g_le[i].load(std::memory_order_relaxed);
+    s.maxSize = g_maxSize.load(std::memory_order_relaxed);
+    return s;
+}
 
 ParamFrame::ParamFrame(void* function) : fn_(function) {
     if (!fn_) return;
@@ -92,6 +127,7 @@ ParamFrame::ParamFrame(void* function) : fn_(function) {
     // Previously this was treated as an error and the call became a silent no-op --
     // so DestroyActor never destroyed anything (freecam cams / nameplates / puppets
     // leaked). Keep fn_ so the call goes through.
+    NoteFrame(meta_->frameSize);
     if (meta_->frameSize > 0) {
         buf_.assign(static_cast<size_t>(meta_->frameSize), 0);
     }

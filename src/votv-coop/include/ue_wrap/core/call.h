@@ -88,4 +88,26 @@ private:
 // Game thread only.
 bool Call(void* object, ParamFrame& frame);
 
+// What the reflected-call path costs, as counts rather than as an assertion. `frames` is every
+// ParamFrame that resolved a frame size (a malformed UFunction is refused and logged, and is not
+// one), `allocs` the subset that heap-allocated -- so `frames - allocs` is exactly the zero-size
+// frames, which allocate nothing -- and `bytes` is what those allocations asked for. `le` buckets
+// an allocating frame by size and `maxSize` is the largest seen, which is what an inline buffer
+// would have to cover.
+//
+// Always counted, unlike MTA's own per-call instrument, which returns early unless somebody is
+// watching and disarms itself once nobody has looked for fifteen seconds
+// (`CPerfStat.FunctionTiming.cpp`): theirs samples a clock and walks a string-keyed map per call,
+// while this is a handful of relaxed adds beside the malloc on the same line -- a call rate high
+// enough to make the counter cost anything is one where the allocation it measures costs far
+// more, so the instrument cannot outweigh its subject.
+struct FrameStats {
+    unsigned long long frames;   // ParamFrame constructions that resolved a frame size
+    unsigned long long allocs;   // constructions that allocated (frameSize > 0)
+    unsigned long long bytes;    // total bytes those allocations asked for
+    unsigned long long le[5];    // allocating frames with frameSize <= 16 / 32 / 64 / 128 / 256
+    int32_t maxSize;             // the largest frame size seen
+};
+FrameStats GetFrameStats();
+
 }  // namespace ue_wrap

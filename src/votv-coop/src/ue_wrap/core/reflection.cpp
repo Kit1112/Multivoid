@@ -91,6 +91,11 @@ bool InCoopDispatch() { return t_coopDispatchDepth > 0; }
 namespace {
 constexpr int kCallSites = 128;
 std::atomic<bool> g_callCensusOn{false};
+// The plain call total, counted whether or not the census above is armed: the attribution needs
+// arming because resolving names is expensive, while the rate is one relaxed add on a path that
+// is about to dispatch a whole blueprint body, and a rate nobody thought to arm for is exactly
+// the one a field report leaves behind.
+std::atomic<unsigned long long> g_coopCalls{0};
 struct CallSite {
     std::atomic<void*> fn{nullptr};
     std::atomic<unsigned long long> n{0};
@@ -117,6 +122,8 @@ void NoteCoopCall(void* fn) {
 
 void SetCoopCallCensus(bool on) { g_callCensusOn.store(on, std::memory_order_relaxed); }
 
+unsigned long long CoopCallCountTotal() { return g_coopCalls.load(std::memory_order_relaxed); }
+
 bool CoopCallSiteAt(int i, void** outFn, unsigned long long* outCount) {
     if (i < 0 || i >= kCallSites || !outFn || !outCount) return false;
     *outFn = g_callSites[i].fn.load(std::memory_order_relaxed);
@@ -126,6 +133,7 @@ bool CoopCallSiteAt(int i, void** outFn, unsigned long long* outCount) {
 
 bool CallFunction(void* object, void* function, void* params) {
     if (!g_processEvent || !object || !function) return false;
+    g_coopCalls.fetch_add(1, std::memory_order_relaxed);
     if (g_callCensusOn.load(std::memory_order_relaxed)) NoteCoopCall(function);
     CoopDispatchScope scope;
     g_processEvent(object, function, params);

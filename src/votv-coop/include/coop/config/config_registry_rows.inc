@@ -341,11 +341,11 @@ CFG_FLAG(drone_probe_drive, "drone_probe_drive", "dev", false, nullptr,
     "Diagnostic probe: drive the delivery drone (test driver).")
 CFG_FLAG(pile_dup_probe, "pile_dup_probe", "dev", false, nullptr,
     "Diagnostic probe: pile duplicate/identity mismatches.")
-CFG_FLAG(perf_probe, "perf_probe", "dev", false, nullptr,
-    "Performance probe: per-frame subsystem timing lines.")
+CFG_FLAG(perf_probe, "perf_probe", "dev", false, "VOTVCOOP_PERF_PROBE",
+    "Performance probe: per-frame subsystem timing lines, the reflected-call rate and the ParamFrame allocation rate. The env twin exists so a launcher can arm BOTH peers for one run: an ini-only dev row has to be edited per install, which is how a perf number ends up measured on one peer and assumed on the other.")
 CFG_FLAG(perf_probe_selftime, "perf_probe_selftime", "dev", false, nullptr,
     "Performance probe: self-time breakdown variant.")
-CFG_FLAG(perf_probe_dispatch, "perf_probe_dispatch", "dev", false, nullptr,
+CFG_FLAG(perf_probe_dispatch, "perf_probe_dispatch", "dev", false, "VOTVCOOP_PERF_PROBE_DISPATCH",
     "Performance probe: count every ProcessEvent dispatch (PE/s, game-thread share, our share). OFF by default -- gameplay dispatches ~170k/s across several threads, so this is a shared-atomic RMW on a contended cache line at that rate. Leave it off whenever the number being measured is what the mod itself costs; the 1 Hz fps line does not need it.")
 CFG_INT(perf_probe_resdrop, "perf_probe_resdrop", "dev", 0, 0, 3600, nullptr,
     "Performance probe: after N 1 Hz samples, collapse render resolution (r.ScreenPercentage 25) to separate a GPU-bound frame from a CPU-bound one.")

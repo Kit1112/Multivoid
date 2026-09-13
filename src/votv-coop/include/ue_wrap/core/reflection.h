@@ -47,6 +47,9 @@ bool InCoopDispatch();
 // UFunction so the dispatches our code authors per frame can be attributed to the polls that
 // produce them. Off by default (one relaxed bool load).
 void SetCoopCallCensus(bool on);
+// Every dispatch CallFunction has issued, armed or not -- the reflected-call rate, read as a
+// delta over a window rather than against uptime.
+unsigned long long CoopCallCountTotal();
 // Slot i's target UFunction and its cumulative count; false past the last populated slot.
 bool CoopCallSiteAt(int i, void** outFn, unsigned long long* outCount);
 

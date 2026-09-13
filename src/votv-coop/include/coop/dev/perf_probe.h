@@ -34,6 +34,7 @@ enum class Bucket {
     RemoteProp,     // remote_prop::Tick
     Puppets,        // per-slot pose drive + RemotePlayer::Tick loops
     EventFeed,      // event_feed::Update
+    InputOwner,     // input_owner::TickGameThread -- the 10 Hz fast path and the 1 Hz widget scan
     Nameplate,      // nameplate::Update (harness post)
     Roster,         // roster::Refresh (harness post)
     OverlayPresent, // our WHOLE Present-detour body (render thread; excludes the engine's own Present) -- the R-3 passive
@@ -49,6 +50,10 @@ bool Armed();
 
 // QPC value now (raw ticks). Used by Scope; exposed for manual bracketing.
 unsigned long long NowTicks();
+
+// QPC ticks as milliseconds, so a caller timing one pass of its own reports in the same unit the
+// bucket line does.
+double TicksToMs(unsigned long long ticks);
 
 // Accumulate a raw-QPC-tick duration into a subsystem bucket. No-op when off.
 void AddTicks(Bucket b, unsigned long long ticks);

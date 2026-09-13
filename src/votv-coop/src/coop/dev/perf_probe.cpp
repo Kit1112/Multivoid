@@ -6,6 +6,7 @@
 #include "coop/dev/perf_probe.h"
 
 #include "coop/config/config.h"
+#include "ue_wrap/core/call.h"
 #include "ue_wrap/core/game_thread.h"
 #include "ue_wrap/engine/engine.h"
 #include "ue_wrap/core/log.h"
@@ -43,7 +44,7 @@ std::array<std::atomic<unsigned long long>, static_cast<size_t>(Bucket::Count)> 
 const char* kBucketNames[static_cast<size_t>(Bucket::Count)] = {
     "netPumpTick", "reaper", "localSend", "installObs", "interactable", "weatherConn",
     "itemConn", "trashWatch", "balance", "snapshotDrain", "remoteProp", "puppets",
-    "eventFeed", "nameplate", "roster", "overlayPresent",
+    "eventFeed", "inputOwner", "nameplate", "roster", "overlayPresent",
 };
 
 long long QpcFreq() {
@@ -54,15 +55,13 @@ long long QpcFreq() {
     return s_freq;
 }
 
-double TicksToMs(unsigned long long ticks) {
-    const long long f = QpcFreq();
-    return f > 0 ? static_cast<double>(ticks) * 1000.0 / static_cast<double>(f) : 0.0;
-}
-
 // The 1 Hz sampler window state, game thread only (Sample runs there).
 std::chrono::steady_clock::time_point g_lastSample{};
 bool g_haveBaseline = false;
 unsigned long long g_lastPECoop = 0;
+// The reflected-call window: the call total and the ParamFrame counters, which are counted
+// whether or not the dispatch knobs are armed.
+unsigned long long g_lastCalls = 0, g_lastPfFrames = 0, g_lastPfAllocs = 0, g_lastPfBytes = 0;
 unsigned long long g_lastPE = 0, g_lastPEGT = 0, g_lastSelfNs = 0, g_lastSelfSamp = 0,
                    g_lastObsNs = 0, g_lastFrames = 0;
 // The whole-detour window state; see the whole readout in Sample.
@@ -77,6 +76,11 @@ bool Enabled() {
 }
 
 bool Armed() { return g_armed; }
+
+double TicksToMs(unsigned long long ticks) {
+    const long long f = QpcFreq();
+    return f > 0 ? static_cast<double>(ticks) * 1000.0 / static_cast<double>(f) : 0.0;
+}
 
 unsigned long long NowTicks() {
     LARGE_INTEGER t{};
@@ -307,6 +311,30 @@ void Sample() {
     UE_LOGW("[perf] fps=%.0f (frame=%.2f ms) | obs post=%d pre=%d intc=%d",
             frPerSec, frPerSec > 0 ? 1000.0 / frPerSec : 0.0,
             GT::PostObserverCount(), GT::PreObserverCount(), GT::InterceptorCount());
+
+    // The reflected-call rate: what OUR code dispatches through reflection, and how much of that
+    // builds a parameter frame on the heap. Ungated, because the counters behind it are -- a rate
+    // that needs a knob armed is a rate no ordinary session ever records. Rates come from the
+    // window; the size distribution is cumulative, since it answers what an inline buffer would
+    // cover and not how often one was used.
+    {
+        const unsigned long long calls = R::CoopCallCountTotal();
+        const ue_wrap::FrameStats fs = ue_wrap::GetFrameStats();
+        const unsigned long long dCalls = calls - g_lastCalls;
+        const unsigned long long dPf    = fs.frames - g_lastPfFrames;
+        const unsigned long long dAlloc = fs.allocs - g_lastPfAllocs;
+        const unsigned long long dBytes = fs.bytes  - g_lastPfBytes;
+        g_lastCalls = calls; g_lastPfFrames = fs.frames;
+        g_lastPfAllocs = fs.allocs; g_lastPfBytes = fs.bytes;
+        const double allocPerSec = dAlloc / elapsed;
+        UE_LOGW("[perf] reflected calls=%.0f/s (%.1f/frame) | ParamFrame=%.0f/s alloc=%.0f/s "
+                "(%.1f KB/s) | sizes <=16:%llu <=32:%llu <=64:%llu <=128:%llu <=256:%llu "
+                "max=%d (cumulative %llu allocs of %llu frames)",
+                dCalls / elapsed, dFr > 0 ? static_cast<double>(dCalls) / dFr : 0.0,
+                dPf / elapsed, allocPerSec, (dBytes / elapsed) / 1024.0,
+                fs.le[0], fs.le[1], fs.le[2], fs.le[3], fs.le[4], fs.maxSize,
+                fs.allocs, fs.frames);
+    }
 
     if (g_dispatch) {
         UE_LOGW("[perf] PE=%.0f/s (GT=%.0f, OURS=%.0f = %.1f%% of GT) frames=%.0f/s => PE/frame=%.0f (GT=%.0f)",
