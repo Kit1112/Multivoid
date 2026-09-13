@@ -556,11 +556,12 @@ Ingest ParseAndApply(const std::vector<uint8_t>& blob, uint32_t& outEid, uint8_t
 }
 
 // The park's replay: true when the blob was dealt with, false while its container still does not
-// resolve. A parked blob is always one a receiver could not resolve; the host never parks a client
-// write, so slot 0 is the author for every replay.
-bool ReplayParked(const std::vector<uint8_t>& blob) {
+// resolve. The author rides with the blob because a parked slice must pass the SAME arbitration it
+// would have passed on arrival -- replaying a client's write as slot 0 would hand it the host's
+// own authority, and the host does park client writes (every inbound blob it cannot resolve yet).
+bool ReplayParked(const std::vector<uint8_t>& blob, uint8_t authorSlot) {
     uint32_t eid = 0;
-    return ParseAndApply(blob, eid, /*senderSlot=*/0) != Ingest::Park;
+    return ParseAndApply(blob, eid, authorSlot) != Ingest::Park;
 }
 
 // The verb edge.
@@ -659,9 +660,11 @@ void Tick() {
     g_asm.Sweep(std::chrono::steady_clock::now(), std::chrono::seconds(10));
 
     // Both peers drain: the host fans its changes out, a client ships the container it mutated to
-    // the host, which arbitrates and relays. A client also sweeps its parked inbound blobs.
+    // the host, which arbitrates and relays. Both sweep their parked inbound blobs -- the host's
+    // were never swept at all, so a client write it could not resolve on arrival was neither
+    // retried nor evicted for the life of the session.
     DrainDirty(s);
-    if (!IsHost()) pk::Sweep(&ReplayParked);
+    pk::Sweep(&ReplayParked);
 }
 
 void OnContentsChunk(const coop::net::BlobChunkPayload& p, uint8_t senderSlot) {
@@ -686,7 +689,7 @@ void OnContentsChunk(const coop::net::BlobChunkPayload& p, uint8_t senderSlot) {
     if (outcome == Ingest::Park) {
         // The container's element is not bound yet: parked (latest wins per eid) and retried by the
         // sweep until the TTL.
-        pk::Admit(eid, std::move(blob));
+        pk::Admit(eid, senderSlot, std::move(blob));
         return;
     }
     // Only what the host applied is relayed: a refused, malformed, non-container, boundary-refused
