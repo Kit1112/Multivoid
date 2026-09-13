@@ -511,7 +511,8 @@ Ingest ApplyContents(uint32_t eid, const std::vector<SR::SaveRecord>& recs, uint
     return Ingest::Applied;
 }
 
-Ingest ParseAndApply(const std::vector<uint8_t>& blob, uint32_t& outEid, uint8_t senderSlot) {
+Ingest ParseAndApply(const std::vector<uint8_t>& blob, uint32_t& outEid, uint8_t senderSlot,
+                     wp::Source src) {
     size_t o = 0;
     uint8_t op = 0;
     if (!W::RdU8(blob, o, op) || op != kOpContents) return Ingest::Handled;  // unknown op
@@ -524,12 +525,16 @@ Ingest ParseAndApply(const std::vector<uint8_t>& blob, uint32_t& outEid, uint8_t
         auto* s = g_session.load(std::memory_order_acquire);
         // No session, no arbitration, and a client slice is never applied unjudged: the refusal
         // that cannot be explained is still a refusal.
-        const wp::Decision d = s ? wp::Accept(outEid, baseHash, senderSlot, NowMs(), *s)
+        const wp::Decision d = s ? wp::Accept(outEid, baseHash, senderSlot, NowMs(), *s, src)
                                  : wp::Decision::StaleBase;
         if (d != wp::Decision::Accept) {
+            // Every refusal answers with the host's truth so the author converges -- except the
+            // rate one, because a bound on how fast an author may spend the host must not make
+            // the host spend more the faster it is pushed. No peer of this build can reach that
+            // bound (one slice per container per 250 ms sweep, and only when it changed).
             void* actor = LivePropActor(outEid);
             void* inv = actor && IsContainerActor(actor) ? InventoryOf(actor) : nullptr;
-            if (s && inv && IsWorldContainerInventory(inv)) {
+            if (s && inv && d != wp::Decision::TooFast && IsWorldContainerInventory(inv)) {
                 BroadcastContainer(s, outEid, inv, static_cast<int>(senderSlot), /*force=*/true);
             }
             // Handled, not Applied: never relayed; third peers run no arbitration.
@@ -561,8 +566,7 @@ Ingest ParseAndApply(const std::vector<uint8_t>& blob, uint32_t& outEid, uint8_t
         }
     }
     if (foreignIndices) {
-        // No peer of this build sends one, so a hit is a peer that is not this build -- or a lane
-        // that grew a second producer without the boundary.
+        // A hit is a peer that is not this build, or a second producer that skipped the boundary.
         UE_LOGW("container_contents: eid=%u -- %zu nested-container record(s) arrived carrying a "
                 "foreign GObjStack index; neutered before the write", outEid, foreignIndices);
     }
@@ -590,7 +594,7 @@ Ingest ParseAndApply(const std::vector<uint8_t>& blob, uint32_t& outEid, uint8_t
 // own authority, and the host does park client writes (every inbound blob it cannot resolve yet).
 bool ReplayParked(const std::vector<uint8_t>& blob, uint8_t authorSlot) {
     uint32_t eid = 0;
-    return ParseAndApply(blob, eid, authorSlot) != Ingest::Park;
+    return ParseAndApply(blob, eid, authorSlot, wp::Source::Replay) != Ingest::Park;
 }
 
 // The verb edge.
@@ -714,7 +718,7 @@ void OnContentsChunk(const coop::net::BlobChunkPayload& p, uint8_t senderSlot) {
     if (!g_asm.OnChunk(p, senderSlot, blob)) return;  // incomplete
 
     uint32_t eid = 0;
-    const Ingest outcome = ParseAndApply(blob, eid, senderSlot);
+    const Ingest outcome = ParseAndApply(blob, eid, senderSlot, wp::Source::Arrival);
     if (outcome == Ingest::Park) {
         // The container's element is not bound yet: parked (latest wins per eid) and retried by the
         // sweep until the TTL.

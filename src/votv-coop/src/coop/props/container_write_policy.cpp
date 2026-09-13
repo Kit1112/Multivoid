@@ -59,14 +59,17 @@ Decision JudgeAgainstState(uint32_t eid, uint64_t baseHash, uint64_t nowMs) {
 }
 
 Decision Accept(uint32_t eid, uint64_t baseHash, uint8_t authorSlot, uint64_t nowMs,
-                coop::net::Session& session) {
+                coop::net::Session& session, Source src) {
     // The budget is spent by ARRIVAL, not by acceptance: a refused slice still costs the host a
-    // parse, this arbitration and a corrective re-publish. A seated peer's proved storage guid is
-    // the source; an author the host has no proved identity for is not counted rather than
+    // parse, this arbitration and a corrective re-publish. A replay out of the park spends
+    // nothing -- it arrived once already, and a pen sweeping four times a second would otherwise
+    // rate-block the author of the very slice it is holding. A seated peer's proved storage guid
+    // is the source; an author the host has no proved identity for is not counted rather than
     // refused, the same way a full table here refuses nobody -- every other gate still applies.
-    coop::net::connect_history::Key src;
-    if (coop::net::connect_history::KeyFromProvedGuid(session.ProvedGuidForSlot(authorSlot), src)) {
-        const auto v = g_writes.Note(src, nowMs);
+    coop::net::connect_history::Key key;
+    if (src == Source::Arrival &&
+        coop::net::connect_history::KeyFromProvedGuid(session.ProvedGuidForSlot(authorSlot), key)) {
+        const auto v = g_writes.Note(key, nowMs);
         if (v.refused) {
             ++g_refused;
             UE_LOGW("container_contents: CONFLICT eid=%u slot %u -- %d slices inside %llu ms is "
@@ -78,7 +81,7 @@ Decision Accept(uint32_t eid, uint64_t baseHash, uint8_t authorSlot, uint64_t no
                     static_cast<unsigned long long>(g_refused));
             return Decision::TooFast;
         }
-    } else {
+    } else if (src == Source::Arrival) {
         static bool sSaid = false;
         if (!sSaid) {
             sSaid = true;

@@ -31,6 +31,13 @@ enum class Decision : uint8_t {
                          // had not seen it
 };
 
+// Where this slice is coming from. A slice the host parked and is now replaying was already
+// admitted once: it costs the host no second arrival, and what bounds the cost of holding it is
+// the park's own per-author cap, not this window. Its REACH is judged on the replay all the same,
+// because that is the first moment it can be judged at all -- an element that did not resolve at
+// arrival could not be measured against anybody's reach.
+enum class Source : uint8_t { Arrival = 0, Replay };
+
 // What the host knows at the moment of the decision. `lastLocalChangeMs` is 0 when this peer has
 // never fired a verb on this container.
 struct Inputs {
@@ -69,7 +76,7 @@ Decision JudgeAgainstState(uint32_t eid, uint64_t baseHash, uint64_t nowMs);
 // NOT a reach refusal -- the lane parks such a slice and replays it, and the park is where the
 // birth-skew answer lives.
 Decision Accept(uint32_t eid, uint64_t baseHash, uint8_t authorSlot, uint64_t nowMs,
-                coop::net::Session& session);
+                coop::net::Session& session, Source src);
 
 // The host has told the world what this container holds, by any route -- a fan-out or a targeted
 // connect seed. This is the compare-and-swap baseline a later client write is judged against.
