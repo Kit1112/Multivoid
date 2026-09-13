@@ -10,6 +10,7 @@
 #include <cstdio>
 #include <string>
 
+#include "coop/dev/perf_probe.h"
 #include "coop/player/players_registry.h"
 #include "ue_wrap/core/cached_obj_ref.h"
 #include "ue_wrap/engine/engine.h"
@@ -19,6 +20,7 @@
 #include "ue_wrap/engine/world_identity.h"
 
 namespace R = ue_wrap::reflection;
+namespace PP = coop::dev::perf_probe;
 
 namespace coop::input::input_owner {
 namespace {
@@ -159,8 +161,11 @@ bool CallBoolNoArgs(void* widget, void* fn) {
 // population; the Default__ test does not catch them, since a template's immediate Outer is a
 // UWidgetTree like a live instance's. The discriminator is further up: a template's chain
 // reaches its generated class, a live widget's a UUserWidget or the World. Without this the
-// 1 Hz scan issued about 9,300 reflected HasKeyboardFocus dispatches per pass, in one frame.
-// The cached class is pointer-compared; ClassNameOf allocates.
+// 1 Hz scan issued about 9,300 reflected HasKeyboardFocus dispatches per pass, in one frame; with
+// it, 3,733 -- and since a widget that answers no is then asked the second question, the pass
+// still costs 7,466 dispatches and 9-15 ms in that one frame, measured on an idle two-peer
+// session whose own frame is 8.6 ms. The filter is a reduction, not a fix. The cached class is pointer-compared; ClassNameOf
+// allocates.
 bool IsLiveWidgetInstance(void* o) {
     void* outer = R::OuterOf(o);
     for (int d = 0; outer && d < 8; ++d) {
@@ -239,6 +244,10 @@ void LogOwnerEdge() {
 // so it runs at 1 Hz, and a field in one of those surfaces can be focused for up to a second
 // before a hotkey stops taking its key.
 void TickGameThread(bool doFullScan) {
+    // Both cadences ride one bucket. The fast path is two field reads, so the bucket's ms/second
+    // is what ONE full scan costs -- the number the scan's own array walk and its two reflected
+    // calls per widget were never measured against.
+    coop::dev::perf_probe::Scope perfScope(coop::dev::perf_probe::Bucket::InputOwner);
     // The refresh floor for world_identity, and it comes first. CurrentWorld memoises on a 100 ms
     // timer and is refreshed by whoever calls it, which is not a floor; this tick is one: 10 Hz,
     // ungated, alive at the menu with no session. First, because this tick is posted from the
@@ -291,6 +300,15 @@ void TickGameThread(bool doFullScan) {
         g_pcForScan = lp ? ue_wrap::engine::GetController(lp) : nullptr;
     }
 
+    // The pass instrument. The bucket above accumulates, so it can only say what the two cadences
+    // cost per second together; this says what ONE pass costs in the one frame it runs in, which
+    // is what a walk of every UObject has to be judged against. The call count is the reflected
+    // counter's own delta, not two per widget: the sticky-owner check below pays calls too, and a
+    // widget that answers the first question never gets asked the second.
+    const unsigned long long passT0 = PP::Armed() ? PP::NowTicks() : 0;
+    const unsigned long long passCalls0 = R::CoopCallCountTotal();
+    int32_t asked = 0;
+
     // The last owner first: focus is sticky, and a hit skips the sweep, which otherwise pays two
     // reflected calls per non-owning widget.
     void* lastOwner = g_lastOwner.Get();
@@ -309,7 +327,14 @@ void TickGameThread(bool doFullScan) {
         if (R::NameStartsWith(R::NameOf(o), L"Default__")) continue;
         if (!R::IsLive(o)) continue;
         if (!IsLiveWidgetInstance(o)) continue;
+        ++asked;
         if (OwnsUserZeroFocus(o)) { owns = true; Remember(o); g_lastOwner.Set(o); }
+    }
+    if (passT0) {
+        UE_LOGI("[perf] input_owner scan: %d of %d objects asked, %llu reflected calls, %.2f ms "
+                "(one frame, once a second)",
+                asked, n, R::CoopCallCountTotal() - passCalls0,
+                PP::TicksToMs(PP::NowTicks() - passT0));
     }
     if (!owns) g_lastOwner.Reset();
     if (!owns) g_ownerName[0] = '-', g_ownerName[1] = '\0';
