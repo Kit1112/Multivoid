@@ -43,12 +43,11 @@ bool ResolveAttSpawn() {
 void* SpawnSoundAttenuation(const SoundAttenuationConfig& cfg) {
     if (!ResolveAttSpawn()) return nullptr;
 
-    // 1) SpawnObject(objectClass, Outer) -> UObject*. CASE-SENSITIVE param
-    //    names per UE reflection: lowercase 'objectClass' + 'Outer' (the
-    //    existing pattern in engine_widget.cpp's widget spawn). An
-    //    uppercase-O `ObjectClass` would FName-mismatch -> SetRaw fail ->
-    //    SpawnObject sees a null class -> returns null. Outer = the
-    //    GameplayStatics CDO, which is process-stable.
+    // 1) SpawnObject(objectClass, Outer) -> UObject*. The param names are spelled as UE
+    //    reflection renders them, lowercase 'objectClass' + 'Outer' (the existing pattern in
+    //    engine_widget.cpp's widget spawn); ParamFrame::OffsetOf matches insensitively, so the
+    //    casing is documentation and not a match condition. Outer = the GameplayStatics CDO,
+    //    which is process-stable.
     void* obj = nullptr;
     {
         ParamFrame f(g_spawnObjectFn);

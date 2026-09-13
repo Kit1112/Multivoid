@@ -82,8 +82,9 @@ namespace {
 bool ResolveFromClass(void* cls) {
     if (g_resolved.load(std::memory_order_acquire)) return true;
 
-    // FName lookups are case-SENSITIVE -- the names below match the live CXXHeaderDump member
-    // spellings exactly (note Target is upper-case).
+    // The names below match the live CXXHeaderDump member spellings (note Target is upper-case);
+    // the property lookup compares insensitively (reflection_props.cpp), so the casing is
+    // documentation rather than a match condition.
     const int32_t tryGrabOff   = ResolveOff(cls, L"tryGrab",       kTryGrabFallback);
     const int32_t grabOff      = ResolveOff(cls, L"grab",          kGrabFallback);
     const int32_t killedOff    = ResolveOff(cls, L"killed",        kKilledFallback);

@@ -214,7 +214,6 @@ void* SpawnFaceActor(int32_t faceType) {
                                        ue_wrap::FRotator{});
     if (!face) return nullptr;
     int32_t offType = R::FindPropertyOffset(faceCls, L"type");
-    if (offType < 0) offType = R::FindPropertyOffset(faceCls, L"Type");
     if (offType >= 0)
         std::memcpy(reinterpret_cast<uint8_t*>(face) + offType, &faceType, sizeof(faceType));
     else

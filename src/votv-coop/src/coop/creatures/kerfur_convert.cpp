@@ -272,7 +272,6 @@ void Install(coop::net::Session* session) {
         g_actionNameFn = R::FindFunction(g_kerfurNpcClass, L"actionName");
         if (g_actionNameFn) {
             g_nameParamOff = R::FindParamOffset(g_actionNameFn, L"name");
-            if (g_nameParamOff < 0) g_nameParamOff = R::FindParamOffset(g_actionNameFn, L"Name");
         }
     }
     if (!g_dropPropFnBase) g_dropPropFnBase = R::FindFunction(g_kerfurNpcClass, L"dropKerfurProp");

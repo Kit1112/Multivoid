@@ -91,11 +91,10 @@ bool EnsureResolved() {
         return false;  // the receiver cannot mirror typing without it -- retry
     }
     void* updFn   = R::FindFunction(lockCls, L"upd");    // best-effort; tolerated null
-    // The native submit chain (the BP calls it `open`; the cooked UFunction FName renders
-    // `Open` in the CXX dump -- FName-compare both spellings). Tolerated null: without it
-    // the short-code submit mirror degrades to the plain state mirror (logged at call).
+    // The native submit chain (the BP calls it `open`; the cooked UFunction FName renders `Open`
+    // in the CXX dump -- the lookup compares insensitively, so one call answers both). Tolerated
+    // null: without it the short-code submit mirror degrades to the plain state mirror.
     void* openFn = R::FindFunction(lockCls, L"open");
-    if (!openFn) openFn = R::FindFunction(lockCls, L"Open");
 
     g_lockCls    = lockCls;
     g_keyOff     = keyOff;

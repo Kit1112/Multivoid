@@ -35,13 +35,12 @@ bool Resolve() {
         }
     }
     if (g_convStrToTextFn && !g_inputParam) {
+        // Insensitive lookup: the test is existence, not spelling.
         if (R::FindParamOffset(g_convStrToTextFn, L"InString") >= 0) {
             g_inputParam = L"InString";
-        } else if (R::FindParamOffset(g_convStrToTextFn, L"inString") >= 0) {
-            g_inputParam = L"inString";
         } else {
-            UE_LOGW("ftext_utils: Conv_StringToText has neither 'InString' nor 'inString' -- "
-                    "EmptyFText will fail every call");
+            UE_LOGW("ftext_utils: Conv_StringToText has no 'InString' parameter -- EmptyFText "
+                    "will fail every call");
         }
     }
     return g_ktlCdo && g_convStrToTextFn && g_inputParam;
@@ -112,10 +111,8 @@ std::wstring FTextToString(const void* ftext) {
     if (!sConvTextToStrFn) {
         if (void* kc = R::ClassOf(g_ktlCdo))
             sConvTextToStrFn = R::FindFunction(kc, L"Conv_TextToString");
-        if (sConvTextToStrFn) {
-            if (R::FindParamOffset(sConvTextToStrFn, L"InText") >= 0) sInParam = L"InText";
-            else if (R::FindParamOffset(sConvTextToStrFn, L"inText") >= 0) sInParam = L"inText";
-        }
+        if (sConvTextToStrFn && R::FindParamOffset(sConvTextToStrFn, L"InText") >= 0)
+            sInParam = L"InText";
     }
     if (!sConvTextToStrFn || !sInParam) return {};
     ue_wrap::ParamFrame f(sConvTextToStrFn);

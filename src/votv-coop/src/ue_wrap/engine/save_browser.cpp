@@ -361,9 +361,9 @@ bool CreateNamedSave(const std::wstring& name, uint8_t mode, std::wstring& outSl
         void* libCdo = R::FindClassDefaultObject(L"lib_C");
         void* libCls = libCdo ? R::ClassOf(libCdo) : nullptr;
         // Live-FName case roulette: the CXX dump renders GameVersion, the asset dump
-        // gameVersion -- FindFunction compares case-sensitively, so try both.
+        // gameVersion. FindFunction compares insensitively (reflection.cpp), so one lookup
+        // answers whichever spelling this process interned first.
         void* verFn = libCls ? R::FindFunction(libCls, L"GameVersion") : nullptr;
-        if (!verFn && libCls) verFn = R::FindFunction(libCls, L"gameVersion");
         if (!verFn || g_off.version < 0) {
             UE_LOGW("save_browser: CreateNamedSave -- Version stamp unavailable "
                     "(lib_C.gameVersion=%p VersionOff=%d); creating unversioned",

@@ -26,10 +26,10 @@ bool SetText(void* textBlock, const wchar_t* text) {
     if (!g_setTextFn) {
         if (void* cls = R::ClassOf(textBlock))
             g_setTextFn = R::FindFunction(cls, L"SetText");
-        if (g_setTextFn) {
-            if (R::FindParamOffset(g_setTextFn, L"InText") >= 0) g_setTextParam = L"InText";
-            else if (R::FindParamOffset(g_setTextFn, L"inText") >= 0) g_setTextParam = L"inText";
-        }
+        // One spelling answers for both: the param lookup compares insensitively, and what is
+        // being tested here is whether the parameter EXISTS at all.
+        if (g_setTextFn && R::FindParamOffset(g_setTextFn, L"InText") >= 0)
+            g_setTextParam = L"InText";
     }
     if (!g_setTextFn || !g_setTextParam) return false;
     uint8_t ftext[ue_wrap::ftext_utils::kFTextSize];

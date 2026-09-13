@@ -31,13 +31,13 @@ bool Resolve() {
         }
     }
     if (g_convStrToNameFn && !g_convStrToNameInputParam) {
+        // The lookup compares insensitively, so the cook's own casing does not matter here; what
+        // is tested is whether the parameter exists.
         if (R::FindParamOffset(g_convStrToNameFn, L"InString") >= 0) {
             g_convStrToNameInputParam = L"InString";
-        } else if (R::FindParamOffset(g_convStrToNameFn, L"inString") >= 0) {
-            g_convStrToNameInputParam = L"inString";
         } else {
-            UE_LOGW("fname_utils: Conv_StringToName has neither 'InString' nor "
-                    "'inString' -- StringToFName will fail every call");
+            UE_LOGW("fname_utils: Conv_StringToName has no 'InString' parameter -- StringToFName "
+                    "will fail every call");
         }
     }
     return g_kslCdo && g_convStrToNameFn && g_convStrToNameInputParam;

@@ -75,7 +75,7 @@ MAKE_SPAWN_CANCEL(OnRoachCustomEventPre,     "cockroachMaster.CustomEvent")
 
 struct CancelTarget {
     const wchar_t* cls;
-    const wchar_t* fn;   // exact-case from the LIVE CXX header dump (FindFunction is case-SENSITIVE)
+    const wchar_t* fn;   // as the LIVE CXX header dump spells it; the lookup compares insensitively
     GT::UFunctionInterceptor cb;
     bool registered;
 };
