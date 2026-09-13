@@ -238,8 +238,9 @@ CFG_FLAG(drive_selftest, "drive_selftest", "dev", false, nullptr,
     "Autonomous selftest: drive rack digest instrument.")
 CFG_FLAG(desk_snd_selftest, "desk_snd_selftest", "dev", false, nullptr,
     "Autonomous selftest: desk sound mirror.")
-CFG_FLAG(container_selftest, "container_selftest", "dev", false, nullptr,
-    "Autonomous selftest: container contents sync.")
+CFG_FLAG(container_selftest, "container_selftest", "dev", false, "VOTVCOOP_CONTAINER_SELFTEST",
+    "Autonomous selftest: container contents sync. It MUTATES the world -- it extracts an item on"
+    " each peer -- so it is armed per run from the environment, like the hand-drop one.")
 CFG_FLAG(hand_drop_selftest, "hand_drop_selftest", "dev", false, "VOTVCOOP_HAND_DROP_SELFTEST",
     "Autonomous selftest: a prop through a player's hotbar HAND and back out -- pick it up with "
     "the game's own verb, drop it, first with the host holding and then with the client, twice "

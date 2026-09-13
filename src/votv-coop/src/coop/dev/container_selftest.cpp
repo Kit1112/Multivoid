@@ -13,9 +13,11 @@
 
 #include <algorithm>
 #include <atomic>
+#include <cstdlib>
 #include <chrono>
 #include <cmath>
 #include <cstdint>
+#include <string>
 #include <vector>
 
 namespace coop::dev::container_selftest {
@@ -41,6 +43,18 @@ uint64_t NowMs() {
 constexpr uint64_t kHostFireMs   = 10000;
 constexpr uint64_t kClientFireMs = 25000;
 constexpr uint64_t kDigestEveryMs = 5000;
+
+// A run with SEVERAL clients needs every client to fire after the LAST of them has joined, or
+// each one is judged against a baseline its own join seed had just refreshed and the peers never
+// exercise each other. Raw env, no registry row, like the other per-run drill triggers.
+uint64_t ClientFireMs() {
+    static const uint64_t ms = [] {
+        const std::string v = coop::config::ReadEnv("VOTVCOOP_CONTAINER_FIRE_MS");
+        const uint64_t n = v.empty() ? 0 : std::strtoull(v.c_str(), nullptr, 10);
+        return n ? n : kClientFireMs;
+    }();
+    return ms;
+}
 
 uint64_t g_connectedAtMs = 0;
 uint64_t g_nextDigestMs  = 0;
@@ -169,12 +183,12 @@ void Tick() {
         g_nextDigestMs = now + kDigestEveryMs;
         UE_LOGI("container_selftest: ARMED (host fires at +%llums, client at +%llums)",
                 static_cast<unsigned long long>(kHostFireMs),
-                static_cast<unsigned long long>(kClientFireMs));
+                static_cast<unsigned long long>(ClientFireMs()));
     }
     if (!ResolveTargets()) return;
 
     const bool host = s->role() == coop::net::Role::Host;
-    const uint64_t due = host ? kHostFireMs : kClientFireMs;
+    const uint64_t due = host ? kHostFireMs : ClientFireMs();
     if (!g_fired && now - g_connectedAtMs >= due) {
         g_fired = true;
         FireExtract(host ? g_eidHostTarget : g_eidClientTarget, host ? "HOST" : "CLIENT");
