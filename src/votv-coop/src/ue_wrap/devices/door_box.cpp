@@ -139,10 +139,14 @@ bool EnsureResolved() {
     // Both families are tried until each has its class: whichever streams in second resolves its
     // own verb on its own edge, which a latch shared with the first would have denied it forever.
     // A class already held costs one pointer test; a MISS costs a whole object-array walk, and this
-    // runs per pump tick, so the attempts are throttled to one in 125 while anything is missing.
+    // runs per pump tick. So the first few hundred calls try every time -- an apply that arrives
+    // before the resolve is DROPPED by the channel, and both classes load at world enter, which is
+    // when the joiner's door states arrive -- and after that a map that simply has no drone console
+    // falls back to one attempt in 125 rather than walking the array forever.
     static uint32_t sTry = 0;
     if (!g_locker.cls || !g_console.cls || !g_timelinePlayFn) {
-        if ((sTry++ % 125) == 0) {
+        const uint32_t t = sTry++;
+        if (t < 300 || (t % 125) == 0) {
             ResolveClass(g_locker, L"locker_C", L"Open", kLockerOpened, kLockerAlpha,
                          kLockerDirection, kLockerTimeline);
             ResolveClass(g_console, L"droneConsole_C", L"setButtonsCollision",
