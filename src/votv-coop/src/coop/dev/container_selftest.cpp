@@ -60,6 +60,15 @@ uint64_t g_connectedAtMs = 0;
 uint64_t g_nextDigestMs  = 0;
 bool g_fired = false;
 
+// The verdict, printed once, fifteen seconds after this peer's own fire -- long enough for the
+// host's answer (an apply, or a refusal and its corrective) to have landed and settled.
+constexpr uint64_t kVerdictAfterMs = 15000;
+uint64_t g_verdictAtMs = 0;
+bool     g_verdictDone = false;
+int32_t  g_fireBefore  = -1;
+int32_t  g_fireAfter   = -1;
+uint32_t g_fireEid     = 0;
+
 // The two containers under test, chosen ONCE and by the same rule on both peers: the eids are
 // cross-peer stable, so peer A's pick and peer B's pick name the same actors. Index 0 is the
 // host's target, index 1 the client's -- deliberately DIFFERENT containers, so the two halves of
@@ -146,6 +155,7 @@ void FireExtract(uint32_t eid, const char* who) {
     R::CallFunction(actor, extractFn, &params);
     int32_t after = -1; float volAfter = 0.f;
     CC::ContentsDigest(eid, after, volAfter);
+    g_fireEid = eid; g_fireBefore = before; g_fireAfter = after;
     UE_LOGI("container_selftest: %s FIRED extract(0) on eid=%u -- records %d -> %d, "
             "currVol %.1f -> %.1f", who, eid, before, after, volBefore, volAfter);
     if (before == after) {
@@ -153,6 +163,30 @@ void FireExtract(uint32_t eid, const char* who) {
                 "so an absent 'callback ENTERED' line says nothing about the lane. Fix the trigger "
                 "before reading any verdict from this run.", who, eid);
     }
+}
+
+// One line a run is judged by. RED is reserved for the two failures that make every other line
+// in the run meaningless: a trigger that changed nothing, and a watch that never fired. What the
+// HOST's answer was is reported, not asserted -- a client that fired from outside the arbiter's
+// reach is SUPPOSED to be reverted, and this instrument does not walk, so both outcomes are legal
+// here. The accepted client path has an owner that does walk: `mp.py ctakerace`.
+void Verdict(bool host) {
+    int32_t now = -1; float vol = 0.f;
+    const bool live = CC::ContentsDigest(g_fireEid, now, vol);
+    const bool entered = CC::VerbWatchEntered();
+    const bool inert = (g_fireBefore >= 0 && g_fireBefore == g_fireAfter);
+    const char* fate = !live      ? "the container stopped resolving"
+                     : now == g_fireAfter ? "STUCK (the arbiter accepted it, or this peer is the host)"
+                     : now == g_fireBefore ? "REVERTED (the host refused and re-published its truth)"
+                     : "MOVED AGAIN (another peer edited it since)";
+    UE_LOGI("container_selftest: VERDICT %s -- %s: watch ENTERED=%d, fire eid=%u %d -> %d, now %d "
+            "[%s]", host ? "HOST" : "CLIENT",
+            (inert || !entered) ? "RED" : "GREEN",
+            entered ? 1 : 0, g_fireEid, g_fireBefore, g_fireAfter, now, fate);
+    if (inert)   UE_LOGW("container_selftest: RED -- the trigger changed nothing, so nothing else "
+                         "in this run says anything about the lane");
+    if (!entered) UE_LOGW("container_selftest: RED -- the addObject/takeObj watch never fired on "
+                          "this peer; the lane is inert here");
 }
 
 void Digest() {
@@ -191,7 +225,12 @@ void Tick() {
     const uint64_t due = host ? kHostFireMs : ClientFireMs();
     if (!g_fired && now - g_connectedAtMs >= due) {
         g_fired = true;
+        g_verdictAtMs = now + kVerdictAfterMs;
         FireExtract(host ? g_eidHostTarget : g_eidClientTarget, host ? "HOST" : "CLIENT");
+    }
+    if (g_fired && !g_verdictDone && now >= g_verdictAtMs) {
+        g_verdictDone = true;
+        Verdict(host);
     }
     if (now >= g_nextDigestMs) {
         g_nextDigestMs = now + kDigestEveryMs;
@@ -204,6 +243,10 @@ void OnDisconnect() {
     g_connectedAtMs = 0;
     g_nextDigestMs = 0;
     g_fired = false;
+    g_verdictDone = false;
+    g_verdictAtMs = 0;
+    g_fireBefore = g_fireAfter = -1;
+    g_fireEid = 0;
     g_eidHostTarget = g_eidClientTarget = 0;
 }
 

@@ -7,6 +7,7 @@
 #include "coop/props/prop_save_data.h"
 #include "coop/props/container_contents_sync.h"
 #include "coop/props/container_park.h"
+#include "coop/props/container_slice_wire.h"
 #include "coop/props/container_write_policy.h"
 
 #include "coop/element/registry.h"
@@ -40,10 +41,9 @@ namespace W  = coop::save_record_wire;
 namespace sg = ue_wrap::script_gate;
 namespace wp = coop::props::container_write_policy;
 namespace pk = coop::props::container_park;
+namespace cw = coop::props::container_slice_wire;
 
 using coop::element::LivePropActor;
-
-constexpr uint8_t kOpContents = 0;
 
 // Verb ids: addObject marks dirty; takeObj also arms the container-extraction birth latch that
 // prop_drop_intent consumes (a client-extracted item's actor is admitted as a host-authoritative
@@ -55,13 +55,10 @@ constexpr int kVerbTakeObj = 2;   // takeObj
 // addObject four times) into one broadcast.
 constexpr uint64_t kSweepMs = 250;
 
-// A container with more records than this is not shipped: the blob would approach the transport
-// ceiling, and a truncated blob is a silent lie. Real containers hold single digits.
-constexpr size_t kMaxRecordsPerContainer = 512;
-
 std::atomic<coop::net::Session*> g_session{nullptr};
 
 bool g_verbsRegistered = false;
+bool g_verbEntered = false;   // the watch has fired at least once on this peer
 bool g_announced = false;
 uint64_t g_nextSweep = 0;
 uint32_t g_nextSeq = 1;
@@ -244,20 +241,13 @@ bool CarriesForeignIndex(const SR::SaveRecord& r) {
     return !r.ints.empty() && !r.ints[0].empty() && r.ints[0][0] != -1;
 }
 
-// The blob grammar.
-
-void AppU16(std::vector<uint8_t>& b, uint16_t v) {
-    b.push_back(static_cast<uint8_t>(v & 0xFF));
-    b.push_back(static_cast<uint8_t>(v >> 8));
-}
-
 bool ReadContents(void* inv, std::vector<SR::SaveRecord>& out) {
     uint8_t* slot = GObjStackSlot(inv);
     if (!slot) return false;
     const SR::Arr objs = SR::ReadArr(slot, 0);  // struct_mObject.obj @ +0
-    if (static_cast<size_t>(objs.num) > kMaxRecordsPerContainer) {
+    if (static_cast<size_t>(objs.num) > cw::kMaxRecords) {
         UE_LOGW("container_contents: %d records exceeds the %zu cap -- refusing to ship a "
-                "truncated slice", objs.num, kMaxRecordsPerContainer);
+                "truncated slice", objs.num, cw::kMaxRecords);
         return false;
     }
     out.clear();
@@ -269,40 +259,6 @@ bool ReadContents(void* inv, std::vector<SR::SaveRecord>& out) {
         out.push_back(std::move(r));
     }
     return true;
-}
-
-void AppU64(std::vector<uint8_t>& b, uint64_t v) {
-    for (int i = 0; i < 8; ++i) b.push_back(static_cast<uint8_t>((v >> (i * 8)) & 0xFF));
-}
-
-bool RdU64(const std::vector<uint8_t>& b, size_t& o, uint64_t& v) {
-    if (o + 8 > b.size()) return false;
-    v = 0;
-    for (int i = 0; i < 8; ++i) v |= static_cast<uint64_t>(b[o + i]) << (i * 8);
-    o += 8;
-    return true;
-}
-
-// baseHash is the last host truth the author had applied for this eid (0 for the host itself, or
-// for an author that never applied anything): it lets the host tell "the client edited the world I
-// published" from "the client edited a world that has moved on", without which a full-slice write
-// from a stale author would silently erase a host addition the author had not received.
-std::vector<uint8_t> PackContents(uint32_t eid, uint64_t baseHash,
-                                  const std::vector<SR::SaveRecord>& recs) {
-    std::vector<uint8_t> b;
-    b.push_back(kOpContents);
-    W::AppU32(b, eid);
-    AppU64(b, baseHash);
-    AppU16(b, static_cast<uint16_t>(recs.size()));
-    for (const auto& r : recs) W::SerSave(b, r);
-    return b;
-}
-
-// The hash every gate and compare-and-swap uses, over a pack with baseHash zeroed, so it names the
-// contents alone: the same records hash the same whichever peer authored them and whatever base
-// they edited from.
-uint64_t ContentHash(uint32_t eid, const std::vector<SR::SaveRecord>& recs) {
-    return coop::blob_chunks::Fnv64(PackContents(eid, 0, recs));
 }
 
 // Broadcast one container.
@@ -322,8 +278,8 @@ bool BroadcastContainer(coop::net::Session* s, uint32_t eid, void* inv, int toSl
         auto it = g_baseHash.find(eid);
         if (it != g_baseHash.end()) baseHash = it->second;
     }
-    const std::vector<uint8_t> blob = PackContents(eid, baseHash, recs);
-    const uint64_t h = ContentHash(eid, recs);
+    const std::vector<uint8_t> blob = cw::Pack(eid, baseHash, recs);
+    const uint64_t h = cw::ContentHash(eid, recs);
     if (!force) {
         auto it = g_sentHash.find(eid);
         if (it != g_sentHash.end() && it->second == h) return true;  // unchanged -- say nothing
@@ -514,11 +470,8 @@ Ingest ApplyContents(uint32_t eid, const std::vector<SR::SaveRecord>& recs, uint
 Ingest ParseAndApply(const std::vector<uint8_t>& blob, uint32_t& outEid, uint8_t senderSlot,
                      wp::Source src) {
     size_t o = 0;
-    uint8_t op = 0;
-    if (!W::RdU8(blob, o, op) || op != kOpContents) return Ingest::Handled;  // unknown op
-    if (!W::RdU32(blob, o, outEid)) return Ingest::Handled;
     uint64_t baseHash = 0;
-    if (!RdU64(blob, o, baseHash)) return Ingest::Handled;
+    if (!cw::ParseHeader(blob, o, outEid, baseHash)) return Ingest::Handled;
     // Host arbitration before anything is touched; a refusal is answered by re-publishing the
     // host's truth to the author, so it converges instead of sitting on a divergent view.
     if (IsHost() && senderSlot != 0) {
@@ -527,6 +480,10 @@ Ingest ParseAndApply(const std::vector<uint8_t>& blob, uint32_t& outEid, uint8_t
         // that cannot be explained is still a refusal.
         const wp::Decision d = s ? wp::Accept(outEid, baseHash, senderSlot, NowMs(), *s, src)
                                  : wp::Decision::StaleBase;
+        // No body to measure the author against yet: HOLD, do not refuse. The pen replays it and
+        // the reach is judged the moment that peer has posed; the hold is bounded per author and
+        // by the TTL, so a peer that never poses costs the host eight slices for thirty seconds.
+        if (d == wp::Decision::NoBodyYet) return Ingest::Park;
         if (d != wp::Decision::Accept) {
             // Every refusal answers with the host's truth so the author converges -- except the
             // rate one, because a bound on how fast an author may spend the host must not make
@@ -541,36 +498,29 @@ Ingest ParseAndApply(const std::vector<uint8_t>& blob, uint32_t& outEid, uint8_t
             return Ingest::Handled;
         }
     }
-    if (o + 2 > blob.size()) return Ingest::Handled;
-    const uint16_t n = static_cast<uint16_t>(blob[o] | (blob[o + 1] << 8));
-    o += 2;
-    if (n > kMaxRecordsPerContainer || !W::Feasible(n, blob, o)) {
-        UE_LOGW("container_contents: eid=%u declares %u records -- rejected", outEid, n);
+    std::vector<SR::SaveRecord> recs;
+    const char* why = "";
+    if (!cw::ParseRecords(blob, o, recs, &why)) {
+        UE_LOGW("container_contents: eid=%u -- %s; dropped", outEid, why);
         return Ingest::Handled;
     }
-    std::vector<SR::SaveRecord> recs(n);
+    // BOUNDARY 2, the INBOUND half. The send side neuters a nested container's own GObjStack index
+    // because it names a slot in the SENDER's array; enforcing that outbound alone trusts every
+    // sender to be this build. Written through unchanged, prop_container::loadData reads ints[0][0]
+    // unguarded and the nested container would bind whatever sits in that slot on THIS machine --
+    // another container's contents, or a player's inventory.
     size_t foreignIndices = 0;
     for (auto& r : recs) {
-        if (!W::DeSave(blob, o, r)) {
-            UE_LOGW("container_contents: eid=%u malformed record stream -- dropped", outEid);
-            return Ingest::Handled;
-        }
-        // BOUNDARY 2, the INBOUND half. The send side neuters a nested container's own GObjStack
-        // index because it names a slot in the SENDER's array; enforcing that outbound alone trusts
-        // every sender to be this build. Written through unchanged, prop_container::loadData reads
-        // ints[0][0] unguarded and the nested container would bind whatever sits in that slot on
-        // THIS machine -- another container's contents, or a player's inventory.
-        if (RecordIsNestedContainer(r)) {
-            if (CarriesForeignIndex(r)) ++foreignIndices;
-            NeuterNestedIndex(r);
-        }
+        if (!RecordIsNestedContainer(r)) continue;
+        if (CarriesForeignIndex(r)) ++foreignIndices;
+        NeuterNestedIndex(r);
     }
     if (foreignIndices) {
         // A hit is a peer that is not this build, or a second producer that skipped the boundary.
         UE_LOGW("container_contents: eid=%u -- %zu nested-container record(s) arrived carrying a "
                 "foreign GObjStack index; neutered before the write", outEid, foreignIndices);
     }
-    const uint64_t contentHash = ContentHash(outEid, recs);
+    const uint64_t contentHash = cw::ContentHash(outEid, recs);
     const Ingest outcome = ApplyContents(outEid, recs, contentHash);
     // Host, client-authored and accepted. Two records, and the second one was missing: g_sentHash
     // keeps the host's own drain from re-broadcasting the identical slice back the long way round,
@@ -584,6 +534,12 @@ Ingest ParseAndApply(const std::vector<uint8_t>& blob, uint32_t& outEid, uint8_t
         UE_LOGI("container_contents: eid=%u slot %u ACCEPTED -- the published baseline is now "
                 "%llu, which is what the relay carries", outEid, static_cast<unsigned>(senderSlot),
                 static_cast<unsigned long long>(contentHash));
+        // The relay belongs HERE and not at the arrival site: a slice that waited in the pen and
+        // applied on a replay is the host's new truth just as much as one that applied on arrival,
+        // and relaying only the second kind left every other peer without it, silently, while the
+        // baseline above told the host they had it.
+        if (auto* s = g_session.load(std::memory_order_acquire))
+            RelayToOthers(s, senderSlot, blob);
     }
     return outcome;
 }
@@ -608,9 +564,8 @@ sg::Verdict OnVerbEntry(const sg::Call& br) {
     // The first statement, ahead of every filter: a resolved verb name does not prove this callback
     // runs, and a registration once returned true with the callback inert for a whole session. If
     // this line is absent from a log, the lane is dead.
-    static bool sEntered = false;
-    if (!sEntered) {
-        sEntered = true;
+    if (!g_verbEntered) {
+        g_verbEntered = true;
         UE_LOGI("container_contents: the verb watch ENTERED for the first time on this peer "
                 "(role=%s) -- the addObject/takeObj edge is LIVE",
                 IsHost() ? "HOST" : "CLIENT");
@@ -631,7 +586,9 @@ sg::Verdict OnVerbEntry(const sg::Call& br) {
     if (eid == static_cast<uint32_t>(coop::element::kInvalidId)) return sg::Verdict::Run;
     g_dirty.insert(eid);   // resolve identity AT THE EDGE; deref nothing later
     // The local change is stamped, so the host can tell a stale client write from a clean one.
-    wp::NoteLocalChange(eid, NowMs());
+    // Host-only: nothing on a client ever reads it, and an ungated stamp grows a row per container
+    // that peer has ever touched.
+    if (IsHost()) wp::NoteLocalChange(eid, NowMs());
     // And the applied hash is dropped: it means "an identical blob is a no-op" only while our state
     // still equals what we applied, and after our own mutation a corrective re-publish of the
     // unchanged host truth would look like a duplicate; a client whose write was refused once kept
@@ -643,7 +600,7 @@ sg::Verdict OnVerbEntry(const sg::Call& br) {
 }  // namespace
 
 // From event_feed's client-side SnapshotBegin and SnapshotComplete dispatch, on the game thread.
-void NoteJoinSnapshotBracket(bool open) { pk::NoteJoinBracket(open); }
+void NoteJoinSnapshotBracket(bool open) { pk::NoteJoinBracket(open, NowMs()); }
 
 // Read-and-clear of the takeObj-in-flight latch; prop_drop_intent consumes it at a FinishSpawn
 // enqueue to admit that birth, and only that birth, as a host-authoritative drop intent. One-shot
@@ -697,7 +654,7 @@ void Tick() {
     // were never swept at all, so a client write it could not resolve on arrival was neither
     // retried nor evicted for the life of the session.
     DrainDirty(s);
-    pk::Sweep(&ReplayParked);
+    pk::Sweep(&ReplayParked, NowMs());
 }
 
 void OnContentsChunk(const coop::net::BlobChunkPayload& p, uint8_t senderSlot) {
@@ -722,13 +679,9 @@ void OnContentsChunk(const coop::net::BlobChunkPayload& p, uint8_t senderSlot) {
     if (outcome == Ingest::Park) {
         // The container's element is not bound yet: parked (latest wins per eid) and retried by the
         // sweep until the TTL.
-        pk::Admit(eid, senderSlot, std::move(blob));
+        pk::Admit(eid, senderSlot, std::move(blob), NowMs());
         return;
     }
-    // Only what the host applied is relayed: a refused, malformed, non-container, boundary-refused
-    // or duplicate blob would reach the other peers stamped slot 0, host truth they cannot judge.
-    // Never back to the author.
-    if (outcome == Ingest::Applied && IsHost() && senderSlot != 0) RelayToOthers(s, senderSlot, blob);
 }
 
 void QueueConnectBroadcastForSlot(int peerSlot) {
@@ -773,6 +726,8 @@ size_t SnapshotWorldContainers(WorldContainer* out, size_t want) {
     return n;
 }
 
+bool VerbWatchEntered() { return g_verbEntered; }
+
 bool ContentsDigest(uint32_t eid, int32_t& outCount, float& outVol) {
     outCount = -1;
     outVol = 0.f;
@@ -798,6 +753,7 @@ void OnDisconnect() {
     g_asm.Clear();
     g_nextSweep = 0;
     g_announced = false;
+    g_verbEntered = false;
 }
 
 }  // namespace coop::props::container_contents_sync

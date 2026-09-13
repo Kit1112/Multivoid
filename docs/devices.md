@@ -51,12 +51,25 @@ The seam is a gate on the Blueprint body of the add and take verbs, and it only 
 container dirty -- it reads no arguments and takes no action, which is what makes it correct for
 every caller. The peer whose verb fired then authors the slice on the next sweep. There is no
 request the host could refuse: the item has already moved on the presser before any seam of ours
-exists. So the host arbitrates instead, accepting a client's slice only if the author is close
-enough to have used the container, edited the truth the host last published, and no host-side
-change is in flight; it then relays to every peer except the author -- echoing a peer's own state
-back would revert its newer local value. A refused write is answered by re-publishing the host's
-truth to that author, and counted. Whatever the host publishes becomes the truth the next write is
+exists. So the host arbitrates instead, and a client's slice has to pass four things: the author
+is close enough to have used the container (the game's own reach, widened by the container's size
+and by how far a player can move while their position is in flight), it has not sent more slices
+in the last second than any honest client can produce, it edited the truth the host last
+published, and no host-side change is in flight. The host then relays to every peer except the
+author -- echoing a peer's own state back would revert its newer local value. A refused write is
+answered by re-publishing the host's truth to that author, and counted; the one exception is the
+rate refusal, which answers with nothing, because a limit on how fast someone may make the host
+work must not make it work harder. Whatever the host publishes becomes the truth the next write is
 judged against, including a client's slice it has just accepted and passed on.
+
+Two things can arrive before they can be judged, and neither is refused for it. A slice whose
+container has not spawned on this machine yet waits in a holding pen -- one entry per container,
+replayed until it lands, and dropped after thirty seconds; while a join is streaming in, that
+clock does not run at all, because contents normally arrive ahead of the props they belong to. And
+a slice from a player the host has not yet placed in the world -- the first seconds of a join --
+waits in the same pen rather than being turned down, since refusing it would throw away a real
+edit at exactly the moment the game is least able to judge it. A client's pen is bounded per
+author; the host's own slices are not bounded, the way nothing of the host's is.
 
 Applying a slice raw-writes the receiver's own array slot and then re-derives everything a setter
 owns through the game's own verbs -- the volume and mass recalculation and the display-name

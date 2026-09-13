@@ -30,6 +30,7 @@
 #include "coop/player/puppet_drive.h"
 #include "coop/player/remote_player.h"
 #include "coop/player/roster.h"
+#include "coop/props/container_park.h"
 #include "coop/props/container_write_policy.h"
 #include "coop/props/prop_lifecycle.h"
 #include "coop/props/prop_snapshot.h"
@@ -400,6 +401,9 @@ bool StartCoopSession(const coop::net::Config& netCfg) {
     // the peer that is judged against a stale baseline is the one that learned the world from a
     // relay rather than from its own join seed.
     coop::props::container_write_policy::RunSelftest();
+    // And the pen beside it, whose cap has never fired in a run: every park a measured join
+    // produced was host-authored, and those are deliberately not capped.
+    coop::props::container_park::RunSelftest();
     // Reset net_pump's edge detectors, so a Stop/Start on one process carries no stale "was
     // connected" or "was holding" entries into the new session.
     coop::net_pump::OnSessionStart();

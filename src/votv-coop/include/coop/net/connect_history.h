@@ -6,8 +6,8 @@
 // address where the transport knows one, else the public key the peer has PROVED it holds, never
 // a claimed one: a claimed identity costs nothing to rotate and nothing to forge, so a history
 // keyed on it would let anyone fill an honest player's row. Every instance runs on ONE thread
-// with no lock: the edge limits on the net thread, like the admission state beside them, and the
-// container-write bound on the game thread where that lane lives. The table is bounded where MTA's is a hash
+// with no lock: the edge limits on the net thread, like the admission state beside them, and
+// the container-write bound on the game thread, where that lane lives. The table is bounded where MTA's is a hash
 // map that grows without limit (CConnectHistory.h:14, a server-class machine): a fixed table
 // keeps the net thread allocation-free, and a full table stops counting, not checking, and says
 // so once: a refusal here can only ever deny, so failing closed would lock honest players out

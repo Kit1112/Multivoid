@@ -23,8 +23,13 @@ namespace coop::props::container_write_policy {
 enum class Decision : uint8_t {
     Accept = 0,
     TooFast,             // this author has spent its window's worth of the host's arbitration
-    Unreachable,         // the author is not where this container is, or has no body to measure
-                         // from; the element's own outcome name rides in the log line
+    Unreachable,         // the author is not where this container is; the element's own outcome
+                         // name rides in the log line
+    NoBodyYet,           // the author has no body on this machine to measure a reach from, which
+                         // is a mid-join window rather than a verdict: the caller HOLDS the slice
+                         // instead of refusing it (principle 8 -- a lane owes its late-join answer,
+                         // and losing an honest edit for the seconds before a puppet poses is the
+                         // worse one). The pen bounds the hold: 8 per author, 30 s
     StaleBase,           // the author edited a world the host has not published
     HostChangeInFlight,  // the author edited the published world, but a host-side change to this
                          // container is younger than the conflict window and the author provably

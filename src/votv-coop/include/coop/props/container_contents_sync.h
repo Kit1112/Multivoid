@@ -1,18 +1,18 @@
 // coop/props/container_contents_sync.h -- a world container's CONTENTS, authored by the peer whose
-// verb fired and arbitrated by the host. docs/devices.md carries the model. Two rules restate here,
-// because breaking either destroys player data: a container whose propInventory_C.Player reads
-// true, OR whose offset will not resolve, is SKIPPED (personal inventory shares the same global
-// GObjStack array, and a write over another peer's slice wipes that player's inventory); and a
-// nested container's own GObjStack index rides as the sentinel -1, on the way out AND on the way
-// in, since a real value there names a slot in the SENDER's array. The edge is
-// ue_wrap/core/script_gate on addObject and takeObj, marking the component dirty. Apply raw-writes
-// the receiver's own GObjStack slot, then re-derives the setter-managed state through
-// updateVolumesAndMass and recalculateNames; addObject cannot be the apply verb (it takes a live
-// AActor* and serialises it itself) and checkObjectsVolume is not called (an overflow ejector, it
-// would destroy contents). Wire: ReliableKind::ContainerContents, a BlobChunkPayload whose blob is
-// [u8 op=0][u32 eid][u64 baseHash][u16 n] then n records in the coop/items/save_record_wire
-// grammar. Never refanned: a client accepts slot 0 and nothing else, and the host accepts only a
-// non-zero slot, which is a client-authored slice it arbitrates. Game thread throughout.
+// verb fired and arbitrated by the host. docs/devices.md carries the model; the invariants a
+// client-authored slice must pass are coop/props/container_write_policy, the pen that holds one it
+// cannot judge yet is coop/props/container_park, the bytes are coop/props/container_slice_wire.
+//
+// Two rules restate HERE, because breaking either destroys player data: a container whose
+// propInventory_C.Player reads true, OR whose offset will not resolve, is SKIPPED (personal
+// inventory shares one global GObjStack array, and a write over another peer's slice wipes that
+// player's inventory); and a nested container's own index rides as the sentinel -1, on the way out
+// AND on the way in, since a real value there names a slot in the SENDER's array.
+//
+// The edge is ue_wrap/core/script_gate on addObject and takeObj, marking the OWNING actor's eid
+// dirty. Apply raw-writes the receiver's own GObjStack slot, then re-derives the setter-managed
+// state through updateVolumesAndMass and recalculateNames; addObject cannot be the apply verb (it
+// takes a live AActor* and serialises it itself) and checkObjectsVolume is not called (it ejects).
 
 #pragma once
 
@@ -35,7 +35,10 @@ void Tick();
 // container extraction. Game thread.
 bool TakeObjInFlight();
 
-// ContainerContents chunks.
+// ContainerContents chunks: a BlobChunkPayload whose blob is
+// `[u8 op=0][u32 eid][u64 baseHash][u16 n]` then n records in the coop/items/save_record_wire
+// grammar. Never refanned -- a client accepts slot 0 and nothing else, and the host accepts only a
+// non-zero slot, which is a client-authored slice it arbitrates.
 void OnContentsChunk(const coop::net::BlobChunkPayload& p, uint8_t senderSlot);
 
 // Host: ship the joiner one contents blob per live world container. The join save-transfer blob is
@@ -63,6 +66,10 @@ struct WorldContainer {
 
 // Fill `out` with up to `want` live world containers, boundary 1 applied. Host or client.
 size_t SnapshotWorldContainers(WorldContainer* out, size_t want);
+
+// Has the addObject/takeObj watch fired on this peer at least once? The instrument's verdict
+// needs it: an absent effect means one thing if the edge is live and another if it never was.
+bool VerbWatchEntered();
 
 // The observable digest for one container: how many records its slice holds and the currVol the
 // engine reports. Both peers print it; the smoke compares the numbers. False if the eid is not a
