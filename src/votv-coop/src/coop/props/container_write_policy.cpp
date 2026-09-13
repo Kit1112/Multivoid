@@ -4,6 +4,8 @@
 
 #include "coop/element/element.h"
 #include "coop/element/intent_authority.h"
+#include "coop/net/connect_history.h"
+#include "coop/net/session.h"
 #include "ue_wrap/core/log.h"
 
 #include <map>
@@ -23,6 +25,17 @@ std::map<uint32_t, uint64_t> g_localChangeMs;
 
 uint64_t g_refused = 0;
 
+// One instance of the tree's per-source limit, the same class the accept edge and the lobby
+// password use. MTA bounds a source at the JOIN edge alone (CConnectHistory, CGame.cpp:163) and
+// needs no in-session twin, because there a client never authors a server-owned element's state --
+// it sends pure-sync for the ped it owns and the server writes the rest. Our container verbs run
+// below any seam that could refuse them, so the peer authors and the host arbitrates, and this is
+// where that divergence gets its bound. Game thread, unlike its siblings on the net thread; each
+// instance is lock-free and single-threaded on its own.
+coop::net::connect_history::History g_writes{
+    coop::net::connect_history::Policy{kRateMax, kRateWindowMs, kRateWindowMs},
+    "container writes"};
+
 }  // namespace
 
 Decision Judge(const Inputs& in) {
@@ -38,7 +51,34 @@ Decision Judge(const Inputs& in) {
 
 Decision Accept(uint32_t eid, uint64_t baseHash, uint8_t authorSlot, uint64_t nowMs,
                 coop::net::Session& session) {
-    // REACH FIRST, and only where it is answerable. A container's contents are mutated through the
+    // The budget is spent by ARRIVAL, not by acceptance: a refused slice still costs the host a
+    // parse, this arbitration and a corrective re-publish. A seated peer's proved storage guid is
+    // the source; an author the host has no proved identity for is not counted rather than
+    // refused, the same way a full table here refuses nobody -- every other gate still applies.
+    coop::net::connect_history::Key src;
+    if (coop::net::connect_history::KeyFromProvedGuid(session.ProvedGuidForSlot(authorSlot), src)) {
+        const auto v = g_writes.Note(src, nowMs);
+        if (v.refused) {
+            ++g_refused;
+            UE_LOGW("container_contents: CONFLICT eid=%u slot %u -- %d slices inside %llu ms is "
+                    "past the bound; refused for %llu ms. Write REFUSED; re-publishing host truth "
+                    "to the author. Total refused this session: %llu",
+                    eid, static_cast<unsigned>(authorSlot), v.count,
+                    static_cast<unsigned long long>(kRateWindowMs),
+                    static_cast<unsigned long long>(v.retryMs),
+                    static_cast<unsigned long long>(g_refused));
+            return Decision::TooFast;
+        }
+    } else {
+        static bool sSaid = false;
+        if (!sSaid) {
+            sSaid = true;
+            UE_LOGW("container_contents: slot %u has no proved identity -- its slices are "
+                    "arbitrated but not rate-bounded", static_cast<unsigned>(authorSlot));
+        }
+    }
+
+    // REACH, and only where it is answerable. A container's contents are mutated through the
     // player's own look-at trace, so an author that is not at the container did not run the verb it
     // is reporting. NoRow and StaleDead are not refusals here: they mean the element has not
     // arrived (or has gone), which is the park's question, not this one.
@@ -88,6 +128,7 @@ void NoteLocalChange(uint32_t eid, uint64_t nowMs) { g_localChangeMs[eid] = nowM
 void Reset() {
     g_publishedHash.clear();
     g_localChangeMs.clear();
+    g_writes.Clear();
     g_refused = 0;
 }
 

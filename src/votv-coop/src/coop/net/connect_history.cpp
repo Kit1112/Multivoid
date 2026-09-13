@@ -31,6 +31,26 @@ bool KeyFromAddress(uint32_t hConn, Key& out) {
     return KeyFromAddressBytes(info.m_addrRemote.m_ipv6, out);
 }
 
+bool KeyFromProvedGuid(const std::string& guid, Key& out) {
+    if (guid.size() != 32) return false;
+    out = Key{};
+    out.kind = KeyKind::Identity;
+    for (size_t i = 0; i < 16; ++i) {
+        int byte = 0;
+        for (int half = 0; half < 2; ++half) {
+            const char c = guid[i * 2 + half];
+            int v;
+            if (c >= '0' && c <= '9')      v = c - '0';
+            else if (c >= 'a' && c <= 'f') v = c - 'a' + 10;
+            else if (c >= 'A' && c <= 'F') v = c - 'A' + 10;
+            else return false;
+            byte = (byte << 4) | v;
+        }
+        out.bytes[i] = static_cast<uint8_t>(byte);
+    }
+    return true;
+}
+
 Key KeyFromIdentity(const peer_identity::PubKey& pub) {
     Key k;
     std::memcpy(k.bytes, pub.data(), sizeof(k.bytes));
@@ -309,6 +329,27 @@ bool RunSelftest() {
         check(KeyFromAddressBytes(addrBytes, addr) && addr.kind == KeyKind::Address &&
                   std::memcmp(addr.bytes, addrBytes, 16) == 0,
               "a mapped IPv4 address is a key of the address kind");
+    }
+
+    // 8. A seated peer's storage guid as a source. The negatives first: a guid is 32 hex
+    // characters and nothing else, and a source that cannot be spelled is no source at all.
+    {
+        Key k;
+        check(!KeyFromProvedGuid("", k), "an empty guid is no key");
+        check(!KeyFromProvedGuid("0123456789abcdef0123456789abcde", k),
+              "thirty-one characters is no key");
+        check(!KeyFromProvedGuid("0123456789abcdef0123456789abcdef0", k),
+              "thirty-three characters is no key");
+        check(!KeyFromProvedGuid("0123456789abcdef0123456789abcdeg", k),
+              "a character outside hex is no key");
+        check(KeyFromProvedGuid("0123456789ABCDEF0123456789abcdef", k) &&
+                  k.kind == KeyKind::Identity && k.bytes[0] == 0x01 && k.bytes[7] == 0xEF &&
+                  k.bytes[15] == 0xEF,
+              "a 32-character guid spells sixteen bytes, either case");
+        Key other;
+        check(KeyFromProvedGuid("0123456789abcdef0123456789abcdee", other) &&
+                  std::memcmp(k.bytes, other.bytes, 16) != 0,
+              "two guids differing in the last character are two sources");
     }
 
     if (pass == total) {

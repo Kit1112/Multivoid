@@ -22,6 +22,7 @@ namespace coop::props::container_write_policy {
 // converges instead of keeping a divergent view.
 enum class Decision : uint8_t {
     Accept = 0,
+    TooFast,             // this author has spent its window's worth of the host's arbitration
     Unreachable,         // the author is not where this container is, or has no body to measure
                          // from; the element's own outcome name rides in the log line
     StaleBase,           // the author edited a world the host has not published
@@ -46,6 +47,14 @@ inline constexpr uint64_t kConflictWindowMs = 1500;
 // budget. The game opens and mutates a container through the camera trace mainPlayer::arm, whose
 // default length is armLength = 200 uu, so that is the number this lane owns.
 inline constexpr float kReachUU = 200.0f;
+
+// How many slices one author may have arbitrated inside a window, and how long the refusal lasts.
+// An author's own sweep ships at most one slice per container per 250 ms, so sixteen in a second
+// is four times the rate this build can produce and still bounds a sender that ignores its own
+// sweep: every accepted change allocates a fresh records buffer on the host and orphans the old
+// one, so the rate of accepted change IS the rate the host spends.
+inline constexpr int      kRateMax      = 16;
+inline constexpr uint64_t kRateWindowMs = 1000;
 
 // The PURE half. An author that never received anything sends base 0 and is refused rather than
 // trusted, which is why the match requires a non-zero base.

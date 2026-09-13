@@ -5,8 +5,9 @@
 // cap at the accept edge and the lobby-password guess bound at the proof. A source is the remote
 // address where the transport knows one, else the public key the peer has PROVED it holds, never
 // a claimed one: a claimed identity costs nothing to rotate and nothing to forge, so a history
-// keyed on it would let anyone fill an honest player's row. Every instance runs on the net thread
-// with no lock, like the admission state beside it. The table is bounded where MTA's is a hash
+// keyed on it would let anyone fill an honest player's row. Every instance runs on ONE thread
+// with no lock: the edge limits on the net thread, like the admission state beside them, and the
+// container-write bound on the game thread where that lane lives. The table is bounded where MTA's is a hash
 // map that grows without limit (CConnectHistory.h:14, a server-class machine): a fixed table
 // keeps the net thread allocation-free, and a full table stops counting, not checking, and says
 // so once: a refusal here can only ever deny, so failing closed would lock honest players out
@@ -15,6 +16,7 @@
 #pragma once
 
 #include <cstdint>
+#include <string>
 
 #include "coop/net/peer_identity.h"
 
@@ -37,6 +39,10 @@ bool KeyFromAddress(uint32_t hConn, Key& out);
 bool KeyFromAddressBytes(const uint8_t ipv6[16], Key& out);
 // The first half of a public key. Only a key the peer has proved it holds may be passed.
 Key KeyFromIdentity(const peer_identity::PubKey& pub);
+// The 16 bytes a seated peer's storage guid spells: hex(SHA-256(proved public key)[0..16]), which
+// is what the host derives at admission and the only form of a peer's proved identity a lane
+// holding a SLOT can reach. False for anything that is not 32 hex characters.
+bool KeyFromProvedGuid(const std::string& guid, Key& out);
 
 // One policy: refuse a source that has recorded `max` events inside `windowMs`, for `ignoreMs`
 // from the moment it crossed the line -- CConnectHistory's three constructor constants, which
@@ -114,7 +120,8 @@ void ConfigureConnects(long cap, long windowS);
 
 // The arithmetic selftest, run once per session start beside the identity ones: the count that
 // refuses, the refusal that lifts, a window that slides, a refused event that is not recorded,
-// keys of two kinds that do not collide, and a full table that refuses nobody.
+// keys of two kinds that do not collide, a guid that is and is not one, and a full table that
+// refuses nobody.
 bool RunSelftest();
 
 }  // namespace coop::net::connect_history
