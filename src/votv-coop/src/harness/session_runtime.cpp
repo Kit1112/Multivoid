@@ -30,6 +30,7 @@
 #include "coop/player/puppet_drive.h"
 #include "coop/player/remote_player.h"
 #include "coop/player/roster.h"
+#include "coop/props/container_write_policy.h"
 #include "coop/props/prop_lifecycle.h"
 #include "coop/props/prop_snapshot.h"
 #include "coop/save/save_guard.h"
@@ -394,6 +395,11 @@ bool StartCoopSession(const coop::net::Config& netCfg) {
     // the test: one password under two host keys must not collide, an empty password must refuse to
     // derive, a tag must not verify against another nonce.
     coop::net::lobby_password::RunSelftest();
+    // And the container arbitration's own arithmetic: the base that is refused, the host change in
+    // flight, and the sequence a third peer walks into -- which no two-peer run can reach, because
+    // the peer that is judged against a stale baseline is the one that learned the world from a
+    // relay rather than from its own join seed.
+    coop::props::container_write_policy::RunSelftest();
     // Reset net_pump's edge detectors, so a Stop/Start on one process carries no stale "was
     // connected" or "was holding" entries into the new session.
     coop::net_pump::OnSessionStart();

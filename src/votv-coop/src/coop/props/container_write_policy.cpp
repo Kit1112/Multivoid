@@ -49,6 +49,15 @@ Decision Judge(const Inputs& in) {
     return Decision::Accept;
 }
 
+Decision JudgeAgainstState(uint32_t eid, uint64_t baseHash, uint64_t nowMs) {
+    Inputs in;
+    in.baseHash = baseHash;
+    in.nowMs    = nowMs;
+    if (auto it = g_publishedHash.find(eid); it != g_publishedHash.end()) in.publishedHash = it->second;
+    if (auto it = g_localChangeMs.find(eid); it != g_localChangeMs.end()) in.lastLocalChangeMs = it->second;
+    return Judge(in);
+}
+
 Decision Accept(uint32_t eid, uint64_t baseHash, uint8_t authorSlot, uint64_t nowMs,
                 coop::net::Session& session) {
     // The budget is spent by ARRIVAL, not by acceptance: a refused slice still costs the host a
@@ -97,15 +106,11 @@ Decision Accept(uint32_t eid, uint64_t baseHash, uint8_t authorSlot, uint64_t no
         return Decision::Unreachable;
     }
 
-    Inputs in;
-    in.baseHash = baseHash;
-    in.nowMs    = nowMs;
-    if (auto it = g_publishedHash.find(eid); it != g_publishedHash.end()) in.publishedHash = it->second;
-    if (auto it = g_localChangeMs.find(eid); it != g_localChangeMs.end()) in.lastLocalChangeMs = it->second;
-
-    const Decision d = Judge(in);
+    const Decision d = JudgeAgainstState(eid, baseHash, nowMs);
     if (d == Decision::Accept) return d;
 
+    uint64_t published = 0;
+    if (auto it = g_publishedHash.find(eid); it != g_publishedHash.end()) published = it->second;
     ++g_refused;
     // The failed condition is named: reported together, a never-published container once read as a
     // racing host change.
@@ -115,8 +120,8 @@ Decision Accept(uint32_t eid, uint64_t baseHash, uint8_t authorSlot, uint64_t no
             d == Decision::HostChangeInFlight
                 ? "a HOST-side change is in flight within the conflict window"
                 : "the author edited a state the host has not published (STALE BASE)",
-            static_cast<unsigned long long>(in.baseHash),
-            static_cast<unsigned long long>(in.publishedHash),
+            static_cast<unsigned long long>(baseHash),
+            static_cast<unsigned long long>(published),
             static_cast<unsigned long long>(g_refused));
     return d;
 }
@@ -124,6 +129,58 @@ Decision Accept(uint32_t eid, uint64_t baseHash, uint8_t authorSlot, uint64_t no
 void NotePublished(uint32_t eid, uint64_t contentHash) { g_publishedHash[eid] = contentHash; }
 
 void NoteLocalChange(uint32_t eid, uint64_t nowMs) { g_localChangeMs[eid] = nowMs; }
+
+bool RunSelftest() {
+    Reset();
+    int pass = 0, total = 0;
+    auto check = [&](bool ok, const char* what) {
+        ++total;
+        if (ok) { ++pass; return; }
+        UE_LOGE("container_write_policy selftest FAIL: %s", what);
+    };
+    constexpr uint32_t kEid = 4242;
+    constexpr uint64_t kH0 = 0x1111, kH1 = 0x2222, kH2 = 0x3333;
+
+    // The negatives first: nothing published yet, so no base can match.
+    check(JudgeAgainstState(kEid, 0, 1000) == Decision::StaleBase, "a base of zero is refused");
+    check(JudgeAgainstState(kEid, kH0, 1000) == Decision::StaleBase,
+          "any base is refused for a container the host has not published");
+
+    NotePublished(kEid, kH0);
+    check(JudgeAgainstState(kEid, 0, 1000) == Decision::StaleBase,
+          "a base of zero is refused even once published");
+    check(JudgeAgainstState(kEid, kH1, 1000) == Decision::StaleBase,
+          "a base that is not what was published is refused");
+    check(JudgeAgainstState(kEid, kH0, 1000) == Decision::Accept,
+          "the base the host published is accepted");
+
+    // A host-side change inside the window refuses; outside it, the same base passes again.
+    NoteLocalChange(kEid, 1000);
+    check(JudgeAgainstState(kEid, kH0, 1000 + kConflictWindowMs) == Decision::HostChangeInFlight,
+          "a host change inside the conflict window refuses");
+    check(JudgeAgainstState(kEid, kH0, 1001 + kConflictWindowMs) == Decision::Accept,
+          "the window ends and the same base is accepted");
+
+    // The sequence a third peer walks into. The host accepted client A's slice and relayed it, so
+    // the world it published is now that content; B, which applied the relay, declares it and must
+    // be accepted, while A's own older base must not be.
+    NotePublished(kEid, kH1);
+    check(JudgeAgainstState(kEid, kH1, 100'000) == Decision::Accept,
+          "the peer holding what the relay carried is accepted");
+    check(JudgeAgainstState(kEid, kH0, 100'000) == Decision::StaleBase,
+          "the peer still holding the older fan-out is refused");
+    NotePublished(kEid, kH2);
+    check(JudgeAgainstState(kEid, kH1, 100'000) == Decision::StaleBase,
+          "and one publication later that peer is behind in turn");
+
+    Reset();
+    if (pass == total) {
+        UE_LOGI("container_write_policy selftest: ALL PASS (%d checks)", total);
+        return true;
+    }
+    UE_LOGE("container_write_policy selftest: %d/%d checks passed", pass, total);
+    return false;
+}
 
 void Reset() {
     g_publishedHash.clear();

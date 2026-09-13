@@ -577,6 +577,9 @@ Ingest ParseAndApply(const std::vector<uint8_t>& blob, uint32_t& outEid, uint8_t
     if (outcome == Ingest::Applied && IsHost() && senderSlot != 0) {
         g_sentHash[outEid] = contentHash;
         wp::NotePublished(outEid, contentHash);
+        UE_LOGI("container_contents: eid=%u slot %u ACCEPTED -- the published baseline is now "
+                "%llu, which is what the relay carries", outEid, static_cast<unsigned>(senderSlot),
+                static_cast<unsigned long long>(contentHash));
     }
     return outcome;
 }

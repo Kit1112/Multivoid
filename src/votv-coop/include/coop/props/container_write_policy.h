@@ -60,6 +60,10 @@ inline constexpr uint64_t kRateWindowMs = 1000;
 // trusted, which is why the match requires a non-zero base.
 Decision Judge(const Inputs& in);
 
+// Judge against what this module remembers for that container. The half `Accept` runs after the
+// rate and the reach, and the half a selftest can drive without an engine or a session.
+Decision JudgeAgainstState(uint32_t eid, uint64_t baseHash, uint64_t nowMs);
+
 // The stateful call the lane makes: the reach question first, then the base. Logs the refusal,
 // including which condition failed, and counts it. An eid that resolves to no live prop element is
 // NOT a reach refusal -- the lane parks such a slice and replays it, and the park is where the
@@ -75,5 +79,12 @@ void NotePublished(uint32_t eid, uint64_t contentHash);
 void NoteLocalChange(uint32_t eid, uint64_t nowMs);
 
 void Reset();
+
+// The arithmetic selftest, run once per session start beside the identity ones: the base that is
+// refused, the base that is accepted, the host change in flight, and the sequence a THIRD peer
+// walks into -- the host publishes, one client's slice is accepted and relayed, and the next
+// author is judged against what the relay carried rather than against the older fan-out. Leaves
+// the module empty.
+bool RunSelftest();
 
 }  // namespace coop::props::container_write_policy
