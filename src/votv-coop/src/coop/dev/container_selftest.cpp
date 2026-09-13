@@ -3,16 +3,20 @@
 #include "coop/dev/container_selftest.h"
 
 #include "coop/config/config.h"
+#include "coop/dev/director/director.h"   // PlayerContext -- where the local body is
 #include "coop/net/session.h"
 #include "coop/props/container_contents_sync.h"
 
-
 #include "ue_wrap/core/log.h"
 #include "ue_wrap/core/reflection.h"
+#include "ue_wrap/engine/engine.h"
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <cmath>
 #include <cstdint>
+#include <vector>
 
 namespace coop::dev::container_selftest {
 namespace {
@@ -57,22 +61,38 @@ uint32_t g_eidClientTarget = 0;
 // Choosing by CONTENT rather than by registry order is what makes the trigger real.
 constexpr size_t kScan = 64;
 
+// ...and by DISTANCE, because the host arbitrates a client's slice against the author's reach: a
+// client firing on a container across the map now authors a write the host refuses, and the
+// instrument would be measuring the refusal path while claiming to measure the circle. Both peers
+// order the same candidate set by (distance from their own body, eid), which picks the same pair
+// while they stand together -- and the chosen distances are logged, so a run where they did not
+// can be told apart from a run where the lane broke.
 bool ResolveTargets() {
     if (g_eidHostTarget && g_eidClientTarget) return true;
+    coop::director::PlayerContext ctx;
+    if (!ctx.Refresh()) return false;   // no possessed body yet: the pick has no anchor
     CC::WorldContainer picks[kScan]{};
     const size_t n = CC::SnapshotWorldContainers(picks, kScan);
+    struct Cand { uint32_t eid; float dist; };
+    std::vector<Cand> cands;
     for (size_t i = 0; i < n; ++i) {
         int32_t cnt = -1; float vol = 0.f;
         if (!CC::ContentsDigest(picks[i].eid, cnt, vol) || cnt < 1) continue;
-        if (!g_eidHostTarget)                                  g_eidHostTarget = picks[i].eid;
-        else if (picks[i].eid != g_eidHostTarget && !g_eidClientTarget)
-                                                               g_eidClientTarget = picks[i].eid;
-        if (g_eidHostTarget && g_eidClientTarget) break;
+        ue_wrap::FVector pos{};
+        if (!ue_wrap::engine::TryGetActorLocation(picks[i].actor, pos)) continue;
+        const float dx = pos.X - ctx.pos.X, dy = pos.Y - ctx.pos.Y, dz = pos.Z - ctx.pos.Z;
+        cands.push_back(Cand{picks[i].eid, std::sqrt(dx * dx + dy * dy + dz * dz)});
     }
-    if (!g_eidHostTarget || !g_eidClientTarget) return false;   // keep looking; the world may still be filling
-    UE_LOGI("container_selftest: targets chosen (non-empty only) -- host extracts from eid=%u, "
-            "client from eid=%u (scanned %zu world containers)",
-            g_eidHostTarget, g_eidClientTarget, n);
+    if (cands.size() < 2) return false;   // keep looking; the world may still be filling
+    std::sort(cands.begin(), cands.end(), [](const Cand& a, const Cand& b) {
+        // The eid breaks a tie, never the scan order: that is registry order and differs per peer.
+        return a.dist != b.dist ? a.dist < b.dist : a.eid < b.eid;
+    });
+    g_eidHostTarget   = cands[0].eid;
+    g_eidClientTarget = cands[1].eid;
+    UE_LOGI("container_selftest: targets chosen (non-empty, nearest first) -- host extracts from "
+            "eid=%u at %.0f uu, client from eid=%u at %.0f uu (scanned %zu world containers)",
+            g_eidHostTarget, cands[0].dist, g_eidClientTarget, cands[1].dist, n);
     return true;
 }
 

@@ -2,6 +2,8 @@
 
 #include "coop/props/container_write_policy.h"
 
+#include "coop/element/element.h"
+#include "coop/element/intent_authority.h"
 #include "ue_wrap/core/log.h"
 
 #include <map>
@@ -34,7 +36,27 @@ Decision Judge(const Inputs& in) {
     return Decision::Accept;
 }
 
-Decision Accept(uint32_t eid, uint64_t baseHash, uint8_t authorSlot, uint64_t nowMs) {
+Decision Accept(uint32_t eid, uint64_t baseHash, uint8_t authorSlot, uint64_t nowMs,
+                coop::net::Session& session) {
+    // REACH FIRST, and only where it is answerable. A container's contents are mutated through the
+    // player's own look-at trace, so an author that is not at the container did not run the verb it
+    // is reporting. NoRow and StaleDead are not refusals here: they mean the element has not
+    // arrived (or has gone), which is the park's question, not this one.
+    const auto tok = coop::element::IntentTarget::ForClientIntent(session, authorSlot, kReachUU);
+    const auto sub = tok.Resolve(static_cast<coop::element::ElementId>(eid),
+                                 coop::element::ElementType::Prop);
+    if (sub.outcome == coop::element::IntentOutcome::OutOfReach ||
+        sub.outcome == coop::element::IntentOutcome::NoBody) {
+        ++g_refused;
+        UE_LOGW("container_contents: CONFLICT eid=%u slot %u -- the author cannot reach it (%s, "
+                "dist=%.0f allowed=%.0f). Write REFUSED; re-publishing host truth to the author. "
+                "Total refused this session: %llu",
+                eid, static_cast<unsigned>(authorSlot),
+                coop::element::OutcomeName(sub.outcome), sub.distUU, sub.reachUU,
+                static_cast<unsigned long long>(g_refused));
+        return Decision::Unreachable;
+    }
+
     Inputs in;
     in.baseHash = baseHash;
     in.nowMs    = nowMs;

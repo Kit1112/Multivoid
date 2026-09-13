@@ -520,16 +520,21 @@ Ingest ParseAndApply(const std::vector<uint8_t>& blob, uint32_t& outEid, uint8_t
     if (!RdU64(blob, o, baseHash)) return Ingest::Handled;
     // Host arbitration before anything is touched; a refusal is answered by re-publishing the
     // host's truth to the author, so it converges instead of sitting on a divergent view.
-    if (IsHost() && senderSlot != 0 &&
-        wp::Accept(outEid, baseHash, senderSlot, NowMs()) != wp::Decision::Accept) {
+    if (IsHost() && senderSlot != 0) {
         auto* s = g_session.load(std::memory_order_acquire);
-        void* actor = LivePropActor(outEid);
-        void* inv = actor && IsContainerActor(actor) ? InventoryOf(actor) : nullptr;
-        if (s && inv && IsWorldContainerInventory(inv)) {
-            BroadcastContainer(s, outEid, inv, static_cast<int>(senderSlot), /*force=*/true);
+        // No session, no arbitration, and a client slice is never applied unjudged: the refusal
+        // that cannot be explained is still a refusal.
+        const wp::Decision d = s ? wp::Accept(outEid, baseHash, senderSlot, NowMs(), *s)
+                                 : wp::Decision::StaleBase;
+        if (d != wp::Decision::Accept) {
+            void* actor = LivePropActor(outEid);
+            void* inv = actor && IsContainerActor(actor) ? InventoryOf(actor) : nullptr;
+            if (s && inv && IsWorldContainerInventory(inv)) {
+                BroadcastContainer(s, outEid, inv, static_cast<int>(senderSlot), /*force=*/true);
+            }
+            // Handled, not Applied: never relayed; third peers run no arbitration.
+            return Ingest::Handled;
         }
-        // Handled, not Applied: never relayed; third peers run no CAS.
-        return Ingest::Handled;
     }
     if (o + 2 > blob.size()) return Ingest::Handled;
     const uint16_t n = static_cast<uint16_t>(blob[o] | (blob[o + 1] << 8));

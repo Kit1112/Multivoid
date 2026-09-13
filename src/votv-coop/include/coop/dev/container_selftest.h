@@ -3,16 +3,16 @@
 //
 // An idle two-peer run cannot exercise this lane: nobody opens a container, and a save load
 // fills `saveSlot.GObjStack` wholesale rather than through the watched verbs, so the lane's
-// central claim -- that the `addObject`/`takeObj` watch ENTERS on each peer -- stays
-// invisible to it.
+// central claim -- that the `addObject`/`takeObj` watch ENTERS on each peer -- stays invisible.
 //
 // It dispatches `prop_container_C::extract(0)` and nothing else. extract's first act is
 // `propInventory->takeObj(index, false, ...)`, dispatched blueprint-internally, so the call WE
 // make is the outer one and the mutation to be caught is the game's own inner dispatch.
-// Dispatching `takeObj` ourselves would prove nothing: it would arrive through ProcessEvent,
-// the one path the lane does NOT rely on. The host fires at +10 s on a world container and the
-// client at +25 s on a different one; each peer prints a DIGEST line (eid, record count,
-// currVol) for both every 5 s, so the NUMBER can be compared across peers.
+// Dispatching `takeObj` ourselves would prove nothing: it would arrive through ProcessEvent, the
+// one path the lane does NOT rely on. The host fires at +10 s and the client at +25 s, each on
+// the NEAREST non-empty container to its own body, since the host arbitrates a client's slice
+// against its author's reach; the distances ride in the target line, and both peers print a
+// DIGEST (eid, records, currVol) every 5 s, so the NUMBERS can be compared across peers.
 
 #pragma once
 

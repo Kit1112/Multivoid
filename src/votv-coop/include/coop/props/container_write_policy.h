@@ -13,6 +13,8 @@
 
 #include <cstdint>
 
+namespace coop::net { class Session; }
+
 namespace coop::props::container_write_policy {
 
 // Why a client-authored slice was accepted or refused. A refusal is never silent and never
@@ -20,6 +22,8 @@ namespace coop::props::container_write_policy {
 // converges instead of keeping a divergent view.
 enum class Decision : uint8_t {
     Accept = 0,
+    Unreachable,         // the author is not where this container is, or has no body to measure
+                         // from; the element's own outcome name rides in the log line
     StaleBase,           // the author edited a world the host has not published
     HostChangeInFlight,  // the author edited the published world, but a host-side change to this
                          // container is younger than the conflict window and the author provably
@@ -38,13 +42,21 @@ struct Inputs {
 // A client write is refused within this window of a host-side change.
 inline constexpr uint64_t kConflictWindowMs = 1500;
 
+// The lane's own reach, before intent_authority adds the target's bounds and its pose-staleness
+// budget. The game opens and mutates a container through the camera trace mainPlayer::arm, whose
+// default length is armLength = 200 uu, so that is the number this lane owns.
+inline constexpr float kReachUU = 200.0f;
+
 // The PURE half. An author that never received anything sends base 0 and is refused rather than
 // trusted, which is why the match requires a non-zero base.
 Decision Judge(const Inputs& in);
 
-// The stateful call the lane makes. Logs the refusal, including which condition failed, and
-// counts it.
-Decision Accept(uint32_t eid, uint64_t baseHash, uint8_t authorSlot, uint64_t nowMs);
+// The stateful call the lane makes: the reach question first, then the base. Logs the refusal,
+// including which condition failed, and counts it. An eid that resolves to no live prop element is
+// NOT a reach refusal -- the lane parks such a slice and replays it, and the park is where the
+// birth-skew answer lives.
+Decision Accept(uint32_t eid, uint64_t baseHash, uint8_t authorSlot, uint64_t nowMs,
+                coop::net::Session& session);
 
 // The host has told the world what this container holds, by any route -- a fan-out or a targeted
 // connect seed. This is the compare-and-swap baseline a later client write is judged against.
