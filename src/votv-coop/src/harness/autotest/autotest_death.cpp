@@ -1,7 +1,7 @@
 // harness/autotest/autotest_death.cpp -- the native death-chain instrument
 // (VOTVCOOP_RUN_DEATH_TEST), one process in two configurations. `mp.py death --session` is a solo
 // host (a session with zero clients), the acceptance run: the native death plays out (about 10 s,
-// the black screen at +5 s), the level travel is refused at UGameplayStatics::OpenLevel, and the
+// the black screen at +5 s), the run-ending travel is cancelled at lib_C::loadLevel, and the
 // player comes back standing at the KPP with the pause menu reachable. `mp.py death` is
 // sessionless, the negative control: single player is untouched, so the travel must still happen
 // and the seam refuse nothing. Neither needs a second peer. The observation half never fails (the
@@ -101,9 +101,10 @@ struct Sample {
     // honest assertion.
     float locX = 0.f, locY = 0.f, locZ = 0.f;
     bool  haveLoc = false;
-    // lib.loadLevel's menu prep, read back: pause_mainMenu lives on the screen tree all session, so
-    // loadLevel's two writes stick through a cancelled travel and the next ESC shows a loading
-    // screen instead of the pause menu.
+    // The menu prep lib.loadLevel WOULD have written, read back. pause_mainMenu lives on the
+    // screen tree all session, so before the cut moved to the loadLevel body those two writes
+    // stuck through a cancelled travel and the next ESC showed a loading screen; now they are
+    // never made, and the assertion is that they were not.
     int32_t screenSwiIdx = -1;   // in-game value is 1 (ui_menu uber @2445)
     int32_t canvasLoadingVis = -1;  // in-game value is 1 = ESlateVisibility::Collapsed
     // The damage indicator's worst directional accumulator
@@ -953,7 +954,7 @@ DWORD WINAPI DeathTestThread(LPVOID) {
 
     if (inCoopSession) {
         Verdict("D3 world-survived", tTravel < 0,
-                tTravel < 0 ? "no level travel inside the window -- OpenLevel was refused and "
+                tTravel < 0 ? "no level travel inside the window -- the travel was cancelled and "
                               "the world was kept"
                             : "the level travel ran: the world was torn down and the player is "
                               "in the main menu. The veto did not fire.");
@@ -981,15 +982,18 @@ DWORD WINAPI DeathTestThread(LPVOID) {
                     P::name::kKPPSpawnX, P::name::kKPPSpawnY, P::name::kKPPSpawnZ,
                     dx, dy, dz, std::sqrt(dx * dx + dy * dy), dz);
         Verdict("D7 at-KPP", last.haveLoc && dist <= 500.f, at);
-        // The silently-lost-capability arm: pause_mainMenu survives the session on the screen tree,
-        // so loadLevel's prep sticks through a cancelled travel.
+        // D8 asserted that the revive had RESTORED the menu prep loadLevel stomps. The cut is the
+        // loadLevel body now, so those writes are never made and there is nothing to restore: the
+        // old assertion would pass whatever happened, which is the same shape as a seam that never
+        // saw the travel satisfying "refused nothing". It asserts the invariant that replaced it --
+        // the prep was never disturbed at all -- and the reading stays the player-facing one.
         char mp[192];
         _snprintf_s(mp, sizeof(mp), _TRUNCATE,
                     "screenSwi=%d (want 1, ui_menu's own in-game value) canvas_loading vis=%d "
-                    "(want 1 = Collapsed, the asset's serialized value) -- if either is wrong, "
-                    "ESC shows a LOADING SCREEN instead of the pause menu",
+                    "(want 1 = Collapsed, the asset's serialized value) -- untouched, because the "
+                    "cancelled body never writes them; wrong here means ESC shows a LOADING SCREEN",
                     last.screenSwiIdx, last.canvasLoadingVis);
-        Verdict("D8 menu-restored",
+        Verdict("D8 menu-untouched",
                 last.screenSwiIdx == 1 && last.canvasLoadingVis == 1, mp);
         // blackScreen_C has no script of its own, so the level travel was the only thing that ever
         // disposed of it; with the travel refused, only the revive removes it, and a permanent
@@ -1048,19 +1052,23 @@ DWORD WINAPI DeathTestThread(LPVOID) {
         // nothing either, and D3 above has already established that a travel ran. So the pass
         // needs both terms -- the detour saw it, and let it through.
         // Refusing nothing is only half the claim: a seam that never saw the travel refuses
-        // nothing either, and D3 has already established that a travel ran. So the pass needs
-        // both terms -- the seam SAW a menu travel, and let it through. That is the single-player
-        // guarantee resting on the verdict's own session test rather than on the watch being
-        // absent, which is what 11.2 item 1 asks of this control.
-        const bool seamSaw = RET::MenuTravelsSeen() > 0;
+        // nothing either. The first re-base of this check asked whether the seam SAW the travel,
+        // and that rested on something it should not have: with no session the gate's enable is
+        // this lane's to withhold, so the callback runs at all only because two OTHER consumers
+        // leave the gate enabled in solo. Fixing THAT would have flipped this check silently, on a
+        // change that has nothing to do with it. So the verdict is asked DIRECTLY: JudgeMenuTravel is the
+        // seam's own classification, and with no session it must answer RunNoSession whatever the
+        // gate is doing. That is the single-player guarantee resting on the test itself.
+        const RET::Judgement j = RET::JudgeMenuTravel(R::FindObjectByClass(P::name::GamemodeClass));
+        const bool refusesToAct = j == RET::Judgement::RunNoSession;
         const bool seamQuiet = RET::TravelsCancelled() == 0;
-        Verdict("D5 seam-quiet", seamSaw && seamQuiet,
-                !seamSaw ? "the travel ran but never reached the seam's verdict -- this run "
-                           "proves nothing about what the seam does with no session"
-                         : seamQuiet
-                           ? "the travel reached the verdict and was ALLOWED: single player is "
-                             "untouched by the session test itself, not by an absent watch"
-                           : "the seam CANCELLED a travel with no session running");
+        Verdict("D5 seam-quiet", refusesToAct && seamQuiet,
+                !refusesToAct ? "the seam's own verdict does NOT stand down without a session -- "
+                                "single player is one enabled gate away from being judged"
+                              : seamQuiet
+                                ? "the verdict answers RunNoSession and nothing was cancelled: "
+                                  "single player is untouched by the test itself"
+                                : "the seam CANCELLED a travel with no session running");
     }
 
     const double diff = dead.SlopeMbPerSec() - alive.SlopeMbPerSec();

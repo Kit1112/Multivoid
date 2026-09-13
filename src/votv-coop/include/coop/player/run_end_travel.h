@@ -3,10 +3,12 @@
 
 // VOTV ends a run by travelling to the "menu" level, and dying is only one of the ways it gets
 // there: a whole-cook census puts ONE caller under `UGameplayStatics::OpenLevel`
-// (`mainGamemode_C::transition`), ONE under that (`lib_C::loadLevel`), and 26 call sites under
-// THAT, nine of them bound for "menu". Only the death chain sets `dead`, so an arm keyed on that
-// flag let five in-world run-endings through and our layer ended the session for every peer.
-// The public account is `docs/players.md`; the verdict table and the census are in the .cpp.
+// (`mainGamemode_C::transition`), ONE under that (`lib_C::loadLevel`), and 25 call sites under
+// THAT, nine of them bound for "menu" by a literal. Only the death chain sets `dead`, so an arm
+// keyed on that flag let five in-world run-endings through and our layer ended the session for
+// every peer. Nine and five are FLOORS: eight more sites pass a runtime level name, one of them a
+// level-placed instance variable no cook census can read -- which is why the seam judges the name
+// it is actually called with. Public account: `docs/players.md`; the verdicts are in the .cpp.
 
 // Every one of those 26 sites is `EX_LocalVirtualFunction`, invisible to a ProcessEvent detour:
 // the seam is a watch on `ue_wrap/core/script_gate`, the detour on the VM's own body loop, which

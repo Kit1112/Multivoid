@@ -2,7 +2,10 @@
 // The shape is in the header; the census and the verdicts are here, beside the code that runs
 // them.
 
-// The nine "menu" sites, read off the cooked blueprints: `mainPlayer_C`'s uber (the death chain,
+// The nine sites that name "menu" with a literal, read off the cooked blueprints -- a FLOOR,
+// not a count, because eight more pass the level at runtime and one of those is a level-placed
+// instance variable no cook census can read, which is why this seam judges the name it is
+// actually called with: `mainPlayer_C`'s uber (the death chain,
 // the only one that sets `dead`); `ui_menu_C` (the player's own quit); `ui_disclaimer_C` twice
 // (before any session); and five in-world run-endings that end a run without ever touching the
 // flag -- `gameover_C` (spawned by `theEvil_C` and `ui_badSun_C`), `npc_angryErieFlesh_C`,
@@ -16,6 +19,7 @@
 #include "coop/player/death_revive.h"
 #include "coop/player/players_registry.h"
 #include "ue_wrap/core/log.h"
+#include "ue_wrap/core/cached_obj_ref.h"
 #include "ue_wrap/core/reflection.h"
 #include "ue_wrap/core/script_gate.h"
 
@@ -42,8 +46,9 @@ constexpr const wchar_t* kMenuLevel = L"menu";
 // The class that owns the travel author, and the discriminator against its namesake.
 constexpr const wchar_t* kTravelAuthorClass = L"lib_C";
 
-// Gameplay ticks between class-resolve attempts (the pump runs at 125 Hz, so ~1 Hz).
-constexpr uint32_t kResolveEveryNTicks = 125;
+// Gameplay ticks between class-resolve attempts. The pump is posted behind a 16 ms sleep, so it
+// is ~60 Hz -- not the 125 the tree's older comments claim -- and 60 ticks is about a second.
+constexpr uint32_t kResolveEveryNTicks = 60;
 
 // The one author allowed to reach the menu from inside a session: the pause menu's own quit.
 // The discrimination has to happen here because the author is a PARAMETER of `loadLevel` -- all
@@ -54,9 +59,13 @@ constexpr const wchar_t* kQuitAuthorClass = L"ui_menu_C";
 std::atomic<coop::net::Session*> g_session{nullptr};
 std::atomic<bool> g_watchInstalled{false};
 
-// Resolved on the game thread in Tick, read in the callback. A class lookup walks the object
-// array, so it is kept off the VM's body.
-std::atomic<void*> g_quitAuthorClass{nullptr};
+// Both classes are resolved on the game thread in Tick and read in the callback, which the gate
+// runs on the game thread only. A class lookup walks the object array, so it is kept off the VM's
+// body -- and each is held as a CachedObjRef, not a raw pointer: a blueprint class dies on world
+// unload and its address can be recycled, and a stale ui_menu_C would refuse the player's own
+// quit, which is the one outcome this seam must never produce.
+ue_wrap::CachedObjRef g_quitAuthorClass;    // ui_menu_C
+ue_wrap::CachedObjRef g_travelAuthorClass;  // lib_C, the owner of the loadLevel we judge
 
 std::atomic<unsigned long long> g_seen{0};
 std::atomic<unsigned long long> g_menuSeen{0};
@@ -95,31 +104,34 @@ sg::Verdict OnLoadLevelPre(const sg::Call& call) {
     g_seen.fetch_add(1, std::memory_order_relaxed);
     if (!call.locals || !call.function) return sg::Verdict::Run;
 
-    // TWO blueprints declare a function called `loadLevel`: `lib_C`'s, the game's only travel
-    // author, and `waterVolume_basementFlooder_C`'s, a 36-byte body with no parameters at all. A
+    // TWO blueprints declare a function called `loadLevel`: lib_C's, the game's only travel
+    // author, and waterVolume_basementFlooder_C's, which takes a float and floods a basement. A
     // name watch sees both -- measured on the first run of this seam, which logged the second one
-    // as a resolve failure. So the owner decides, and the offsets are cached per function rather
-    // than per process, since two of them alternate through here.
+    // as a resolve failure -- so the OWNER decides, every call, as one pointer compare against the
+    // revalidated lib_C. That also settles the recycled-address question the header raises about a
+    // name watch: lib_C declares exactly one loadLevel, so owner plus name identify the function
+    // whatever its address, and the cached offsets cannot be carried into a stranger's frame.
+    void* owner = R::OuterOf(call.function);
+    if (!owner || owner != g_travelAuthorClass.Raw() || !g_travelAuthorClass.Alive())
+        return sg::Verdict::Run;
+
     static void*   sFn = nullptr;
-    static bool    sIsTravelAuthor = false;
     static int32_t sLevelOff = -1;
     static int32_t sAuthorOff = -1;
     if (call.function != sFn) {
         sFn = call.function;
-        sIsTravelAuthor = R::NameEquals(R::NameOf(R::OuterOf(call.function)), kTravelAuthorClass);
-        sLevelOff  = sIsTravelAuthor ? R::FindParamOffset(call.function, L"level") : -1;
-        sAuthorOff = sIsTravelAuthor ? R::FindParamOffset(call.function, L"__WorldContext") : -1;
-        if (sIsTravelAuthor && (sLevelOff < 0 || sAuthorOff < 0) && !g_saidNoParams) {
-            // Only for the real one: a namesake resolving nothing is expected, but the travel
-            // author's own parameters going missing is a game update renaming them, and every
-            // menu travel would pass unjudged -- the pre-fix behaviour, silently.
+        sLevelOff  = R::FindParamOffset(call.function, L"level");
+        sAuthorOff = R::FindParamOffset(call.function, L"__WorldContext");
+        if ((sLevelOff < 0 || sAuthorOff < 0) && !g_saidNoParams) {
+            // The travel author's own parameters going missing is a game update renaming them,
+            // and every menu travel would pass unjudged -- the pre-fix behaviour, silently.
             g_saidNoParams = true;
             UE_LOGE("run_end_travel: %ls::loadLevel's parameters did not resolve (level=%d "
                     "__WorldContext=%d) -- every menu travel now passes through unjudged",
                     kTravelAuthorClass, sLevelOff, sAuthorOff);
         }
     }
-    if (!sIsTravelAuthor || sLevelOff < 0 || sAuthorOff < 0) return sg::Verdict::Run;
+    if (sLevelOff < 0 || sAuthorOff < 0) return sg::Verdict::Run;
 
     const R::FName level = *reinterpret_cast<const R::FName*>(call.locals + sLevelOff);
     void* author = *reinterpret_cast<void* const*>(call.locals + sAuthorOff);
@@ -183,7 +195,7 @@ Judgement JudgeMenuTravel(void* author) {
     if (!s || !s->running()) return Judgement::RunNoSession;
     // Without the quit author's class every menu travel would read as a run-ending, including the
     // player's own quit, and refusing THAT traps them in the world.
-    void* quitCls = g_quitAuthorClass.load(std::memory_order_acquire);
+    void* quitCls = g_quitAuthorClass.Alive() ? g_quitAuthorClass.Raw() : nullptr;
     if (!quitCls) return Judgement::RunNoQuitClass;
     if (IsOrDerivesFrom(author, quitCls)) return Judgement::RunPlayerAsked;
     // Refusing a travel we cannot answer is the one outcome worse than the menu.
@@ -223,22 +235,37 @@ void Tick() {
     // This lane owns its own enable: the gate's switch is shared, and riding another consumer's
     // would leave this watch green and its callback silent the moment that consumer retired.
     sg::SetEnabled(true);
-    if (!g_quitAuthorClass.load(std::memory_order_relaxed) &&
-        (g_resolveThrottle++ % kResolveEveryNTicks) == 0) {
-        if (void* c = R::FindClass(kQuitAuthorClass)) {
-            g_quitAuthorClass.store(c, std::memory_order_release);
-            UE_LOGI("run_end_travel: %ls resolved (%p) -- the player's own quit-to-menu is now "
-                    "told apart from the game ending the run", kQuitAuthorClass, c);
+    // Revalidated every tick (a slot read, never a dereference) and re-resolved when either has
+    // gone: a world unload kills a blueprint class and its address can be recycled.
+    const bool haveClasses = g_quitAuthorClass.Alive() && g_travelAuthorClass.Alive();
+    if (!haveClasses && (g_resolveThrottle++ % kResolveEveryNTicks) == 0) {
+        if (!g_quitAuthorClass.Alive()) {
+            if (void* c = R::FindClass(kQuitAuthorClass)) {
+                g_quitAuthorClass.Set(c);
+                UE_LOGI("run_end_travel: %ls resolved (%p) -- the player's own quit-to-menu is now "
+                        "told apart from the game ending the run", kQuitAuthorClass, c);
+            }
+        }
+        if (!g_travelAuthorClass.Alive()) {
+            if (void* c = R::FindClass(kTravelAuthorClass)) {
+                g_travelAuthorClass.Set(c);
+                UE_LOGI("run_end_travel: %ls resolved (%p) -- the travel author is told apart from "
+                        "its namesake by owner, per call", kTravelAuthorClass, c);
+            }
         }
     }
     // The revive's arm asks whether this seam can answer a death at all: published from here so
     // `death_revive` never has to name this module back.
     coop::death_revive::NoteRunEndSeamReady(g_watchInstalled.load(std::memory_order_acquire) &&
-                                            g_quitAuthorClass.load(std::memory_order_relaxed) !=
-                                                nullptr);
+                                            haveClasses);
 }
 
 void OnSessionStart() {
+    // The classes are NOT carried across sessions: the next one may load a different world, and a
+    // stale quit-menu class refuses the player's own quit.
+    g_quitAuthorClass.Reset();
+    g_travelAuthorClass.Reset();
+    g_resolveThrottle = 0;
     g_seen.store(0, std::memory_order_relaxed);
     g_menuSeen.store(0, std::memory_order_relaxed);
     g_cancelled.store(0, std::memory_order_relaxed);

@@ -208,6 +208,12 @@ void FleeAfterNativeMenuTravel(coop::net::Session& session) {
 void FleeToMainMenuOnDeath(coop::net::Session& session, const char* why) {
     // The public entry, so the harness routes a host session death through the same path as the
     // client flees. Idempotent through g_fleeing. Game thread.
+    //
+    // The teardown goes FIRST, exactly as the local-death edge above does it: FleeToMainMenu alone
+    // resets g_wasConnected and so suppresses the aggregate edge, and a queued weather apply then
+    // runs against the old daynightCycle's recycled slot. A lens found this entry reaching the
+    // flee without it, and the run-ending seam multiplied the paths that arrive here.
+    if (!g_fleeing) TearDownCoopStateForSessionEnd(session);
     FleeToMainMenu(session, why);
 }
 
@@ -536,10 +542,9 @@ void Tick(coop::net::Session& session) {
     // ragdoll sender would keep reading the dead player's pelvis ~100 times a second on the way to
     // the menu. Raw() is validated by the block just above, this tick.
     if (g_netLocal.Raw() && !g_localDeathHandled) {
-        // The pump barrier of the death arc: publishes the OpenLevel veto's inputs from the
-        // validated pawn, arms on the `dead` rising edge, runs a revive the detour requested. Here,
-        // not in the detour, because there a UFunction dispatch re-enters our own ProcessEvent
-        // detour.
+        // The pump barrier of the death arc: arms on the `dead` rising edge and runs a revive the
+        // run-ending seam asked for. Here, not in the seam's own callback, because that runs inside
+        // the VM's body loop, where a UFunction dispatch re-enters the interpreter.
         coop::death_revive::Tick(session, g_netLocal.Raw());
         // The death policy: on a local death tear every coop game-side state down this frame, then
         // Stop. Stop alone is not enough: the game's death reload blocks the game thread at once,

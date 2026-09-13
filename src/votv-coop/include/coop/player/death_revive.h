@@ -43,8 +43,10 @@ void NoteRunEndSeamReady(bool ready);
 // in the revive's line. Game thread (the gate's callback contract).
 void NoteRunEndCancelled(void* author, const wchar_t* authorClass, bool authorIsLocalPawn);
 
-// The unconditional watchdog, driven from the harness's timeline tick, not from the pump. If
-// a travel was cancelled and no revive has run within its deadline, this leaves the world
+// The unconditional watchdog, driven from the thread that POSTS the pump composite rather than
+// from inside it -- a lens found it riding in the composite, where a stalled game thread stops
+// the watchdog and the task it watches together. If a travel was cancelled and no revive has run
+// within its deadline, this leaves the world
 // rather than strand a dead player who cannot open the pause menu. It must not live behind
 // any of the gates the revive itself depends on: covering a failure of the pump is its whole
 // job. Safe off the game thread (it posts the flee).

@@ -101,9 +101,10 @@ bool ResolveVerbs() {
     if (g_verbs.resolved) return true;
     // Throttled while unresolved: each attempt is three FindClass calls, and a MISS walks every
     // UObject slot and is never cached, so an unthrottled retry is a full-array scan per frame for
-    // as long as the widget classes are not loaded. ~1 Hz of the 125 Hz pump.
+    // as long as the widget classes are not loaded. The pump is posted behind a 16 ms sleep, so
+    // ~60 Hz, and 60 attempts apart is about a second.
     static uint32_t sThrottle = 0;
-    if ((sThrottle++ % 125) != 0) return false;
+    if ((sThrottle++ % 60) != 0) return false;
     Verbs v;
     void* widgetCls = R::FindClass(P::name::WidgetClass);
     void* userWidgetCls = R::FindClass(P::name::UserWidgetClass);
@@ -396,10 +397,15 @@ bool RunRevive(coop::net::Session& session, void* pawn) {
     return ok;
 }
 
-// How many pump ticks after a revive the screen cleanup is re-attempted. The measured case
-// needed one extra tick; each attempt is a no-op once the artifact is gone, and it stops when
-// all three read clear.
+// How many pump ticks after a revive the screen cleanup is re-attempted, and how many ticks
+// apart. The measured case needs ONE attempt; each is a no-op once the artifact is gone, and the
+// run stops the moment all three read clear. The stride is not cosmetic: an attempt is two full
+// GUObjectArray walks (a FindObjectByClass miss walks every slot, and FindObjectsByClass always
+// does), so the stuck case -- an effect actor whose own tick never destroys it -- used to spend
+// 120 consecutive pump ticks doing ~240 walks of a ~293k array. Same wall-clock window, an
+// eighth of the walks.
 constexpr int kScreenCleanupTicks = 120;
+constexpr int kScreenCleanupStride = 8;
 int g_screenCleanupLeft = 0;
 
 // Re-attempt the three screen artifacts until they are provably gone; true when nothing is
@@ -537,7 +543,8 @@ void Tick(coop::net::Session& session, void* localPawn) {
 
     // The screen artifacts, retried until gone; after the pending-revive block and outside every
     // gate above it, since it must keep running once the death is over.
-    if (g_screenCleanupLeft > 0) {
+    if (g_screenCleanupLeft > 0 &&
+        ((kScreenCleanupTicks - g_screenCleanupLeft) % kScreenCleanupStride) == 0) {
         if (TickScreenCleanup()) {
             UE_LOGI("death_revive: screen cleanup complete (black screen, damage indicator and "
                     "bloodLoss all clear) after %d of %d retry ticks",
@@ -564,8 +571,8 @@ void Watchdog() {
     // from Tick, which net_pump calls only while a session runs and the local death is unhandled;
     // if that stops between the cancel and the revive, the pending flag is never consumed, the
     // pump's deadline never starts, and the player is stranded in a world we refused to leave,
-    // with no pause menu. A failure of Tick cannot be covered inside Tick, so this lives on the
-    // unconditional timeline tick.
+    // with no pause menu. A failure of Tick cannot be covered inside Tick, nor inside the same
+    // posted composite, so this runs on the thread that posts it.
     if (!g_revivePending.load(std::memory_order_acquire)) return;
     const uint64_t at = g_cancelAtMsAtomic.load(std::memory_order_acquire);
     if (at == 0) return;

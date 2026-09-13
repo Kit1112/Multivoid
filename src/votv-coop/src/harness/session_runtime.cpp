@@ -101,7 +101,14 @@ void TickShutdownHooks() {
     // stays disabled until the lane's own tick enables it. Idempotent; safe off the game thread.
     coop::death_revive::Install(&g_session);
     coop::player::run_end_travel::Install(&g_session);
-    // And the watchdog that covers a failure of the pump itself.
+}
+
+// The watchdog that covers a failure of the pump ITSELF, and therefore the one thing that must
+// not ride in the pump's own composite. It did, inside TickShutdownHooks, where a stalled game
+// thread stops the watchdog and the task it is supposed to be watching together -- the one
+// failure it exists for. It runs on the thread that POSTS the composite instead. Safe there: it
+// touches atomics and posts its flee.
+void TickPumpWatchdogs() {
     coop::death_revive::Watchdog();
 }
 
@@ -270,6 +277,7 @@ void DriveMenuModeJoinWorldBoot() {
             coop::chat_feed::Tick();
             TickShutdownHooks();
         });
+        TickPumpWatchdogs();
         ::Sleep(16);  // ~60 Hz, same cadence as RunPlayLoop
     }
     if (aborted) {
@@ -311,6 +319,7 @@ void DriveMenuModeJoinWorldBoot() {
                 coop::chat_feed::Tick();
                 TickShutdownHooks();
             });
+            TickPumpWatchdogs();
             ::Sleep(16);
         }
         UE_LOGI("harness: inventory apply blob ready -- proceeding to load the world");
@@ -683,6 +692,7 @@ void RunPlayLoop(bool idleInGameplay) {
             // Always: the close subclass and the window title must work at the menu too.
             TickShutdownHooks();
         });
+        TickPumpWatchdogs();
         if (running && ++tick % 120 == 0) {  // ~every 2 s at 60 Hz: stats for the LAN tests
             Post([] {
                 UE_LOGI("net stats: state=%d sent=%llu recv=%llu puppet=%d",
