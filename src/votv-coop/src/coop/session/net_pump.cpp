@@ -266,8 +266,10 @@ void Tick(coop::net::Session& session) {
 
     // ---- Hitch and source probe (diagnostic, always on, near free) ----
     // [HITCH] times the gap between consecutive game-thread Ticks (the whole frame); [HITCH-SRC],
-    // an RAII at the end of the body, this Tick's own duration. A [HITCH] with no [HITCH-SRC] on
-    // the same frame is an engine-side stall (GC, render, physics).
+    // an RAII at the end of the body, this Tick's own duration. A [HITCH] with no [HITCH-SRC] is
+    // an UNATTRIBUTED frame, not an engine verdict: our posted tasks run between ticks and the
+    // detour's own work is outside this body too, so the drain carries a [HITCH-SRC] of its own
+    // (ue_wrap/core/game_thread.cpp) and the perf probe's subsystem buckets split the rest.
     {
         using hclk = std::chrono::steady_clock;
         static hclk::time_point sPrevTickStart{};
@@ -276,8 +278,9 @@ void Tick(coop::net::Session& session) {
             const long long frameMs =
                 std::chrono::duration_cast<std::chrono::milliseconds>(nowTp - sPrevTickStart).count();
             if (frameMs >= 40)
-                UE_LOGI("[HITCH] frame = %lld ms (>40ms stutter; if NO [HITCH-SRC] follows this frame, the "
-                        "stall was ENGINE-side -- GC/render/physics, the permanent-both-peers GC signature)",
+                UE_LOGI("[HITCH] frame = %lld ms (>40ms stutter; with NO [HITCH-SRC] on this frame the "
+                        "cost is UNATTRIBUTED -- read the [perf] subsystem buckets before calling it "
+                        "engine-side GC/render/physics)",
                         frameMs);
         }
         sPrevTickStart = nowTp;

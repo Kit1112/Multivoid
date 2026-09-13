@@ -328,7 +328,18 @@ bool DrainPostedTasksAtTopLevel() {
     // skipped on exactly that path, a permanent host freeze.
     struct InPumpGuard { ~InPumpGuard() { t_inPump = false; } } pumpGuard;
     t_inPump = true;
+    // The drain's own duration, on the same marker and the same threshold the session's tick uses.
+    // A posted task runs BETWEEN ticks, so its cost lands in the frame gap that [HITCH] measures
+    // and outside the body [HITCH-SRC] brackets -- which is how a scan of ours that spent 9 to 15
+    // ms in one frame, once a second, read for months as an engine-side stall in every log it
+    // appeared in. An unattributed hitch is an unknown, never a verdict about the engine.
+    const auto drainT0 = std::chrono::steady_clock::now();
     Pump();
+    const long long drainMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::steady_clock::now() - drainT0).count();
+    if (drainMs >= 10)
+        UE_LOGI("[HITCH-SRC] posted-task drain = %lld ms (OUR code caused this frame's cost)",
+                drainMs);
     return true;
 }
 
