@@ -76,11 +76,13 @@ std::set<uint32_t> g_dirty;
 std::map<uint32_t, uint64_t> g_sentHash;
 std::map<uint32_t, uint64_t> g_appliedHash;
 
-// Client: the last host truth this peer applied for an eid, the base it declares when it authors.
-// Not the same map as g_appliedHash, although both are written at the same moment: a local
-// mutation clears g_appliedHash (or a corrective re-publish is skipped as a duplicate and the peer
-// never converges) and keeps g_baseHash (that is the edit's base; cleared, the peer declares base 0
-// and the host refuses every write). Fusing them produced both failures in turn.
+// Client: the content this peer believes the host now publishes for an eid -- host truth it
+// applied, or its own slice once the transport took it, since an accepted client write becomes
+// exactly what the host publishes next. Not the same map as g_appliedHash, although both are
+// written at the same moment: a local mutation clears g_appliedHash (or a corrective re-publish is
+// skipped as a duplicate and the peer never converges) and keeps g_baseHash (that is the edit's
+// base; cleared, the peer declares base 0 and the host refuses every write). Fusing them produced
+// both failures in turn.
 std::map<uint32_t, uint64_t> g_baseHash;
 
 // name to UClass memo: FindClass walks the whole GUObjectArray, and per record per broadcast that
@@ -342,6 +344,11 @@ bool BroadcastContainer(coop::net::Session* s, uint32_t eid, void* inv, int toSl
                                             g_nextSeq++, blob);
     if (ok) {
         if (toSlot < 0) g_sentHash[eid] = h;  // only a FAN-OUT establishes what every peer has
+        // A client's own accepted slice IS the host's next published truth, and the author is
+        // deliberately excluded from the relay that carries it -- so it advances its base here.
+        // Optimistic and self-correcting: a refusal is answered by the host re-publishing its
+        // truth to this peer, which lands in this same map.
+        if (!IsHost()) g_baseHash[eid] = h;
         // Any publication, fan-out or a targeted seed, establishes what the receiver was told, the
         // baseline a later client write is judged against. With the two maps fused the host refused
         // every client write after a join: the seed is targeted, g_sentHash stayed empty, and the
@@ -544,10 +551,16 @@ Ingest ParseAndApply(const std::vector<uint8_t>& blob, uint32_t& outEid, uint8_t
     }
     const uint64_t contentHash = ContentHash(outEid, recs);
     const Ingest outcome = ApplyContents(outEid, recs, contentHash);
-    // Host, client-authored and accepted: this content is now the host's published truth, recorded
-    // here so the host's own drain does not re-broadcast the identical slice, which would reach the
-    // author the long way round and stomp whatever it did since.
-    if (outcome == Ingest::Applied && IsHost() && senderSlot != 0) g_sentHash[outEid] = contentHash;
+    // Host, client-authored and accepted. Two records, and the second one was missing: g_sentHash
+    // keeps the host's own drain from re-broadcasting the identical slice back the long way round,
+    // while NotePublished moves the compare-and-swap baseline onto what the relay is about to hand
+    // every other peer. Without it the baseline stayed at the last HOST fan-out while the receivers
+    // moved on, and the second peer to edit a container was refused for being as up to date as the
+    // first.
+    if (outcome == Ingest::Applied && IsHost() && senderSlot != 0) {
+        g_sentHash[outEid] = contentHash;
+        wp::NotePublished(outEid, contentHash);
+    }
     return outcome;
 }
 
