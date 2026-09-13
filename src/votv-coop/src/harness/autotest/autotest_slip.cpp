@@ -190,20 +190,26 @@ Watch WatchFor(int ms) {
 // it true. Solo host WITH a session -- the second half of the question, whether our run-ending
 // seam refuses the travel the chain asks for, does not exist without one.
 void RunSlipDrill() {
-    UE_LOGI("[SLIP] starting (waiting 60 s: world, possession, a live session)");
+    const bool isClient = IsClientRole();
+    UE_LOGI("[SLIP] starting as the %s (waiting 60 s: world, possession, a live session)",
+            isClient ? "CLIENT" : "HOST");
     ::Sleep(60000);
 
     // Preconditions. A player who cannot ragdoll cannot slip, and one already dead or already down
-    // makes both arms meaningless.
+    // makes both arms meaningless. A client must also be LINKED, not merely running: the whole
+    // point of the client arm is what happens to a session that exists.
     DeathSnapshot s;
-    bool ready = false;
+    bool ready = false, linked = false;
     for (int i = 0; i < 60 && !ready; ++i) {
         s = Snap();
+        linked = !isClient || harness::session_runtime::Session().connected();
         ready = s.havePawn && s.haveState && s.haveCanRagdoll && s.canRagdoll &&
-                s.health > 0.f && !s.dead && !s.isRagdoll && s.inGameplay && s.sessionRunning;
+                s.health > 0.f && !s.dead && !s.isRagdoll && s.inGameplay && s.sessionRunning &&
+                linked;
         if (!ready) ::Sleep(1000);
     }
     LogState("pre-drill", s);
+    if (isClient) UE_LOGI("[SLIP] client link: connected=%d", linked ? 1 : 0);
     if (!ready) {
         UE_LOGW("[SLIP] VERDICT INCONCLUSIVE -- preconditions never met (see the line above)");
         UE_LOGI("[SLIP] DONE");
