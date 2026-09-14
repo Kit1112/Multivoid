@@ -20,6 +20,7 @@
 #include "coop/items/coingun_sync.h"
 #include "coop/items/order_sync.h"
 #include "coop/props/prop_drop_intent.h"  // CLIENT->HOST client-placed keyed prop
+#include "coop/props/trash_broom_intent.h"
 #include "coop/props/trash_channel.h"
 
 #include "ue_wrap/core/log.h"
@@ -27,6 +28,7 @@
 
 #include <cmath>
 #include <cstring>
+#include <string>
 
 namespace coop::event_feed {
 
@@ -223,6 +225,38 @@ bool HandleIntentEvent(net::Session& session,
         }
         UE_LOGI("[GRAB-INTENT] RECEIVED eid=%u slot=%d", p.eid, msg.senderPeerSlot);
         coop::trash_channel::OnGrabIntent(session, p.eid, static_cast<uint8_t>(msg.senderPeerSlot));
+        break;
+    }
+    case net::ReliableKind::BroomIntent: {
+        // CLIENT->HOST broom stroke. The client refused its own `broomed` body and named the pile
+        // it struck; the host runs the game's verb on its own copy, and the trash, the counters and
+        // the depletion leave the host on the three channels that already carry them.
+        // coop::trash_broom_intent::OnBroomIntent.
+        if (session.role() != net::Role::Host) {
+            UE_LOGW("event_feed: BroomIntent received on a client -- dropping");
+            break;
+        }
+        if (msg.senderPeerSlot < 1 || msg.senderPeerSlot >= net::kMaxPeers) {
+            UE_LOGW("event_feed: BroomIntent from invalid senderPeerSlot=%d -- dropping", msg.senderPeerSlot);
+            break;
+        }
+        if (msg.payloadLen < sizeof(net::BroomIntentPayload)) {
+            UE_LOGW("event_feed: BroomIntent payload too short (%zu < %zu)",
+                    static_cast<size_t>(msg.payloadLen), sizeof(net::BroomIntentPayload));
+            break;
+        }
+        net::BroomIntentPayload p{};
+        std::memcpy(&p, msg.payload, sizeof(p));
+        std::wstring key;
+        key.reserve(p.key.len);
+        for (uint8_t i = 0; i < p.key.len && i < 31; ++i)
+            key.push_back(static_cast<wchar_t>(static_cast<unsigned char>(p.key.data[i])));
+        if (key.empty()) {
+            UE_LOGW("event_feed: BroomIntent with an empty key -- dropping");
+            break;
+        }
+        UE_LOGI("[BROOM-INTENT] RECEIVED key='%ls' slot=%d", key.c_str(), msg.senderPeerSlot);
+        coop::trash_broom_intent::OnBroomIntent(session, key, static_cast<uint8_t>(msg.senderPeerSlot));
         break;
     }
     case net::ReliableKind::ThrowIntent: {       // CLIENT->HOST throw of a puppet-held clump

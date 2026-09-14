@@ -230,6 +230,13 @@ inline constexpr const wchar_t* PilePlayerGrabbedFn = L"playerGrabbed";
 inline constexpr const wchar_t* ClumpContactFn =
     L"BndEvt__prop_garbageClump_StaticMesh_K2Node_ComponentBoundEvent_0_ComponentHitSignature__DelegateSignature";
 
+// The dispenser pile's broom verb, declared on trashBitsPile_C (ue_wrap::prop::TrashBitsPileClass).
+// A broom stroke calls it once per pile it sweeps; the body pops up to three rolled props, spawns
+// each as a real actor, decrements the pile's counters and destroys the pile on the last. Its
+// `location` parameter is dead: the thunk writes it to the persistent frame and no instruction
+// reads it back, and the spawn transform is rolled from the pile's own component bounds.
+inline constexpr const wchar_t* PileBroomedFn = L"broomed";
+
 // The kerfur AnimBP generated class (the asset AnimBlueprint_kerfurOmega_regular plus the '_C'
 // suffix of BP-generated classes).
 inline constexpr const wchar_t* AnimBPKerfurRegularClass = L"AnimBlueprint_kerfurOmega_regular_C";

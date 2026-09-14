@@ -37,6 +37,19 @@ void Install(coop::net::Session* session);
 // streamed in. Called from event_feed's reliable drain.
 void OnReliable(const coop::net::TrashPileStatePayload& payload, uint8_t senderPeerSlot);
 
+// This peer is about to run a verb that can destroy the pile under `key`. The death-watch below
+// cannot see a Blueprint-internal destroy, so it asks whether a WRITER acted and answers by
+// proximity; this records the answer directly for the one writer whose geometry proves nothing --
+// the host running a client's broom stroke on a pile anywhere in the world. Consumed by the next
+// death of that key, expires in seconds. Game thread.
+void NoteAuthoredDeath(const std::wstring& key);
+
+// Resolve a pile by its save key against the live index, or null when the key names nothing live
+// here. The index is this module's, so the lookup belongs to it: the broom-intent lane names piles
+// by the same key this channel and the depletion destroy already use, and a second index built
+// beside this one would be a second answer to one question. Game thread.
+void* ResolveByKey(const std::wstring& key);
+
 // A wire PropDestroy for `key` is about to destroy the local pile: drop it from the index and
 // the baselines FIRST, so the death-watch does not re-broadcast the death. Called from
 // event_feed's PropDestroy case.

@@ -21,6 +21,7 @@
 #include <atomic>
 #include <chrono>
 #include <cstdint>
+#include <iterator>
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
@@ -49,6 +50,14 @@ std::unordered_map<std::wstring, Entry> g_index;
 struct Pending { int16_t a; int16_t b; bool adopt; Clock::time_point deadline; };
 std::unordered_map<std::wstring, Pending> g_pending;   // deferred applies (instance not streamed in)
 std::unordered_set<std::wstring> g_depletedKeys;       // depleted THIS session (connect replay)
+// Piles this peer has just run a destroying verb on. The death-watch cannot see a BP-internal
+// K2_DestroyActor, so it asks whether a WRITER acted -- and geometry is only a proxy for that
+// question. Where the answer is known it is recorded here instead: the host runs a client's broom
+// stroke on a pile that may be anywhere in the world, and no proximity rule can be widened to cover
+// that without also calling a sublevel stream-out beside a remote puppet a depletion, which would
+// have this peer broadcast a destroy for a pile that is alive.
+std::unordered_map<std::wstring, Clock::time_point> g_authoredDeaths;
+constexpr auto kAuthoredDeathTtl = std::chrono::seconds(3);
 bool g_installed = false;
 Clock::time_point g_nextPoll{};
 Clock::time_point g_nextRebuild{};
@@ -56,10 +65,21 @@ Clock::time_point g_nextRebuild{};
 constexpr auto kPollEvery    = std::chrono::milliseconds(50);
 constexpr auto kRebuildEvery = std::chrono::seconds(2);
 constexpr auto kPendingTtl   = std::chrono::seconds(25);
-// Death-watch proximity gate: every writer (the E-grab, the vacuum, the broom) acts at the
-// player, so a genuine depletion dies NEAR the local camera and a far death is a sublevel
-// stream-out. Eight metres, the same radius the grime super-sponge uses.
+// Death-watch proximity gate: a writer on this peer (the E-grab, the vacuum, the broom) acts at
+// arm's length, so a depletion it caused dies near this peer's camera and a far death is a sublevel
+// stream-out. Eight metres, the same radius the grime super-sponge uses. A death this peer caused
+// by running a verb for another player is recorded instead -- see NoteAuthoredDeath.
 constexpr float kDeathNearCm = 800.f;
+
+// Did this peer run a destroying verb on `key` recently enough for its death to be that verb's?
+// Consumes the record: one verb, one death.
+bool WasAuthoredHere(const std::wstring& key, Clock::time_point now) {
+    auto it = g_authoredDeaths.find(key);
+    if (it == g_authoredDeaths.end()) return false;
+    const bool fresh = now < it->second;
+    g_authoredDeaths.erase(it);
+    return fresh;
+}
 
 uint64_t Fnv1a(const std::wstring& s, uint64_t h) {
     for (wchar_t c : s) { h ^= static_cast<uint64_t>(c); h *= 1099511628211ull; }
@@ -223,6 +243,26 @@ void OnReliable(const coop::net::TrashPileStatePayload& payload, uint8_t senderP
     }
 }
 
+void NoteAuthoredDeath(const std::wstring& key) {
+    if (key.empty()) return;
+    // Expire stragglers here rather than on a timer: the map holds one entry per verb this peer ran
+    // and a death consumes it, so it is empty except for the instant between the two.
+    const auto now = Clock::now();
+    for (auto it = g_authoredDeaths.begin(); it != g_authoredDeaths.end();)
+        it = (now >= it->second) ? g_authoredDeaths.erase(it) : std::next(it);
+    g_authoredDeaths[key] = now + kAuthoredDeathTtl;
+}
+
+void* ResolveByKey(const std::wstring& key) {
+    if (key.empty()) return nullptr;
+    // A stale-gen index holds another world's piles, so it answers nothing (the same test the
+    // receiver above makes before applying to a live actor).
+    if (!IndexCurrent()) return nullptr;
+    auto it = g_index.find(key);
+    if (it == g_index.end()) return nullptr;
+    return R::IsLiveByIndex(it->second.actor, it->second.idx) ? it->second.actor : nullptr;
+}
+
 void NotifyWireDestroy(const std::wstring& key) {
     if (key.empty()) return;
     if (g_index.erase(key) > 0) {
@@ -300,11 +340,14 @@ void Tick(bool inTransition) {
         Entry& e = it->second;
         if (!R::IsLiveByIndex(e.actor, e.idx)) {
             // DEATH-WATCH: depleted (BP-internal K2_DestroyActor, invisible to the
-            // observer + the poll) vs streamed out -- discriminate by proximity.
+            // observer + the poll) vs streamed out. Two ways to answer it, and the certain one
+            // first: this peer RAN a verb on that pile a moment ago, so its death is that verb's.
+            // Geometry is the fallback for the local writers nothing announces.
+            const bool authored = WasAuthoredHere(it->first, now);
             const float dx = e.x - cam.X, dy = e.y - cam.Y, dz = e.z - cam.Z;
             const bool nearCam = local &&
                 (dx * dx + dy * dy + dz * dz) <= (kDeathNearCm * kDeathNearCm);
-            if (nearCam && !inTransition) {
+            if ((authored || nearCam) && !inTransition) {
                 coop::net::PropDestroyPayload dp{};
                 dp.key.len = 0;
                 for (size_t i = 0; i < it->first.size() && i < 31; ++i)
@@ -312,8 +355,9 @@ void Tick(bool inTransition) {
                 dp.elementId = 0;
                 s->SendPropDestroy(dp);
                 g_depletedKeys.insert(it->first);
-                UE_LOGI("trash_pile: pile key='%ls' depleted near camera -- broadcast keyed destroy",
-                        it->first.c_str());
+                UE_LOGI("trash_pile: pile key='%ls' depleted (%s) -- broadcast keyed destroy",
+                        it->first.c_str(),
+                        authored ? "a verb this peer ran" : "near this peer's camera");
             }
             g_pending.erase(it->first);
             it = g_index.erase(it);
@@ -345,6 +389,7 @@ void OnDisconnect() {
     g_index.clear();
     g_pending.clear();
     g_depletedKeys.clear();
+    g_authoredDeaths.clear();
     g_installed = false;
     g_nextPoll = {};
     g_nextRebuild = {};

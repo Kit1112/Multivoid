@@ -30,7 +30,7 @@ inline constexpr uint32_t kMagic = 0x564D5450u;
 // This file is past the 1500-line hard cap and stays there: it is the single-feature exception the
 // rule names. One wire format, whose enum, payload structs and static_asserts are read together;
 // splitting it would put a kind's number in one file and its bytes in another.
-inline constexpr uint16_t kProtocolVersion = 160;
+inline constexpr uint16_t kProtocolVersion = 161;
 
 // Default LAN port (overridable via multivoid.ini "net.port=").
 inline constexpr uint16_t kDefaultPort = 47621;
@@ -697,6 +697,12 @@ enum class ReliableKind : uint8_t {
     // velocity, and the claim generation its stream carried. A receiver hands the prop its physics
     // back and drops every later-arriving pose of that generation. PropDriveEndPayload.
     PropDriveEnd = 137,
+
+    // Client to host: the client's broom stroke struck the dispenser pile with this key, and the
+    // client refused its own `broomed` body rather than run it. The host runs the game's verb on
+    // its own pile; the trash that falls out, the counter drop and the depletion death then reach
+    // every peer through the three channels that already carry them. BroomIntentPayload.
+    BroomIntent = 138,
 };
 
 #pragma pack(push, 1)
@@ -1577,6 +1583,19 @@ struct TrashPileStatePayload {
 static_assert(sizeof(TrashPileStatePayload) == 40, "TrashPileStatePayload must be 40 bytes");
 static_assert(sizeof(TrashPileStatePayload) <= 256 - 20 - 8,
               "TrashPileStatePayload must fit in one reliable datagram");
+
+// A broom intent (BroomIntent): which pile the stroke struck, and nothing else. `broomed` takes a
+// location, but its body never reads it -- the bytecode writes the parameter to the persistent
+// frame and no instruction loads it back, and the trash's transform is rolled from the pile's own
+// component bounds -- so the host calls the verb with a zeroed one, as the grab intent does with
+// its hit result. The key is the pile's own save key, the identity the counter mirror and the
+// depletion destroy already name it by.
+struct BroomIntentPayload {
+    WireKey key;        // 32 -- Aactor_save_C::Key of the struck pile
+};
+static_assert(sizeof(BroomIntentPayload) == 32, "BroomIntentPayload must be 32 bytes");
+static_assert(sizeof(BroomIntentPayload) <= 256 - 20 - 8,
+              "BroomIntentPayload must fit in one reliable datagram");
 
 // A keypad's input mirror (KeypadState): the typed buffer, the LED selector and a short-code
 // event. The buffer replays through inputNumber so every peer's keypad validates natively; a short

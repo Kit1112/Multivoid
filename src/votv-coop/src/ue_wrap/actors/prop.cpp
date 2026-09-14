@@ -167,6 +167,11 @@ void* GarbageClumpClass() {
     return GarbageClumpCls();
 }
 
+void* TrashBitsPileClass() {
+    ResolveExtraBases();
+    return TrashBitsPileCls();
+}
+
 bool IsClassKeyedInteractable(void* cls) {
     if (!cls) return false;
     if (IsClassDescendantOfProp(cls)) return true;

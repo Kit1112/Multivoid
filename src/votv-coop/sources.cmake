@@ -237,6 +237,7 @@ set(VOTVCOOP_SOURCES
     src/coop/session/world_load_episode.cpp
     src/coop/interactables/garbage_sync.cpp
     src/coop/props/host_spawn_watcher.cpp
+    src/coop/props/trash_broom_intent.cpp
     src/coop/props/trash_channel.cpp
     src/coop/props/trash_grab_intent.cpp
     src/coop/props/trash_collect_sync.cpp

@@ -108,6 +108,7 @@
 #include "coop/props/prop_drive_host.h"    // HOST: the props a hook drags, streamed while they move
 #include "coop/props/prop_drive_stream.h"  // CLIENT: park and drive those props
 #include "coop/props/trash_collect_sync.h"
+#include "coop/props/trash_broom_intent.h"
 #include "coop/props/trash_pile_sync.h"
 #include "coop/save/save_block.h"
 #include "coop/save/save_button_disable.h"
@@ -209,6 +210,7 @@ void Install(coop::net::Session& session) {
     coop::window_sync::Install(&session);  // base-window dirt scalar (the "main huge window")
     coop::grime_sync::Install(&session);  // surface grime (walls/ceiling/floor dirt decals)
     coop::trash_pile_sync::Install(&session);  // trash pile collect counters
+    coop::trash_broom_intent::Install(&session);  // a client's broom stroke names its pile instead of emptying it
     coop::trash_collect_sync::Install(&session);  // the chipPile grab observer (the use-press PRE observer, then a PropDestroy by eid)
     coop::garbage_sync::SetSession(&session);
     coop::garbage_sync::Install();  // garbage
@@ -479,6 +481,7 @@ DisconnectStats DisconnectAll() {
     coop::window_sync::OnDisconnect();
     coop::grime_sync::OnDisconnect();
     coop::trash_pile_sync::OnDisconnect();
+    coop::trash_broom_intent::OnDisconnect();  // with no session the game's broom sweeps as written
     coop::trash_collect_sync::OnDisconnect();
     coop::trash_channel::OnDisconnect();  // drop the per-eid trash sync-time-context map
     coop::puppet_carry_drive::OnDisconnect();  // drop all puppet-held clump drives

@@ -59,6 +59,9 @@ bool IsClumpClassName(const std::wstring& className);
 // asset name a fourth time. Game thread.
 void* ChipPileClass();
 void* GarbageClumpClass();
+// The dispenser pile's class, from the same cache, for a consumer that resolves a verb declared
+// on it rather than testing an instance. Null until the class is loaded. Game thread.
+void* TrashBitsPileClass();
 
 // The AtrashBitsPile_C test and its collect counters, amountA and amountB
 // (raw int32); the displayed count is their sum, formatted live by lookAt, so raw writes are
