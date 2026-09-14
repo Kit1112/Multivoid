@@ -14,7 +14,8 @@
 #include "coop/props/prop_element_tracker.h"
 #include "coop/props/remote_prop.h"
 #include "coop/props/trash_collect_sync.h"   // DebugSendGrabIntent, DebugSendThrowIntent
-#include "coop/props/trash_proxy.h"          // NearestPileProxy
+// The nearest pile comes from ue_wrap::prop::FindNearestChipPile: both peers mirror the game's
+// own actor now, so the same finder serves the host and the client.
 #include "ue_wrap/core/call.h"
 #include "ue_wrap/engine/engine.h"
 #include "ue_wrap/core/game_thread.h"
@@ -34,6 +35,11 @@
 
 namespace harness::autotest {
 namespace {
+
+// The pile finder takes a radius; these scenarios want the nearest one in the level, so they pass
+// a bound no base is wider than.
+constexpr float kAnywhereCm = 1.0e6f;
+
 
 namespace P  = ue_wrap::profile;
 namespace R  = ue_wrap::reflection;
@@ -101,10 +107,10 @@ void RunAutonomousChipPileTest() {
                 if (!p || !R::IsLive(p) || !E::GetController(p)) {
                     UE_LOGW("chippile_test: CLIENT showcase -- no possessed local player"); d.store(2); return; }
                 float dist = -1.f;
-                void* pile = coop::trash_proxy::NearestPileProxy(E::GetActorLocation(p), &dist);
-                if (!pile) { UE_LOGW("chippile_test: CLIENT showcase -- no pile proxy to face yet"); d.store(2); return; }
+                void* pile = ue_wrap::prop::FindNearestChipPile(E::GetActorLocation(p), kAnywhereCm, &dist);
+                if (!pile) { UE_LOGW("chippile_test: CLIENT showcase -- no mirrored pile to face yet"); d.store(2); return; }
                 cs->player = p; cs->pile = pile; cs->pos = E::GetActorLocation(pile); cs->dist = dist;
-                UE_LOGI("chippile_test: CLIENT showcase -- nearest pile proxy=%p pos=(%.0f,%.0f,%.0f) dist=%.0fcm",
+                UE_LOGI("chippile_test: CLIENT showcase -- nearest pile=%p pos=(%.0f,%.0f,%.0f) dist=%.0fcm",
                         pile, cs->pos.X, cs->pos.Y, cs->pos.Z, dist);
                 d.store(1);
             }) != 1) { UE_LOGW("chippile_test: CLIENT showcase aborted (no player/pile)"); return; }
@@ -526,22 +532,23 @@ void RunPuppetGrabProbe() {
                 "on the puppet each tick from the synced remote aim (verdict B-fallback).", distLast, dzLast);
 }
 
-// The synthetic grab-intent test (VOTVCOOP_RUN_GRAB_INTENT_TEST=1). The client picks a mirrored
-// pile proxy, resolves its host eid and drives the client-to-host path: the E-press observer's
-// camera-ray recognition and its GrabIntent, the router, the host's validation and
-// playerGrabbed on the puppet, the convert broadcast and the puppet hand drive. The client
-// drives; the host executes and broadcasts. The verdict is the log harness.
+// The synthetic grab-intent test (VOTVCOOP_RUN_GRAB_INTENT_TEST=1). The client picks the nearest
+// mirrored pile, resolves its host eid and drives the client-to-host path: the E-press
+// interceptor's look-at recognition and its GrabIntent, the router, the host's validation and
+// playerGrabbed on the puppet, the convert broadcast that materialises the clump mirror, the
+// puppet hand drive, the throw intent and the landing convert back to a pile. The client drives;
+// the host executes and broadcasts. The verdict is the log harness.
 void RunGrabIntentTest() {
     const bool isHost = !IsClientRole();
     if (isHost) {
-        UE_LOGI("grab_intent_test: HOST -- the authority. Watch THIS log for the grab-intent RECEIVED/EXEC/"
-                "SUCCESS + puppet-drive markers when the client sends its synthetic grab.");
+        UE_LOGI("grab_intent_test: HOST -- the authority. This log carries the receipt, the grab on the "
+                "puppet and the carry publishes when the client sends its synthetic grab.");
         return;
     }
 
     // 1. Wait for the client to be in-world with its pile proxies expressed.
-    UE_LOGI("grab_intent_test: CLIENT -- waiting 70s for join + the host pile work + proxy express, then "
-            "picking a mirrored pile + sending GrabIntent");
+    UE_LOGI("grab_intent_test: CLIENT -- waiting 70s for the join and the pile binds, then picking a "
+            "mirrored pile + sending GrabIntent");
     ::Sleep(70000);
 
     struct Pick { void* player = nullptr; void* pile = nullptr; uint32_t eid = 0; ue_wrap::FVector pilePos{};
@@ -552,11 +559,11 @@ void RunGrabIntentTest() {
             if (!p || !R::IsLive(p) || !E::GetController(p)) {
                 UE_LOGW("grab_intent_test: no possessed local player"); d.store(2); return; }
             float dist = -1.f;
-            void* pile = coop::trash_proxy::NearestPileProxy(E::GetActorLocation(p), &dist);
-            if (!pile) { UE_LOGW("grab_intent_test: no pile proxy to grab yet"); d.store(2); return; }
+            void* pile = ue_wrap::prop::FindNearestChipPile(E::GetActorLocation(p), kAnywhereCm, &dist);
+            if (!pile) { UE_LOGW("grab_intent_test: no mirrored pile to grab yet"); d.store(2); return; }
             coop::element::ElementId eid = coop::remote_prop::ResolveMirrorEidByActor(pile);
             if (eid == coop::element::kInvalidId) {
-                UE_LOGW("grab_intent_test: nearest pile proxy %p has no resolvable eid", pile); d.store(2); return; }
+                UE_LOGW("grab_intent_test: the nearest pile %p has no resolvable eid", pile); d.store(2); return; }
             // The E-press UFunction, so the real recognition path runs rather than only the debug
             // bypass.
             void* cls = R::FindClass(P::name::MainPlayerClass);
@@ -564,38 +571,59 @@ void RunGrabIntentTest() {
             pk->player = p; pk->pile = pile; pk->eid = static_cast<uint32_t>(eid);
             pk->pilePos = E::GetActorLocation(pile); pk->dist = dist;
             pk->useFn = fn; pk->useFrame = fn ? R::FunctionFrameSize(fn) : 0;
-            UE_LOGI("grab_intent_test: picked pile proxy=%p eid=%u pos=(%.0f,%.0f,%.0f) dist=%.0fcm useFn=%p",
+            UE_LOGI("grab_intent_test: picked pile=%p eid=%u pos=(%.0f,%.0f,%.0f) dist=%.0fcm useFn=%p",
                     pile, pk->eid, pk->pilePos.X, pk->pilePos.Y, pk->pilePos.Z, dist, fn);
             d.store(1);
         }) != 1) { UE_LOGW("grab_intent_test: could not pick a pile -- aborting"); return; }
 
-    // 2. Teleport the client to a standoff facing the proxy, so its trace can hit it and its puppet
-    // stands at the pile.
+    // 2. Teleport the client to a standoff facing the pile, so the game's own look-at trace can hit
+    // it and the puppet stands at the pile.
     RunGT([pk](std::atomic<int>& d) {
         const ue_wrap::FVector at = E::GetActorLocation(pk->player);
         float ax = at.X - pk->pilePos.X, ay = at.Y - pk->pilePos.Y;
         const float h = std::sqrt(ax * ax + ay * ay);
         if (h < 1.f) { ax = 1.f; ay = 0.f; } else { ax /= h; ay /= h; }
-        const ue_wrap::FVector stand{ pk->pilePos.X + ax * 180.f, pk->pilePos.Y + ay * 180.f, pk->pilePos.Z + 90.f };
-        const ue_wrap::FRotator face = LookAt(stand, pk->pilePos);
-        E::TeleportTo(pk->player, stand, face);
-        E::SetControlRotation(E::GetController(pk->player), face);
-        UE_LOGI("grab_intent_test: client at a standoff facing the pile; grabbing via the camera-ray cone next");
+        // Inside arm's reach: the recognition is the game's own interaction trace now, and that
+        // trace is short. A camera-ray cone reached 400 cm and let this standoff be generous; the
+        // trace does not, so the drill stands where a player stands to pick something up.
+        const ue_wrap::FVector stand{ pk->pilePos.X + ax * 120.f, pk->pilePos.Y + ay * 120.f, pk->pilePos.Z + 90.f };
+        E::TeleportTo(pk->player, stand, LookAt(stand, pk->pilePos));
         d.store(1);
     });
-    ::Sleep(1500);   // let the view camera settle on the pile so the cone (camera forward) points at it
+    ::Sleep(500);
+    // Aim from the CAMERA, not from the capsule: the camera sits a head above the actor origin, so
+    // a rotation computed at the origin points over the pile, and the trace that used to be a
+    // forgiving cone now misses.
+    RunGT([pk](std::atomic<int>& d) {
+        const ue_wrap::FRotator face = LookAt(E::GetCameraLocation(), pk->pilePos);
+        E::SetControlRotation(E::GetController(pk->player), face);
+        UE_LOGI("grab_intent_test: client at a 120 cm standoff, aimed from the camera at the pile; "
+                "the look-at grab comes next");
+        d.store(1);
+    });
+    ::Sleep(1500);   // let the view camera settle so the game's look-at trace names the pile
 
-    // 3. The grab through the real path: InpActEvt_use injected, the observer's camera-ray cone
-    // recognises the aimed proxy and sends the intent. The debug bypass runs only if the UFunction
-    // did not resolve.
+    // 2a. What the game's own trace says right before the press. The interceptor recognises the
+    // grab through lookAtActor, so a press that does nothing is this line's to explain: a null or a
+    // different actor is the recognition failing, not the intent path.
+    RunGT([pk](std::atomic<int>& d) {
+        void* aimed = E::ReadMainPlayerLookAtActor(pk->player);
+        UE_LOGI("grab_intent_test: lookAtActor=%p class='%ls' isChipPile=%d target=%p (the interceptor reads this)",
+                aimed, aimed ? R::ClassNameOf(aimed).c_str() : L"<null>",
+                aimed && ue_wrap::prop::IsChipPile(aimed) ? 1 : 0, pk->pile);
+        d.store(1);
+    });
+
+    // 3. The grab through the real path: InpActEvt_use injected, the interceptor recognises the
+    // looked-at pile and sends the intent. The debug bypass runs only if the UFunction did not
+    // resolve.
     const bool useReal = (pk->useFn != nullptr);
     RunGT([pk, useReal](std::atomic<int>& d) {
         if (useReal) {
             std::vector<uint8_t> frame(pk->useFrame > 0 ? static_cast<size_t>(pk->useFrame) : 0, 0u);
             const bool ok = R::CallFunction(pk->player, pk->useFn, frame.empty() ? nullptr : frame.data());
-            UE_LOGI("grab_intent_test: >>> REAL GRAB -- injected InpActEvt_use (ok=%d); OnPileGrabPre should log "
-                    "'[GRAB-INTENT] CLIENT E-PRESS aimed at pile proxy eid=%u (camera-ray cone)' + SendGrabIntent <<<",
-                    ok ? 1 : 0, pk->eid);
+            UE_LOGI("grab_intent_test: >>> REAL GRAB -- injected InpActEvt_use (ok=%d) for eid=%u; the "
+                    "interceptor's own press line and its intent follow <<<", ok ? 1 : 0, pk->eid);
         } else {
             const bool sent = coop::trash_collect_sync::DebugSendGrabIntent(pk->eid);
             UE_LOGI("grab_intent_test: >>> FALLBACK GRAB -- DebugSendGrabIntent eid=%u sent=%d (InpActEvt_use unresolved) <<<",
@@ -622,13 +650,14 @@ void RunGrabIntentTest() {
     // 5. The soft release through the real toggle: InpActEvt_use again while still, so the observer
     // sends the throw intent and the host's inherited release velocity is near zero (a drop, not a
     // throw).
-    UE_LOGI("grab_intent_test: >>> SOFT RELEASE (still) -- expect [THROW-INTENT] SUCCESS vel ~0 (a drop, not a wild throw) <<<");
+    UE_LOGI("grab_intent_test: >>> SOFT RELEASE (still) -- the host's release velocity should be ~0, a drop "
+            "rather than a wild throw <<<");
     RunGT([pk, useReal](std::atomic<int>& d) {
         if (useReal) {
             std::vector<uint8_t> frame(pk->useFrame > 0 ? static_cast<size_t>(pk->useFrame) : 0, 0u);
             const bool ok = R::CallFunction(pk->player, pk->useFn, frame.empty() ? nullptr : frame.data());
-            UE_LOGI("grab_intent_test: >>> REAL THROW -- injected InpActEvt_use while carrying (ok=%d); expect "
-                    "'[THROW-INTENT] CLIENT E-PRESS while carrying' + SendThrowIntent <<<", ok ? 1 : 0);
+            UE_LOGI("grab_intent_test: >>> REAL THROW -- injected InpActEvt_use while carrying (ok=%d); the "
+                    "interceptor's own carrying-press line and its intent follow <<<", ok ? 1 : 0);
         } else {
             const bool sent = coop::trash_collect_sync::DebugSendThrowIntent(pk->eid);
             UE_LOGI("grab_intent_test: >>> FALLBACK THROW -- DebugSendThrowIntent eid=%u sent=%d <<<", pk->eid, sent ? 1 : 0);
@@ -638,8 +667,9 @@ void RunGrabIntentTest() {
 
     // 6. Hold about 8 s for the flight and the re-pile.
     ::Sleep(8000);
-    UE_LOGI("grab_intent_test: CLIENT done eid=%u -- verdict is the log-truth harness (client recognition, host "
-            "[GRAB-INTENT]/[THROW-INTENT]/[TRASH-CARRY], client APPLY + ToPile SNAP). useReal=%d", pk->eid, useReal ? 1 : 0);
+    UE_LOGI("grab_intent_test: CLIENT done eid=%u -- the verdict is the round trip's own markers in both logs: "
+            "the client's recognition and intents, the host's grab, carry and release, and the client's land. "
+            "useReal=%d", pk->eid, useReal ? 1 : 0);
 }
 
 // The host-drift scenario (VOTVCOOP_RUN_PILE_DRIFT=1), host only: known host-versus-save

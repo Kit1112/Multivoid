@@ -32,30 +32,30 @@ DWORD WINAPI GrabTestThread(LPVOID arg);
 void RunAutonomousClumpTest();
 DWORD WINAPI ClumpTestThread(LPVOID arg);
 
-// The chipPile grab test (harness/autotest/autotest_chippile.cpp), host-driven: does a real E-press
-// grab of a tracked chipPile put the morphed clump into mainPlayer.holding_actor? The host player
-// is teleported to a pile, the camera aimed and the game's own interaction trace polled until
-// lookAtActor is the pile, then InpActEvt_use is fired through the same ProcessEvent edge a real
-// press hits; holding_actor is measured and a throw tests the re-pile. The client only observes
-// OnConvert. It produces the log to read, never a pass by itself. Env
-// VOTVCOOP_RUN_CHIPPILE_TEST=1.
+// The chipPile grab test, host-driven: the host is teleported to a pile, aimed until the game's
+// own trace names it, and InpActEvt_use fired through the same edge a real press hits;
+// holding_actor is measured and a throw tests the re-pile. It produces the log to read, never a
+// pass by itself. Env VOTVCOOP_RUN_CHIPPILE_TEST=1.
 void RunAutonomousChipPileTest();
 DWORD WINAPI ChipPileTestThread(LPVOID arg);
 
-// The puppet-grab probe, host only: when the host runs actorChipPile_C::playerGrabbed with a
-// puppet (an unpossessed mainPlayer_C) as the player, does the puppet hold the spawned clump,
-// and does the per-tick hand maintenance run on it (the clump tracks the hand) or not (it floats
-// at the spawn spot and the drive must target it). Read-only beyond the one pile the grab
-// consumes. Env VOTVCOOP_RUN_PUPPET_GRAB_PROBE=1.
+// The puppet-grab probe, host only: with an unpossessed mainPlayer_C as the player, does the
+// puppet hold the spawned clump, and does the per-tick hand maintenance run on it or does the
+// clump float at the spawn spot. Env VOTVCOOP_RUN_PUPPET_GRAB_PROBE=1.
 void RunPuppetGrabProbe();
 DWORD WINAPI PuppetGrabProbeThread(LPVOID arg);
 
-// The synthetic GrabIntent test: the client picks a mirrored pile proxy, resolves its eid and
-// sends a GrabIntent; the host validates it, runs playerGrabbed on the puppet, broadcasts the
-// convert and drives the puppet-held clump. The verdict is the host's [GRAB-INTENT] and
-// [PUPPET-DRIVE] log lines. Env VOTVCOOP_RUN_GRAB_INTENT_TEST=1.
+// The synthetic GrabIntent test: the client faces a mirrored pile, presses use, carries and
+// releases; the host validates, grabs on the puppet, streams the carry and lands it. Env
+// VOTVCOOP_RUN_GRAB_INTENT_TEST=1.
 void RunGrabIntentTest();
 DWORD WINAPI GrabIntentTestThread(LPVOID arg);
+
+// The trash morph gate, red and green in one run: each peer drops a prop onto the nearest chip
+// pile. The host's morphs, proving the trigger fires; the client's survives with its element id.
+// Env VOTVCOOP_RUN_TRASH_PARK=1, both peers.
+void RunTrashParkProbe();
+DWORD WINAPI TrashParkProbeThread(LPVOID arg);
 
 // The host-drift scenario, host only: in the pre-connect solo window (mp.py smoke --host-settle)
 // the host destroys N native chipPiles and moves M, so its join snapshot diverges from the save

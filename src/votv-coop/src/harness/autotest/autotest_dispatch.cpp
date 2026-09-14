@@ -65,6 +65,8 @@ void SpawnEnvGatedTests(coop::net::Role role) {
     // The host-drift scenario: the host destroys and moves some of its own piles before connect,
     // so the client's join sweep sees real orphans.
     SpawnIf("VOTVCOOP_RUN_PILE_DRIFT", "host-drift pile scenario", &PileDriftScenarioThread, role);
+
+    SpawnIf("VOTVCOOP_RUN_TRASH_PARK", "trash morph gate red/green probe", &TrashParkProbeThread, role);
     // The flashlight test, both peers: each toggles its own flashlight, and the other's puppet
     // must reflect it through the item-activate path.
     SpawnIf("VOTVCOOP_RUN_FLASHLIGHT_TEST", "flashlight test", &FlashlightTestThread, role);
