@@ -33,6 +33,24 @@ class ISteamNetworkingSockets;
 
 namespace coop::net {
 
+// What the rendezvous knows about a dial that is ending, so a joiner can say WHICH half went
+// quiet. The transport reports every dead dial as its own timeout -- true, and useless to a
+// player: a relay this machine never reached, a host whose registration died of idleness and a
+// host that is simply switched off all read the same. These are the facts a joiner owns without
+// asking anyone, and asking the relay instead is what we will not do -- an `unroutable` answer
+// hands every token holder a presence oracle for any identity it knows, the same reason this
+// client's own SendRejectionSignal is mute.
+struct DialReport {
+    // Whether our OWN name still routes to this connection: the question a joiner's host failed,
+    // and the one a keepalive cannot answer. Unknown is a real answer, and the honest one early --
+    // a socket that is up and proved but whose first echo is still in flight knows nothing yet, so
+    // a verdict is named on Live or Down and never on a guess.
+    enum class Registration { Unknown, Live, Down };
+    Registration registration = Registration::Unknown;
+    bool     peerAnswered = false;  // a line came back from the dialled identity
+    uint32_t linesToPeer = 0;       // lines addressed to it: a dial that sent nothing is its own fact
+};
+
 // enable_shared_from_this: each per-connection ConnectionSignaling co-owns the client, so a
 // connection GNS is still tearing down (and may still call SendSignal on) keeps the transport
 // alive after Session::Stop() drops its reference.
@@ -57,6 +75,18 @@ public:
     // Net thread: drain inbound signals, flush the outbound queue, reconnect if dropped. Cheap when
     // idle.
     void Poll();
+
+    // A client is dialling `peer`: from here the report's counters describe THAT dial. Called once
+    // per session by the P2P client start and never by a host, whose inbound peers are many and
+    // none of whose failures this answers. Takes the identity rather than the configured string
+    // and renders it here, because the name that has to MATCH is GNS's rendering of it -- the one
+    // SendSignal addresses, and the one the relay stamps on the far peer's lines from what that
+    // peer registered under. A configured `gen:` line differing only in case would count nothing.
+    void NoteDialing(const SteamNetworkingIdentity& peer);
+
+    // The rendezvous half of why a dial ended, for the site that turns a close into a sentence.
+    // A snapshot under the lock; no engine calls, cheap, and safe from any thread.
+    DialReport ReportDial();
 
 private:
     struct ConnectionSignaling;  // per-connection ISteamNetworkingConnectionSignaling
@@ -134,6 +164,14 @@ private:
     // pushed out by every echo, so it moves only on evidence.
     std::chrono::steady_clock::time_point echoDeadline_{};
     bool echoSeen_ = false;  // an echo has come back on THIS socket (the first one logs)
+
+    // The dial a client is making, and what crossed for it. One identity, not a map: a joiner
+    // dials exactly one host, and a host -- which does have many peers -- never sets this, so
+    // nothing here grows with the number of strangers who signal us. All under sockMutex_,
+    // written from the net thread (inbound) and from GNS threads (SendSignal).
+    std::string dialledPeer_;
+    uint32_t    dialLinesOut_ = 0;
+    uint32_t    dialLinesIn_ = 0;
 };
 
 }  // namespace coop::net

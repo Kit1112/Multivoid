@@ -37,6 +37,8 @@ constexpr Row kRows[] = {
     {EndReason::CouldNotSendProof,   {"MV-J16", "Could not send the identity proof to the host."}},
     {EndReason::ClientBacklogFatal,  {"MV-J17", "The connection fell too far behind and was closed."}},
     {EndReason::LeftSession,         {"MV-J18", "Left the session."}},
+    {EndReason::RendezvousUnreachable, {"MV-J19", "This machine is not connected to the signaling server, so the host could not be dialled."}},
+    {EndReason::NoRendezvousAnswer,    {"MV-J20", "The host did not answer through the signaling server. It may be offline, or reconnecting -- try again in a minute."}},
     // H -- the host decided
     {EndReason::WrongPassword,           {"MV-H01", "Wrong password."}},
     {EndReason::PasswordRequired,        {"MV-H02", "This server needs a password."}},

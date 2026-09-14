@@ -36,6 +36,11 @@ enum class EndReason : uint8_t {
     CouldNotSendProof,      // the identity proof could not be sent
     ClientBacklogFatal,     // the client's own send backlog tripped its fatal bound
     LeftSession,            // this peer stopped its own session; the host logs it, the leaver never sees it
+    // The two halves of a rendezvous dial that ended with nothing coming back. The transport
+    // reports both as its own timeout, which is true of every dead dial and names neither side;
+    // the joiner can tell them apart from what it owns, and only these two rows say so.
+    RendezvousUnreachable,  // this machine had no connection to the relay while it dialled
+    NoRendezvousAnswer,     // our registration was live and the dialled host never answered
 
     // H -- the host decided; rides the transport's application end reason. Values 40..89.
     WrongPassword = 40,
@@ -78,7 +83,7 @@ enum class EndReason : uint8_t {
     // Each family's bounds, for the table's completeness check: a family is contiguous from its
     // first enumerator, so the row count must equal the sum of the three spans.
     kJoinerFirst = MasterUnreachable,
-    kJoinerLast = LeftSession,
+    kJoinerLast = NoRendezvousAnswer,
     kHostFirst = WrongPassword,
     kHostLast = ConnectFlood,
     kTransportFirst = Timeout,

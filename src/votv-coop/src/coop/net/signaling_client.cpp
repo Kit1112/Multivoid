@@ -175,6 +175,13 @@ struct SignalingClient::ConnectionSignaling : ISteamNetworkingConnectionSignalin
             signal.push_back(kHexDigit[*p & 0xf]);
         }
         signal.push_back('\n');
+        {
+            // Counted where the destination is known: Enqueue takes a finished line and cannot
+            // tell one addressee from another. Recursive, so the Enqueue below re-takes it.
+            std::lock_guard<std::recursive_mutex> lk(owner_->sockMutex_);
+            if (!owner_->dialledPeer_.empty() && peerIdentity_ == owner_->dialledPeer_)
+                ++owner_->dialLinesOut_;
+        }
         owner_->Enqueue(signal);
         return true;
     }
@@ -526,6 +533,40 @@ void SignalingClient::NoteRegistrationEcho() {
             "~%lld ms)", selfIdentity_.c_str(), static_cast<long long>(rtt.count()));
 }
 
+// A client's dial begins: from here the counters describe it.
+void SignalingClient::NoteDialing(const SteamNetworkingIdentity& peer) {
+    SteamNetworkingIdentityRender render(peer);
+    std::lock_guard<std::recursive_mutex> lk(sockMutex_);
+    dialledPeer_ = render.c_str();
+    dialLinesOut_ = 0;
+    dialLinesIn_ = 0;
+}
+
+// The rendezvous half of why a dial ended.
+DialReport SignalingClient::ReportDial() {
+    std::lock_guard<std::recursive_mutex> lk(sockMutex_);
+    DialReport r;
+    r.linesToPeer = dialLinesOut_;
+    r.peerAnswered = dialLinesIn_ > 0;
+    if (sock_ == kInvalidSock || !greetingSent_ || regState_ == RegState::AwaitingChallenge) {
+        // Certainly not in the relay's routing map, by the relay's own order of business: it
+        // inserts us only after it has verified the proof it asks for AFTER our greeting, so a
+        // socket that is gone, one whose greeting has not left, and one still owed a challenge are
+        // the same fact. All three are what a relay that is down, unreachable, restarting, or a
+        // registration of ours that retired itself and is being rebuilt look like from in here --
+        // and three of the four would otherwise sit in the reconnect backoff with a socket in
+        // hand, reading as Unknown and saying nothing. The claim is about US and blames no host.
+        r.registration = DialReport::Registration::Down;
+    } else if (echoSeen_ && std::chrono::steady_clock::now() <= echoDeadline_) {
+        // The relay has routed our own name back to this socket and that proof has not lapsed, so
+        // the rendezvous demonstrably works for us and the destination is the part that is
+        // missing. Nothing weaker earns this: a socket that is merely open proves the path to the
+        // relay, never the routing table inside it.
+        r.registration = DialReport::Registration::Live;
+    }
+    return r;
+}
+
 // Poll, on the net thread: drain inbound and dispatch, flush outbound, reconnect.
 void SignalingClient::Poll() {
     {
@@ -693,7 +734,24 @@ void SignalingClient::Poll() {
             // Our own name with no payload is the echo of a liveness probe, and it is the relay
             // that says so: the sender field is stamped by the relay from the identity it
             // registered after the proof, never copied from the line, so no peer can send one.
-            if (hexLen == 0 && inBuf_.compare(cursor, spc - cursor, selfIdentity_) == 0) {
+            const bool isEcho =
+                hexLen == 0 && inBuf_.compare(cursor, spc - cursor, selfIdentity_) == 0;
+            if (!isEcho) {
+                // A line from somebody else. If it is the host this client dialled, the rendezvous
+                // reached it -- which is what stops a dead dial from being blamed on a destination
+                // that did answer. ARRIVAL is the evidence, so this counts a malformed line too:
+                // the sender is stamped by the relay from the identity it registered, and what the
+                // payload turns out to hold is a separate question, judged below. The lock is
+                // taken and RELEASED here: ReceivedP2PCustomSignal takes a GNS lock that a thread
+                // inside SendSignal holds while it waits for this one, and holding both is the
+                // deadlock this dispatch pass runs outside the lock to avoid.
+                std::lock_guard<std::recursive_mutex> lk(sockMutex_);
+                if (!dialledPeer_.empty() &&
+                    inBuf_.compare(cursor, spc - cursor, dialledPeer_) == 0) {
+                    ++dialLinesIn_;
+                }
+            }
+            if (isEcho) {
                 NoteRegistrationEcho();
             } else if ((hexLen & 1u) != 0) {
                 UE_LOGW("signaling: odd-length hex payload -- dropping line");

@@ -352,6 +352,11 @@ bool Session::StartP2P() {
             signaling_.reset();
             return false;
         }
+        // Which host this dial is for, told to the transport BEFORE the first signal leaves, so
+        // the lines GNS produces are counted from the first one. Without it a dial that fails can
+        // only be reported as the transport's own timeout, which names neither the relay nor the
+        // host (coop/net/signaling_client.h, DialReport).
+        signaling_->NoteDialing(hostId);
         // The per-connection signaling object; GNS takes ownership in ConnectP2PCustomSignaling and
         // releases it if the call fails.
         ISteamNetworkingConnectionSignaling* connSig =
