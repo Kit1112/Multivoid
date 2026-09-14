@@ -170,6 +170,18 @@ native detour at the engine's one write chokepoint cancels the world-save contai
 (`coop/save/save_button_disable`), and the host's save directory is backed up before a session
 because the game's in-place writes leave no other recovery (`coop/save/save_guard`).
 
+On the P2P route a rejoin also depends on something the host does not think about: its own
+registration with the signaling relay, which is one long-lived TCP connection that carries no
+traffic between joins. A host that has seated its peers sends nothing there until the next joiner
+dials, and an idle path can die without a FIN -- after which the host is unreachable while looking
+perfectly healthy, because its listen socket is still open and its lobby is still listed by a
+separate 30 s heartbeat. Joiners then burn a dial timeout against a server the browser offers them.
+Both ends now keep that flow warm and observable with TCP keepalive, and the client gives up on a
+connect that never completes (a non-blocking connect reports failure exactly as it reports progress,
+so without a deadline one retry into a relay that was briefly away -- a restart, a deploy -- would
+strand the peer for the life of the process). A host whose registration is lost now rebuilds it
+itself, with the world kept; re-hosting is not the remedy.
+
 ### When a join ends early
 
 A join that cannot be established, and a session that ends after it, both close with a modal:
