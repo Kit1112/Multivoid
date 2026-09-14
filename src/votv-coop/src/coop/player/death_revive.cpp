@@ -59,6 +59,14 @@ std::atomic<bool>     g_seamReady{false};      // run_end_travel can cancel a ru
 std::wstring g_pendingAuthorClass;
 bool         g_pendingAuthorIsLocalPawn = false;
 
+// The readiness window, stamped once per session. `g_pawnFirstMs` is game thread only (Tick
+// writes it); the span is an atomic because the drills read it from their own threads. The four
+// per-term stamps are game thread only and exist so the window's own line says WHICH term the
+// wait was spent on -- a total alone cannot be acted on, and this is the number a fix moves.
+uint64_t g_pawnFirstMs = 0;
+std::atomic<long long> g_armReadyAfterPawnMs{-1};
+long long g_tSeam = -1, g_tVerbs = -1, g_tSession = -1, g_tDeadOff = -1;
+
 // Pump-side state, game thread only.
 bool  g_wasDead = false;
 bool  g_lastReviveOk = false;
@@ -443,6 +451,8 @@ bool ReviveAvailable() {
 
 void NoteRunEndSeamReady(bool ready) { g_seamReady.store(ready, std::memory_order_release); }
 
+long long ArmReadyAfterPawnMs() { return g_armReadyAfterPawnMs.load(std::memory_order_acquire); }
+
 void NoteRunEndCancelled(void* author, const wchar_t* authorClass, bool authorIsLocalPawn) {
     (void)author;
     g_pendingAuthorClass = authorClass ? authorClass : L"";
@@ -455,6 +465,9 @@ void NoteRunEndCancelled(void* author, const wchar_t* authorClass, bool authorIs
 }
 
 void OnSessionStart() {
+    g_pawnFirstMs = 0;
+    g_armReadyAfterPawnMs.store(-1, std::memory_order_release);
+    g_tSeam = g_tVerbs = g_tSession = g_tDeadOff = -1;
     g_armed.store(false, std::memory_order_release);
     g_revivePending.store(false, std::memory_order_release);
     g_cancelAtMsAtomic.store(0, std::memory_order_release);
@@ -483,6 +496,40 @@ void Tick(coop::net::Session& session, void* localPawn) {
 
     const bool verbsOk = ResolveVerbs();
 
+    // The arm's terms, read ONCE and used twice -- by the window latch just below and by the edge
+    // decision further down. Two readings of "can this death be answered" could disagree across
+    // the ticks between them, and the instrument that reports the window would then be measuring
+    // something other than the decision it describes.
+    const bool seamReady = g_seamReady.load(std::memory_order_acquire);
+    const bool sessionLive = session.running();
+    const bool deadOffsetKnown = g_deadByte.load(std::memory_order_relaxed) >= 0;
+    const bool armReady = seamReady && verbsOk && sessionLive && deadOffsetKnown;
+
+    // THE WINDOW. Every term above is a readiness term -- the seam's watch and its two author
+    // classes, the revive's verbs, a live session, the dead flag's offset -- and none of them is
+    // true the instant a player can first die. A death inside that span is NOT armed, so
+    // net_pump's flee tears the coop state down and travels to the menu, which is the whole of
+    // the symptom a field report describes. It is no role asymmetry -- neither Install nor Tick
+    // tests the role -- but a client reaches its own pawn later than a host does, so a client
+    // meets the window more often. It is stamped once per session and logged, which puts the
+    // number in a field log where no drill can go.
+    if (localPawn && g_pawnFirstMs == 0) g_pawnFirstMs = ::GetTickCount64();
+    if (g_pawnFirstMs != 0 && g_armReadyAfterPawnMs.load(std::memory_order_relaxed) < 0) {
+        const long long now = static_cast<long long>(::GetTickCount64() - g_pawnFirstMs);
+        if (g_tSeam < 0 && seamReady) g_tSeam = now;
+        if (g_tVerbs < 0 && verbsOk) g_tVerbs = now;
+        if (g_tSession < 0 && sessionLive) g_tSession = now;
+        if (g_tDeadOff < 0 && deadOffsetKnown) g_tDeadOff = now;
+        if (armReady) {
+            g_armReadyAfterPawnMs.store(now, std::memory_order_release);
+            UE_LOGI("death_revive: the arm is READY +%lld ms after the local pawn first ticked "
+                    "(seam +%lld, verbs +%lld, session +%lld, deadOffset +%lld) -- a death before "
+                    "that point could not have been answered and the pump's flee would have ended "
+                    "the session, so the largest term is what a fix has to move",
+                    now, g_tSeam, g_tVerbs, g_tSession, g_tDeadOff);
+        }
+    }
+
     bool isRagdoll = false, dead = false;
     const bool haveState = localPawn && E::ReadMainPlayerRagdollState(localPawn, isRagdoll, dead);
 
@@ -491,11 +538,8 @@ void Tick(coop::net::Session& session, void* localPawn) {
     // run-endings that never set `dead` reach the seam without ever passing here, and the pump
     // has no flee to stand down for them.
     if (haveState && dead && !g_wasDead) {
-        const bool seamReady = g_seamReady.load(std::memory_order_acquire);
-        const bool canRevive = seamReady && verbsOk && session.running() &&
-                               g_deadByte.load(std::memory_order_relaxed) >= 0;
         g_reviveRanThisDeath = false;
-        if (canRevive) {
+        if (armReady) {
             g_armed.store(true, std::memory_order_release);
             UE_LOGI("death_revive: local death ARMED -- the native death runs to completion "
                     "(~10 s: sound, black screen at +5 s) and its travel will be cancelled");

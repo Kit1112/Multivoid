@@ -65,6 +65,14 @@ bool ArmedForThisDeath();
 // sees them (`coop/player/run_end_travel`).
 bool LastReviveSucceeded();
 
+// How long after the local pawn first ticked the arm became answerable, or -1 while it still is
+// not. The arm's terms are all readiness terms, and a client reaches its own pawn later than a
+// host does -- so a death inside that window is not armed, and the pump's flee ends the session
+// for everyone. This is that window, measured: the number now rides every log, and a drill reads
+// it to tell the steady-state death it means to test from a race it does not. Reset per session.
+// Any thread.
+long long ArmReadyAfterPawnMs();
+
 // The negative control, armed by VOTVCOOP_DEATH_NO_RECONCILE=1: the reconcile does nothing, so
 // the ending's un-disposed writes are left standing. It exists for the write-diff instrument
 // (coop/dev/death_write_diff.h), which measures what the ending leaves behind and would grade
