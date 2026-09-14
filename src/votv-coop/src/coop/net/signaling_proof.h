@@ -2,8 +2,8 @@
 // name it is registering. Its own file because it is its own contract: the relay asks
 // `nonce <64 hex>` and reads the NEXT line as `auth <128 hex>`, an Ed25519 signature over a
 // domain-separated blob, and three parties have to agree on those bytes exactly -- this client,
-// `server/src/bin/signaling.rs` (REGISTER_TAG), and `tools/sig_gate.py`, which is a BLOCKING
-// release gate that carries its own copy of the tag and refuses a relay that does not challenge.
+// `server/src/bin/signaling.rs` (REGISTER_TAG), and the release gate, which carries its own copy
+// of the tag and refuses a relay that does not challenge.
 // A client that registered unproved would let anyone squat any host's name (security tracker
 // A59), so every failure here is a refusal to register, never a warning.
 //

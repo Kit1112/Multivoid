@@ -37,16 +37,16 @@ namespace {
 // asking the relay -- and asking it is refused, because an `unroutable` answer would hand every
 // token holder a presence oracle for any identity it knows.
 //
-// Nothing here needs to ask "did this dial ever connect", and the reason is the LINE, not ICE: a
-// host that refuses at its own accept edge (a ban, the connection cap) never reaches ICE either,
-// but its close still travels the rendezvous channel as a line from its identity, which the
-// dispatch pass counts BEFORE handing it to the transport. So any host-decided reason arrives with
-// peerAnswered already true and is never overwritten, and neither is a link lost after a session
-// ran. The exception, and it is honest: a GNS-level rejection is answered by SendRejectionSignal,
-// which this client deliberately keeps mute so nobody can scrape who is online -- so a host that is
-// registered and running but has no listen socket sends nothing at all and reads as
-// NoRendezvousAnswer. Its sentence covers that ("may be offline"), which is why the mute stays.
 EndReason JudgeDial(const DialReport& d) {
+    // No need to ask "did this dial ever connect", and the reason is the LINE, not ICE: a host
+    // refusing at its own accept edge (a ban, the connection cap) never reaches ICE either, but its
+    // close still travels the rendezvous channel as a line from its identity, which the dispatch
+    // pass counts BEFORE handing it to the transport. So every host-decided reason arrives with
+    // peerAnswered true and survives, and so does a link lost after a session ran. The one hole,
+    // stated rather than waved away: a GNS-level rejection answers with SendRejectionSignal, which
+    // this client keeps mute so nobody can scrape who is online, so a host that is registered but
+    // has no listen socket sends nothing and reads as NoRendezvousAnswer -- whose own sentence
+    // ("may be offline") covers it, which is why the mute stays.
     if (d.peerAnswered) return EndReason::None;
     switch (d.registration) {
     case DialReport::Registration::Down:

@@ -133,7 +133,7 @@ constexpr auto kEchoTimeout = std::chrono::seconds(45);
 // and the grace is three orders of magnitude above the round trip this rig measures (~5 ms, the
 // number NoteRegistrationEcho prints), so it is headroom rather than a tuned value.
 //
-// Deliberately NOT kEchoTimeout, and the difference is a defect an audit caught. That budget is how
+// Deliberately NOT kEchoTimeout, and the difference between them is load-bearing. That budget is how
 // long silence may last before the registration is RETIRED, generous on purpose so two lost probes
 // do not tear down a working one. Reusing it here would answer a different question with the same
 // number: a relay that stopped routing our name one second after an echo would still read "live"
