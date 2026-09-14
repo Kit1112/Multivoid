@@ -123,7 +123,7 @@ coop::element::ElementId ClientCarryEid() {
 void ClearClientCarry(uint32_t eid) {
     if (eid != 0 && eid == g_clientCarry) {
         g_clientCarry = 0;
-        UE_LOGI("[THROW-INTENT] CLIENT carry CLEARED eid=%u (carried proxy retired -- host aborted the carry)", eid);
+        UE_LOGI("[THROW-INTENT] CLIENT carry CLEARED eid=%u (carried mirror retired -- host aborted the carry)", eid);
     }
     if (eid != 0 && eid == g_clientPendingGrab) g_clientPendingGrab = 0;  // also drop a pending request for a vanished eid
 }
@@ -140,7 +140,7 @@ void OnGrabIntent(coop::net::Session& s, uint32_t eid, uint8_t senderSlot) {
         return;
     }
     // There is no context-generation gate: the context is written only when an eid has already
-    // transitioned, and a resting pile that has never been grabbed has an eid and a proxy but no
+    // transitioned, and a resting pile that has never been grabbed has an eid and a mirror but no
     // context entry yet, the common grab case; the real is-this-a-valid-target check is the
     // live-pile resolve below. Gate 2, the door per-peer hold analog: one held eid per peer, so a
     // slot that already holds something is denied until it releases.
@@ -395,16 +395,16 @@ void ReleaseClientHold(coop::net::Session& s, coop::element::ElementId E) {
         UE_LOGI("[GRAB-INTENT] ReleaseClientHold eid=%u -- clump lost before land; hold cleared (re-grabbable)", eid);
     ForgetEid(E);   // drop a stranded carry latch/settle (idempotent if the land COMMIT already closed it)
     // The trash entity vanished on the host (the clump died with no re-pile). Broadcast a destroy
-    // for the eid, so every client retires the now-frozen carry proxy and clears its carry toggle
-    // (the destroy receiver retires the proxy and clears the carry). Without it the requester is
-    // stuck in throw mode for the dead eid forever, every press denied, and its proxy floats in
+    // for the eid, so every client retires the now-frozen carry mirror and clears its carry toggle
+    // (the destroy receiver retires the mirror and clears the carry). Without it the requester is
+    // stuck in throw mode for the dead eid forever, every press denied, and its mirror floats in
     // mid-air.
     coop::net::PropDestroyPayload dp{};
-    dp.key.len    = 0;            // eid-only: clients resolve the proxy by host-range eid
+    dp.key.len    = 0;            // eid-only: clients resolve the mirror by host-range eid
     dp.elementId  = eid;
     s.SendPropDestroy(dp);
     UE_LOGI("[GRAB-INTENT] ReleaseClientHold eid=%u -- PropDestroy(eid) broadcast (carry ABORT: clients retire "
-            "the frozen proxy + clear the carry toggle)", eid);
+            "the frozen mirror + clear the carry toggle)", eid);
 }
 
 }  // namespace coop::trash_channel
