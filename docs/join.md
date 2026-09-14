@@ -219,6 +219,8 @@ end reason, so both ends log one code; `T` the transport.
 | `MV-J16` | The identity proof could not be sent |
 | `MV-J17` | The joiner's own send backlog fell too far behind |
 | `MV-J18` | This peer stopped its own session; the host logs it, the leaver never sees it |
+| `MV-J19` | This machine had no connection to the relay while it dialled, so nothing reached the host |
+| `MV-J20` | The relay was routing this machine's own name throughout, and the host never answered |
 | `MV-H01` | Wrong password |
 | `MV-H02` | This server needs a password |
 | `MV-H03` | Too many password attempts; try again in ten minutes |
@@ -253,6 +255,30 @@ end reason, so both ends log one code; `T` the transport.
 | `MV-T03` | The signaling server could not reach the host |
 | `MV-T04` | The transport's own handshake with the host failed |
 | `MV-T05` | The connection was lost |
+
+#### A dial that finds nothing says which half went quiet
+
+The transport calls every dial that found nobody a timeout (`MV-T01`), which is true of a relay
+this machine never reached, of a host whose registration died of idleness, and of a host that is
+simply switched off -- and a player can act on none of it. The relay could answer `unroutable` and
+settle it in one line, and it will not: that hands every token holder a presence oracle for any
+identity it knows, the same reason a rejected inbound signal is answered with silence.
+
+So the joiner builds the verdict from what it already owns, and names one only on evidence
+(`coop/net/signaling_client.h`, `DialReport`; the judgement is `JudgeDial` in
+`coop/net/session_status.cpp`). Two facts: whether the relay is still routing OUR own name to this
+connection -- the registration echo above, which is the question a joiner's host failed -- and
+whether any line came back from the identity we dialled. A line from that identity rules both codes
+out, because ICE cannot start without one, so a host's own refusal and a link lost after a session
+ran are never relabelled. A registration that is live with nothing coming back is `MV-J20`; no
+connection to the relay at all is `MV-J19`; and a socket that is up and proved but whose first echo
+is still in flight knows neither, so the transport's own verdict stands. Measured on
+`tools/sig_unroutable.py`, both halves, 9 s each.
+
+`MV-J20` deliberately does not claim the host is unregistered: from here a wedged host process, a
+relay queue that dropped the line, and a missing map entry are one silence, and the sentence states
+the observation. The advice it gives -- try again in a minute -- is the measured repair window of
+the registration echo, not a guess.
 
 ## Who owns what
 
