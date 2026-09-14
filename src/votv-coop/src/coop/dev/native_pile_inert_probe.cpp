@@ -108,7 +108,7 @@ void Tick(bool connected, bool isHost) {
         // autonomous ubergraph), AddToRoot (GC-pin). NoCollision was already proven inert 39s; THIS run
         // excites the collision-ON contact path. Collision is left at the native default -- deliberately
         // NOT disabled.
-        g_pin.Pin(a);                                 // GC-pin (the proxy's proven prophylactic), owned
+        g_pin.Pin(a);                                 // GC-pin: a runtime spawn has no save or world reference
         E::SetActorTickEnabled(a, false);             // no per-frame ubergraph
         if (void* comp = E::GetStaticMeshComponent(a)) E::SetComponentMobility(comp, 2);  // Movable (host-positionable)
         g_actor   = a;
@@ -133,7 +133,7 @@ void Tick(bool connected, bool isHost) {
         if (!R::IsLiveByIndex(g_actor, g_idx)) {
             UE_LOGW("[INERT-PROBE] VERDICT NO-GO @t=%ds: the actor went NOT-LIVE despite AddToRoot -- a "
                     "rooted runtime chipPile SELF-DESTRUCTS via its own ubergraph (autonomy, NOT GC). "
-                    "The bare proxy is load-bearing; do NOT nativize. (Nothing to clean up -- already gone.)",
+                    "A runtime pile does NOT stay live, so the trash mirror's recipe is wrong. (Nothing to clean up -- already gone.)",
                     sec);
             g_actor = nullptr;
             g_st = St::Done;
@@ -142,7 +142,7 @@ void Tick(bool connected, bool isHost) {
         const std::wstring cls = R::ClassNameOf(g_actor);
         if (cls != L"actorChipPile_C") {
             UE_LOGW("[INERT-PROBE] VERDICT NO-GO @t=%ds: the actor SELF-MORPHED to '%ls' on its own "
-                    "(ubergraph autonomy). The bare proxy is load-bearing; do NOT nativize.",
+                    "(ubergraph autonomy), so the trash mirror's recipe is wrong.",
                     sec, cls.c_str());
             Cleanup();
             g_st = St::Done;
@@ -153,7 +153,7 @@ void Tick(bool connected, bool isHost) {
             UE_LOGI("[INERT-PROBE] VERDICT GO: a rooted runtime actorChipPile_C stayed INERT (live + pile) "
                     "for %ds -- the BP's ubergraph does NOT self-destruct/self-morph when left alone. "
                     "NATIVIZE resting/runtime/re-pile (rooted real native = native hover GUI + collision "
-                    "+ rotation free); retire the bare proxy + the rotation-fix + the hover-GUI under RULE 2.",
+                    "+ rotation free), which is the recipe the trash mirror is built on.",
                     kWatchSec);
             Cleanup();
             g_st = St::Done;

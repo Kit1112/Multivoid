@@ -4,8 +4,8 @@
 
 The ambient trash piles, the clump a pile becomes in a hand, and the trash-bits dispenser
 piles: the whole collect loop of grab, carry, throw and re-pile across peers, and the identity
-problem that makes this the hardest prop family. What is built, what stands in for the engine's
-own actor, and what is queued for a rebuild. Ordinary props are on [props.md](props.md).
+problem that makes this the hardest prop family. What is built, and how a mirror of the game's
+own actor is kept from authoring its own transitions. Ordinary props are on [props.md](props.md).
 
 ## How it works
 
@@ -22,8 +22,8 @@ it can have is an element id the host mints and streams. A base save holds sever
 ### Identity: the host's id and the sync context
 
 The trash channel (`coop/props/trash_channel`) treats a trash entity as a host-minted id that
-re-skins in place across pile, clump and pile again: the id is the logical entity, position is
-never identity, so a dense cluster cannot mis-bind. Every transition (grab, throw, land) bumps a
+moves across pile, clump and pile again, rebound onto each successor at its birth: the id is the
+logical entity, position is never identity, so a dense cluster cannot mis-bind. Every transition (grab, throw, land) bumps a
 per-id sync-time context the host stamps on every convert and carry packet, and a receiver drops
 a packet older than the id's known generation, so a carry packet still in flight when the entity
 re-piles is never applied to the re-skinned entity. This is MTA's element sync-time context.
@@ -35,28 +35,33 @@ the re-piled clump in place onto the exact spawned pile, the same tick, with no 
 
 ### The mirror on a client
 
-The pile form on a client is a real, rooted `actorChipPile_C` (`coop/props/native_pile_mirror`):
-spawned at runtime with its tick and physics off, its root movable, skinned with the host's chip
-type, scale and rotation, then bound and marked save-native so it rides the same machinery as a
-save-loaded pile: the pose drive, the position correction, the grab route, the morph hand-off,
-the sweep exemption and retire. A real pile is what the game's look-at trace accepts, so the
-hover prompt, collision, occlusion and rotation are the game's. A rooted native stays live and
-inert; the earlier belief that a runtime pile "dies on its own" was garbage collection of an
-unrooted actor.
+The pile form on a client is the game's own `actorChipPile_C`. At a join it is the client's own
+save-loaded pile, bound to the host's id where the host says the pile was at save time
+(`coop/props/pile_spawn_bind`); a pile with no counterpart -- one derived during the join window
+or born in play -- is a rooted runtime pile instead (`coop/props/trash_mirror`), spawned
+with its tick and physics off and its root movable, skinned with the host's chip type, scale and
+rotation. Either way it is bound and marked save-native, so it rides the same machinery: the pose
+drive, the position correction, the grab route, the morph hand-off, the sweep exemption and
+retire. A real pile is what the game's look-at trace accepts, so the hover prompt, collision,
+occlusion and rotation are the game's. A rooted native stays live and inert; the earlier belief
+that a runtime pile "dies on its own" was garbage collection of an unrooted actor.
 
-The clump form, in a hand or in flight, is a bare static-mesh actor the mod owns
-(`coop/props/trash_proxy`): no Blueprint, so it cannot re-pile on contact or expire on its own
-lifespan; rooted; re-skinned in place; kinematic; no collision. It is a stand-in for the
-engine's actor rather than the actor with its brain parked, and it is the crutch queued for a
-rebuild (the limits below).
+A pile mirrors nothing of its own brain. A pile turns itself into a clump when any prop overlaps
+its collision component and when something calls its grab event, and a clump re-piles itself on
+its first level contact; each spawns the successor and destroys the actor it ran on. On a client
+every trash transition is the host's, so those three are refused at the dispatch
+(`coop/props/trash_morph_gate`) and the host's own convert performs the change.
 
-**What replaces it.** The stand-in is not native and will not stay. The rebuild gives the clump
-form the same treatment the pile form already has: the engine's own clump actor, spawned with its
-tick and physics off and its brain parked, bound to the one logical identity that re-skins across
-pile, clump and pile again. The game's collision, look-at trace and re-pile then serve both forms,
-one mirror implementation remains, and the aim cone that exists only because a proxy cannot be
-looked at retires with the proxy. The order of that work against the other queued lanes is on
-[roadmap.md](roadmap.md); until it lands, the limits below hold.
+The clump form, in a hand or in flight, is the game's own `prop_garbageClump_C`, made by the
+same module on the same recipe (`coop/props/trash_mirror`), with one addition: its collision is
+off while it is carried, because it renders in a puppet's hand with no holder to be attached to
+and would otherwise block the player carrying it. It stays off for the flight too, which is a
+host-driven pose stream rather than local physics; the pile it lands as is a fresh actor with the
+game's own collision.
+
+A form change is a class change, so there is no re-skin in place: the successor is made parked,
+the one identity is rebound onto it at its birth, and only then is the predecessor destroyed. One
+mirror implementation serves both forms.
 
 ### Grab, carry, throw, land
 
@@ -74,8 +79,8 @@ host-originated per-id batch to every client, the requester included
 (`coop/props/trash_clump_pose_stream`), rendered with the same fixed-delay interpolation as a
 held prop. A second E press is the release toggle and the left button a hard throw with a
 direction; both are throw intents the host performs. Landing is an atomic convert from the host:
-the client's proxy retires and the pile native materialises at the landing pose with the same
-id. Pickup and landing sounds are synthesised on peers: the game plays them only for the actor.
+the pile materialises at the landing pose under the same id and the clump retires after it.
+Pickup and landing sounds are synthesised on peers: the game plays them only for the actor.
 
 ### The carry latch and the land settle
 
@@ -93,7 +98,7 @@ by a few frames. Neither strands the id.
 
 Every open carry must eventually close, so the host's tick also terminates lanes the normal path
 would leave open: a clump destroyed mid-carry (consumed, or its holder gone) closes the lane and
-broadcasts a destroy, so no client is stuck holding a dead proxy; a clump left lying un-held,
+broadcasts a destroy, so no client is stuck holding a dead mirror; a clump left lying un-held,
 because the game's own re-pile gate aborted while the thrower's hand was busy, closes the lane
 silently and leaves the clump world-tracked and re-grabbable, which is what single-player does.
 
@@ -126,7 +131,7 @@ replacement for the position key.
 | a pile at rest | the host | an id and a rooted native mirror; the client's save-loaded actor is bound to it |
 | a carried clump | the host | a client's grab is performed on the host; the pose is host-originated |
 | grab, throw, land | the host, by intent | a client's press is an intent, reach-checked |
-| the pile-to-clump identity | the host | one id, re-skinned in place, guarded by the sync context |
+| the pile-to-clump identity | the host | one id, rebound onto each successor at its birth, guarded by the sync context |
 | a dispenser's counters | each peer, minimum wins | the host as sent at join |
 
 ## Wire messages
@@ -148,13 +153,18 @@ own actors by that position, the membership sweep removes what the host never cl
 clump held by someone at the moment of the join binds without a duplicate. A pile the host moved
 during the window arrives as a position correction after the snapshot.
 
+The client's own piles do not all exist when the snapshot arrives -- its save load is still
+draining -- so an expression that finds no actor at its save-time position is HELD rather than
+answered: the id is recorded and the quiescence sweep binds the actor when it appears. The hold is
+bounded. An id whose actor never appears is given up after the sweep's retry budget and that pile
+is absent on that client until a later join expresses it again; nothing is invented at the stale
+save position, because the host may have moved or removed the pile since.
+
 ## Known limits
 
 | Limit | Evidence |
 |---|---|
-| The clump mirror is a static-mesh stand-in, not the engine's actor with its brain parked; two mirror implementations of one concept compile together, and the aim cone that exists only because a proxy cannot be looked at survives with it | `[V]` `coop/props/trash_proxy`, `coop/props/native_pile_mirror`; the rebuild is described under "What replaces it" above and queued on [roadmap.md](roadmap.md) |
-| The proxy has no collision: a player walks through a carried or flying clump, and the aim cone ignores walls | `[V]` `coop/props/trash_proxy` |
-| A client's grab resolves the aimed pile by testing every pile proxy against a camera cone, on each press. The cone is a dot product and nothing else, so unlike the game's own trace it is stopped by no wall and consults none of the per-prop interaction flags the game's data table carries | `[V]` `coop/props/trash_use_intercept`, `coop/props/trash_proxy`; the flags and their native readers are listed in [props.md](props.md) |
+| A clump has its collision off for its whole life -- carried and in flight -- so a player walks through the ball someone else is holding or has thrown. The pile it lands as has the game's own collision | `[V]` `coop/props/trash_mirror` |
 | Trash dropped into a garbage container updates the container on the host only: every client's container has its brain cancelled, so none of them -- not even the one whose player dropped the trash -- ever learns what is inside it, and the two pickup flags the game writes from those contents stay frozen | `[V]` `coop/interactables/garbage_sync`, and the cancelled Blueprint body read from the cook |
 | Dispenser piles born by an event carry per-process keys and never resolve across peers | `[V]` `coop/props/trash_pile_sync` |
 | The join-window bind is by save-time position; the sidecar that replaces it is off by default | `[V]` see [join.md](join.md) |
@@ -164,7 +174,7 @@ during the window arrives as a position correction after the snapshot.
 | Concept | Files |
 |---|---|
 | identity and the transitions | `coop/props/trash_channel`, `coop/props/trash_grab_intent.cpp` |
-| the mirrors | `coop/props/native_pile_mirror`, `coop/props/trash_proxy` |
+| the mirrors, in both forms | `coop/props/trash_mirror`, and `coop/props/trash_morph_gate` for the verbs a client refuses |
 | the client's grab and throw | `coop/props/trash_use_intercept`, `coop/player/puppet_carry_drive`, `coop/props/trash_clump_pose_stream`, `coop/props/active_drive` |
 | the dispenser piles | `coop/props/trash_pile_sync`, `coop/props/trash_collect_sync` |
 | garbage containers | `coop/interactables/garbage_sync` |

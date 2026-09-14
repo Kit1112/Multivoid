@@ -33,7 +33,7 @@ are peer-gated. `[V]`
 |---|---|---|---|
 | keyed props | the save; a spawner; the spawn menu; a container extract | the object scan at world start; the initialisation post observer; the finish-spawning seam | the save key, plus a host id |
 | chip piles | the save; a re-pile | the object scan's keyless lane; the native seam on the re-pile spawn | a host id only, keyless |
-| the trash clump | the grab, inside the Blueprint | the use input's pre observer; the native seam | the same host id, re-skinned |
+| the trash clump | the grab, inside the Blueprint | the use input's pre observer; the native seam | the same host id, rebound at birth |
 | a held physics prop | the grab | the new-held edge of the local stream | the key it already had; a keyless one is minted a key at the edge |
 | the hotbar hand item | the hotbar switch | not a world entity: polled as player state | none; display only |
 | a pocket pickup and a place | the destroy seam; the finish-spawning seam | the drop-intent door | the parked key |
@@ -105,7 +105,9 @@ A pile is keyless; its only identity is a host id, and the pile-to-clump-to-pile
 re-skin that id in place under a sync-time context. The grab is caught at the use input's pre
 observer; the re-pile is caught deterministically at the native seam on the re-pile spawn, which
 reads the source clump and the spawned pile in one call. The client's mirror of a resting pile is
-a rooted real pile actor; the clump's is a static-mesh stand-in. Every fact and every open item is
+the game's own pile actor -- at a join the one the client loaded itself -- and the clump's is the
+game's own clump actor, both with the verbs that would author a transition refused. Every fact and
+every open item is
 on [piles.md](piles.md). `[V]`
 
 ## Held items

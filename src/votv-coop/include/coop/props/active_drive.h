@@ -1,7 +1,7 @@
 // coop/props/active_drive.h -- the FIXED-DELAY SNAPSHOT INTERPOLATION primitive.
 //
 // One implementation of one concept, shared by the two pose streams that drive a local
-// actor from a remote peer's transform. It renders the proxy BEHIND the newest pose by the
+// actor from a remote peer's transform. It renders the mirror BEHIND the newest pose by the
 // measured inter-pose interval, advancing on an INDEPENDENT render clock -- MTA's
 // CClientVehicle::UpdateTargetPosition, whose fAlpha is Unlerp(start, now, finish).
 //
@@ -29,7 +29,7 @@ namespace coop::active_drive {
 namespace R = ue_wrap::reflection;
 namespace E = ue_wrap::engine;
 
-// State of one driven actor. `actor` is the LOCAL actor pointer (a mirror / proxy in this
+// State of one driven actor. `actor` is the LOCAL actor pointer (a mirror in this
 // process). lastKey/lastEid cache the identity the per-slot receiver resolved (so a same-Key
 // PropPose skips the GUObjectArray walk); the per-eid carry stream uses lastEid only.
 struct ActiveDrive {
@@ -49,17 +49,17 @@ struct ActiveDrive {
     std::string  lastKey;        // ASCII (the Aprop_C save UUID format); empty for a clump
     uint32_t     lastEid = 0;    // Prop Element id identity for the non-keyable clump
     uint64_t     lastApplyMs = 0;
-    // Host-authoritative trash proxy: NO stream-stop timeout-release. A network gap mid-carry
-    // must FREEZE the proxy at its last pose, never drop it to physics -- the carry ends ONLY on
-    // an explicit reliable edge (OnRelease throw / OnConvert ToPile / disconnect). A non-proxy
+    // A host-authoritative trash mirror: NO stream-stop timeout-release. A network gap mid-carry
+    // must FREEZE it at its last pose, never drop it to physics -- the carry ends ONLY on an
+    // explicit reliable edge (OnRelease throw / OnConvert ToPile / disconnect). Anything else
     // Aprop_C held item keeps the 500 ms timeout (no such reliable end-of-carry guarantee).
-    bool         isProxy = false;
-    // FIXED-DELAY SNAPSHOT INTERP (scoped to the trash proxy; a non-proxy Aprop_C is EXEMPT and
+    bool         isTrashMirror = false;
+    // FIXED-DELAY SNAPSHOT INTERP (scoped to a trash mirror; an ordinary Aprop_C is EXEMPT and
     // keeps its teleport-to-latest snap). Render between the two MOST RECENT timestamped poses,
     // a small fixed delay behind the newest -- the measured inter-pose interval -- so the render
     // clock (nowMs) advances INDEPENDENTLY of pose arrival. The first pose primes (snap), a far
     // jump re-primes (snap), otherwise interpolate prev->last. On a stream STOP the render clock
-    // advances past `last`'s timestamp, alpha clamps to 1, and the proxy reaches the last pose
+    // advances past `last`'s timestamp, alpha clamps to 1, and the mirror reaches the last pose
     // and FREEZES: no extrapolation, control released at the reliable edge.
     //
     // The obvious scheme cannot work here, and it was the carry-jank root: lerping
@@ -101,7 +101,7 @@ inline float LerpAngle(float a, float b, float t) {
     return a + ue_wrap::NormalizeAxis(b - a) * t;
 }
 
-// Reset a drive to idle. ONE implementation -- every clear site funnels here, so the lerp + proxy
+// Reset a drive to idle. ONE implementation -- every clear site funnels here, so the lerp + trash
 // state can never be left half-cleared (RULE 2). Does NOT touch physics; the caller decides
 // whether to re-enable simulation (a release) or leave it off (a stick / a freeze).
 inline void ResetDriveState(ActiveDrive& d) {
@@ -110,7 +110,7 @@ inline void ResetDriveState(ActiveDrive& d) {
     d.mesh       = nullptr;
     d.lastKey.clear();
     d.lastEid    = 0;
-    d.isProxy    = false;
+    d.isTrashMirror = false;
     d.lerpSeeded   = false;
     d.haveTwoSnaps = false;   // drop the interpolation buffer -> a re-acquire re-primes (snaps) cleanly
 }
@@ -125,9 +125,9 @@ inline void BeginLerpToPose(ActiveDrive& d, const ue_wrap::FVector& nloc,
     // catch-up that should snap rather than crawl across the map. (Comparing to renderedLoc would mistake
     // a normal render-delay lag for a teleport.)
     const float dx = nloc.X - d.lastLoc.X, dy = nloc.Y - d.lastLoc.Y, dz = nloc.Z - d.lastLoc.Z;
-    // A non-proxy Aprop_C held item ALWAYS snaps (its proven teleport-to-latest behavior). A proxy snaps
+    // An ordinary Aprop_C held item ALWAYS snaps (its proven teleport-to-latest behavior). A trash mirror snaps
     // only to PRIME (first pose) or on a far jump (gap / teleport -- crawling across the map looks worse).
-    if (!d.isProxy || !d.lerpSeeded || (dx * dx + dy * dy + dz * dz) > kSnapDistSq) {
+    if (!d.isTrashMirror || !d.lerpSeeded || (dx * dx + dy * dy + dz * dz) > kSnapDistSq) {
         // Snap + prime BOTH buffer slots at the pose, so the next pose has a valid `prev` to interpolate from.
         d.prevLoc = d.lastLoc = d.renderedLoc = nloc;
         d.prevRot = d.lastRot = d.renderedRot = nrot;
@@ -140,7 +140,7 @@ inline void BeginLerpToPose(ActiveDrive& d, const ue_wrap::FVector& nloc,
         }
         return;
     }
-    // Proxy steady state: shift the newest sample to `prev` and append this pose as `last`. Both carry their
+    // Trash steady state: shift the newest sample to `prev` and append this pose as `last`. Both carry their
     // REAL arrival timestamps; AdvanceLerp interpolates prev->last by the render clock (now - span).
     d.prevLoc = d.lastLoc; d.prevRot = d.lastRot; d.prevPoseMs = d.lastPoseMs;
     d.lastLoc = nloc;      d.lastRot = nrot;      d.lastPoseMs = nowMs;
@@ -153,7 +153,7 @@ inline void BeginLerpToPose(ActiveDrive& d, const ue_wrap::FVector& nloc,
 inline void AdvanceLerp(ActiveDrive& d, uint64_t nowMs) {
     if (!d.actor) return;
     if (!d.LiveActor()) { d.haveTwoSnaps = false; return; }
-    if (!d.isProxy || !d.haveTwoSnaps) return;   // non-proxy snapped in BeginLerp; <2 samples -> sit at the pose
+    if (!d.isTrashMirror || !d.haveTwoSnaps) return;   // others snapped in BeginLerp; <2 samples -> sit at the pose
     // Render `span` BEHIND the newest pose. span = the REAL interval between the two buffered poses (clamped).
     uint64_t span = (d.lastPoseMs > d.prevPoseMs) ? (d.lastPoseMs - d.prevPoseMs) : kLerpMinMs;
     if (span < kLerpMinMs) span = kLerpMinMs;

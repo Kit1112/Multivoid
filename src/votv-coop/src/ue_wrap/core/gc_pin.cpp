@@ -27,8 +27,9 @@ namespace R = ue_wrap::reflection;
 // reads it off the game thread. That is all it buys -- reading a pinned object's class still
 // requires the game thread, so ReportWorldScopedPins is game-thread like everything else here.
 //
-// BOTH ARE DELIBERATELY LEAKED. A GcPin can live inside another static (trash_proxy's proxy map,
-// engine_audio's permanent pins), so a Release() can run during static destruction at DLL unload,
+// BOTH ARE DELIBERATELY LEAKED. A GcPin can live inside another static (trash_mirror's map of the
+// mirrors it made, engine_audio's permanent pins), so a Release() can run during static
+// destruction at DLL unload,
 // after a normally-declared registry would already have been destroyed. Leaking them makes that
 // ordering unobservable. Nothing is lost: the process is exiting, and the memory goes back with it.
 std::mutex& Mu() {

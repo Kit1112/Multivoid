@@ -79,7 +79,7 @@ void OnGrabHolderLeft(uint8_t senderSlot);
 // destroy is the honest edge. Idempotent.
 void ReleaseClientHold(coop::net::Session& s, coop::element::ElementId E);
 
-// Client: clear the carry toggle when the carried proxy is retired, so the next press grabs. A
+// Client: clear the carry toggle when the carried mirror is retired, so the next press grabs. A
 // no-op if not carrying that eid.
 void ClearClientCarry(uint32_t eid);
 

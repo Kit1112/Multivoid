@@ -429,7 +429,7 @@ void Tick(coop::net::Session& session, void* local, void* controller) {
             // alive, so its pose keeps streaming under the same eid with no release verb and no
             // velocity. A churn re-pile destroys the clump (not alive), the gap: await the re-grab
             // or the land. The stream ends when the clump re-piles, wherever, and the ToPile
-            // convert re-skins the proxy at the landed spot.
+            // convert materialises the pile at the landed spot.
             if (g_lastHeldProp.Alive() &&
                 ue_wrap::prop::IsGarbageClump(g_lastHeldProp.Raw()) &&
                 g_lastHeldEid != coop::element::kInvalidId) {
@@ -476,7 +476,7 @@ void Tick(coop::net::Session& session, void* local, void* controller) {
         // A trash entity's throw is owned by the host-authoritative channel: the flight stream
         // carries the arc and the ToPile convert is the landing (it re-skins, snaps and clears the
         // client's drive). By this edge the carry has already closed, so a PropRelease here was
-        // redundant and harmful: the client turned each into a proxy throw that churned the drive
+        // redundant and harmful: the client turned each into a trash throw that churned the drive
         // and replayed the pickup sound. A tracked trash entity stops the stream and clears the
         // cache without a PropRelease; a non-trash prop keeps its velocity release.
         const uint32_t relEid = (g_lastHeldEid == coop::element::kInvalidId)

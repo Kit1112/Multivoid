@@ -22,8 +22,8 @@
 #include "coop/props/join_membership_sweep.h"  // the sweep's candidate and claim queries
 #include "coop/save/save_transfer.h"      // RecordGrabTimePileXform, the grab-edge save-time key
 #include "coop/props/trash_channel.h"      // NoteClumpBorn, the clump's birth certificate
-#include "coop/props/trash_proxy.h"        // EidForAimedPileProxy
-#include "coop/props/trash_use_intercept.h"  // the InpActEvt_use client-grab interceptor
+#include "coop/props/trash_use_intercept.h"
+#include "coop/props/trash_morph_gate.h"  // the client-side refusal of the trash morph verbs
 #include "ue_wrap/engine/engine.h"
 #include "ue_wrap/core/game_thread.h"     // RegisterPreObserver (the InpActEvt_use pile-grab observer)
 #include "ue_wrap/core/log.h"
@@ -335,11 +335,17 @@ void Install(coop::net::Session* session) {
     // hard-throw bridge) lives in trash_use_intercept, which caches its own session and retries
     // until mainPlayer_C is loaded.
     coop::trash_use_intercept::Install(session);
+
+    // The morph gate refuses the three verbs the game's own trash actors use to author a
+    // transition, on a client only; it needs the two trash classes rather than mainPlayer_C and so
+    // resolves on its own schedule.
+    coop::trash_morph_gate::Install(session);
 }
 
 void OnDisconnect() {
     g_session.store(nullptr, std::memory_order_release);
     coop::trash_use_intercept::OnDisconnect();  // clears its cached session + gesture-pairing latch
+    coop::trash_morph_gate::OnDisconnect();     // with no session the game's trash authors itself again
 }
 
 bool DebugSendGrabIntent(uint32_t eid) {

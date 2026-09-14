@@ -404,13 +404,13 @@ static void RunDivergenceSweep_(void* localPlayer) {
         }
     }
 
-    // The orphan census, read-only: the native level chipPiles no arriving proxy claimed within 1
+    // The orphan census, read-only: the native level chipPiles no arriving expression bound within 1
     // cm. The bracket is drained before the sweep fires (Begin, every PropSpawn and Complete are
     // FIFO on one lane; Complete only arms), so a leftover is real host drift: the host moved or
     // collected the pile since the save the client loaded. The registry doom above misses these (a
     // level native enters the Prop registry lazily), and a player can grab one through the real
     // interaction system with no GrabIntent sent. Each orphan is banded by its distance to the
-    // nearest live pile proxy, so a removal threshold comes from measured drift. This diverges from
+    // nearest bound pile, so a removal threshold comes from measured drift. This diverges from
     // MTA, which removes only by id (Packet_EntityRemove): a chipPile is keyless and level-placed,
     // so position is the only key. The summary prints at zero orphans too, or a clean join looks
     // like a census that never ran. LogCensus re-enumerates with fresh indices: a mass purge runs

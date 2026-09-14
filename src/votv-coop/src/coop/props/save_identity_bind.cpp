@@ -16,7 +16,7 @@
 #include "coop/props/prop_element_tracker.h"     // UnmarkKnownKeyedProp, GetPropElementIdForActor, MarkBoundMirrorNative
 #include "coop/props/remote_prop.h"              // RegisterPropMirror, ConsumeLocalActor
 #include "coop/props/save_time_retire_util.h"    // FindExactMatch, the shared 1 cm kernel
-#include "coop/props/trash_proxy.h"              // IsProxy, RetireProxy
+#include "coop/props/trash_mirror.h"             // Unpin (a materialised mirror we displace)
 #include "coop/props/trash_channel.h"            // CtxForEid: was the eid converted in-window
 #include "ue_wrap/engine/engine.h"                // GetActorLocation
 #include "ue_wrap/core/log.h"
@@ -108,23 +108,22 @@ void BindLocalNativeToHostEid_(void* native, coop::element::ElementId E, MAP::Fa
                          R::IsLiveByIndex(oldActor, preE->GetInternalIdx()));  // host PropSpawn beat the bind
 
     // Convert wins when a convert already touched E: the host grabbed and moved this pile in the
-    // join window, so E's current rendering (a trash proxy, or the native a landing materialised)
-    // is the authoritative form at the moved position, and this save-loaded native at the stale
-    // save position is the redundant one. E stays bound; the fresh native is retired. A clean-join
-    // pile has no in-window convert and takes the plain bind; a fresh host spawn with no convert is
-    // the race below, where the native at its untouched position wins.
+    // join window, so E's current rendering is the authoritative form at the moved position and
+    // this save-loaded native at the stale save position is the redundant one. E stays bound; the
+    // fresh native is retired. A clean-join pile has no in-window convert and takes the plain bind;
+    // a fresh host spawn with no convert is the race below, where the native at its untouched
+    // position wins.
     if (caseII && family == MAP::Family::ChipPile &&
-        coop::trash_channel::CtxForEid(E) > 0 &&
-        (coop::trash_proxy::IsProxy(E) || PT::IsBoundMirrorNative(oldActor))) {
+        coop::trash_channel::CtxForEid(E) > 0 && PT::IsBoundMirrorNative(oldActor)) {
         const unsigned ctx = coop::trash_channel::CtxForEid(E);
-        const bool viaProxy = coop::trash_proxy::IsProxy(E);
         PT::UnmarkKnownKeyedProp(native);                  // drop the fresh native's local element
         coop::remote_prop::ConsumeLocalActor(native);      // the redundant native at the save position
         ++g_boundChip;                                     // E is satisfied
         ++g_caseII;
         UE_LOGI("save_identity_bind: CONVERT-WINS k=%zu chipPile freshNative=%p -> host eid=%u [case(ii)-converted: "
-                "pile grabbed/moved in-window (ctx=%u) -> %s authoritative @new, redundant save-loaded native@old retired]",
-                k, native, static_cast<unsigned>(E), ctx, viaProxy ? "proxy" : "landed native");
+                "pile grabbed/moved in-window (ctx=%u) -> the converted mirror is authoritative @new, "
+                "redundant save-loaded native@old retired]",
+                k, native, static_cast<unsigned>(E), ctx);
         return;
     }
 
@@ -132,24 +131,21 @@ void BindLocalNativeToHostEid_(void* native, coop::element::ElementId E, MAP::Fa
     // Prop Element, the reverse map and the key index go, and the actor stays alive as the mirror's
     // rendering.
     PT::UnmarkKnownKeyedProp(native);
-    // The proxy-before-bind race: a host PropSpawn beat the bind and spawned a trash proxy at E, so
-    // the proxy is retired properly first (destroy, un-root, unbind), before the mirror install
-    // below, which then binds the native to a free E.
-    bool retiredProxy = false;
-    if (caseII && family == MAP::Family::ChipPile && coop::trash_proxy::IsProxy(E)) {
-        coop::trash_proxy::RetireProxy(E);
-        retiredProxy = true;
-    }
     // The host-range mirror at E onto the native; rebindInPlace re-points an already-bound E rather
     // than rejecting.
     coop::remote_prop::RegisterPropMirror(E, native, key, cls, /*senderSlot*/ 0, /*rebindInPlace*/ true);
     // The Element at E is flagged as a save-loaded native; the flag lives with the identity, so it
     // cannot desync from the binding.
     if (coop::element::Element* el = coop::element::Registry::Get().Get(E)) el->SetSaveNative(true);
-    // The non-proxy race: a host PropSpawn already spawned a separate actor at E, orphaned by the
-    // rebind, so it is destroyed echo-suppressed. Skipped when the proxy path tore it down, and
+    // The displaced race: a host PropSpawn already spawned a separate actor at E, orphaned by the
+    // rebind, so it is destroyed echo-suppressed. Skipped when the trash retire tore it down, and
     // when the caller declared it a foreign identity.
-    if (caseII && !retiredProxy && consumeDisplaced) coop::remote_prop::ConsumeLocalActor(oldActor);
+    if (caseII && consumeDisplaced) {
+        // A mirror this client materialised is GC-pinned, and a rooted pending-kill actor anchors
+        // its world; the unpin is a no-op for any actor we did not make.
+        coop::trash_mirror::Unpin(oldActor);
+        coop::remote_prop::ConsumeLocalActor(oldActor);
+    }
 
     if (family == MAP::Family::ChipPile) ++g_boundChip; else ++g_boundKerfur;
     if (caseII) ++g_caseII; else ++g_caseI;

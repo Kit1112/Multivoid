@@ -9,7 +9,6 @@
 // convert paths share it). Game thread only (the event drain and the quiescence sweep); no
 // mutex.
 
-#include "coop/props/native_pile_mirror.h"
 #include "coop/props/remote_prop.h"
 #include "remote_prop_internal.h"  // impl-private (src-local), NOT under include/
 
@@ -21,8 +20,8 @@
 #include "coop/player/players_registry.h"     // players::Registry::Get().Local() (TryApplyDestroy)
 #include "coop/props/prop_echo_suppress.h"    // MarkIncomingDestroy
 #include "coop/props/prop_element_tracker.h"  // ResolveLiveActorByKey
-#include "coop/props/trash_channel.h"         // ClearClientCarry (destroyed carried proxy)
-#include "coop/props/trash_proxy.h"           // IsProxy / RetireProxy (proxy teardown path)
+#include "coop/props/trash_channel.h"         // ClearClientCarry (a destroyed carried clump)
+#include "coop/props/trash_mirror.h"          // Retire (the trash teardown path)
 #include "ue_wrap/engine/engine.h"                   // ReleaseMainPlayerGrabIfHolding
 #include "ue_wrap/core/hot_path_guard.h"           // UE_ASSERT_GAME_THREAD
 #include "ue_wrap/core/cached_obj_ref.h"
@@ -39,6 +38,14 @@ namespace P = ue_wrap::profile;
 namespace R = ue_wrap::reflection;
 
 namespace {
+
+// Is `eid` currently rendered by a trash mirror -- a chip pile or a garbage clump this peer
+// mirrors? Trash retires through trash_mirror::Retire, which releases the GC pin the mirror owns;
+// destroying the actor by the keyed path below would leave it rooted.
+bool IsTrashMirrorEid_(uint32_t eid) {
+    void* a = ResolveLiveActorByEid(eid);
+    return a && (ue_wrap::prop::IsChipPile(a) || ue_wrap::prop::IsGarbageClump(a));
+}
 
 // The cached destroy UFunction for receiver-side destroys.
 void* g_destroyActorFn = nullptr;
@@ -94,7 +101,7 @@ void DestroyResolvedLocalActor_(void* actor, const std::wstring& keyW,
     // Unpin first: a nativized runtime pile mirror is GC-pinned (no save or world reference stops
     // GC), and a rooted pending-kill actor would leak its object-array slot forever. A harmless
     // no-op on a save-loaded native or a keyed prop.
-    coop::native_pile_mirror::Unpin(actor);
+    coop::trash_mirror::Unpin(actor);
     R::CallFunction(actor, g_destroyActorFn, nullptr);
 }
 
@@ -103,21 +110,20 @@ void DestroyResolvedLocalActor_(void* actor, const std::wstring& keyW,
 // raced ahead), the destroy is queued on the drain-edge order owner and re-applied after the
 // bind at the quiescence sweep, never dropped, since a destroy dropped before the load left
 // the prop to load unopposed, a duplicate. Without it, the deferred re-apply: a still-missing
-// actor returns false to stay queued. True iff a local actor was destroyed or a proxy
+// actor returns false to stay queued. True iff a local actor was destroyed or a mirror
 // retired. Game thread.
 bool OnDestroyImpl_(const coop::net::PropDestroyPayload& payload, void* localPlayer, bool allowDefer) {
     // Dispatched from the event drain on the game thread.
     UE_ASSERT_GAME_THREAD("g_drives (remote_prop::OnDestroy)");
-    // A trash proxy mirror is retired through its own teardown, which erases the registry entry
-    // and so releases the entry's GC pin; destroying the actor by any other route leaves it
-    // pinned, and a rooted pending-kill actor anchors its whole world. Trash rides an empty key
-    // and an eid; return before the keyed path.
+    // A trash mirror is retired through its own teardown, which releases the GC pin it owns;
+    // destroying the actor by any other route leaves it pinned, and a rooted pending-kill actor
+    // anchors its whole world. Trash rides an empty key and an eid; return before the keyed path.
     if (payload.elementId != 0 && payload.elementId != coop::element::kInvalidId &&
-        coop::trash_proxy::IsProxy(payload.elementId)) {
-        // A destroyed carried proxy clears the local carry-state toggle too (the host aborted the
+        IsTrashMirrorEid_(payload.elementId)) {
+        // A destroyed carried clump clears the local carry-state toggle too (the host aborted the
         // carry), else the next use press throws a dead eid forever. The retire clears the drive.
         coop::trash_channel::ClearClientCarry(payload.elementId);
-        coop::trash_proxy::RetireProxy(payload.elementId);
+        coop::trash_mirror::Retire(payload.elementId, /*authoritative=*/true);
         return true;
     }
     const std::wstring keyW = KeyToWString(payload.key);
@@ -222,7 +228,7 @@ void ConsumeLocalActor(void* actor) {
     // consumes) must be unpinned first: destroying a rooted actor only sets pending kill while
     // the root keeps it alive, a live orphan. The same release the authoritative destroy path
     // does; a no-op on an unpinned game native.
-    coop::native_pile_mirror::Unpin(actor);
+    coop::trash_mirror::Unpin(actor);
     R::CallFunction(actor, g_destroyActorFn, nullptr);
 }
 

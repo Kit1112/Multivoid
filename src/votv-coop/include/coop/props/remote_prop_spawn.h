@@ -26,7 +26,7 @@ namespace coop::remote_prop_spawn {
 
 // Build a wide string from a wire class name (lossless for ASCII, and VOTV class names are
 // ASCII). Shared so remote_prop::OnConvert can class-test a convert's pileClass -- the
-// convert-before-spawn proxy form -- without duplicating it.
+// convert-before-spawn form -- without duplicating it.
 std::wstring ClassNameToWString(const coop::net::WireClassName& cn);
 
 // Called from event_feed when a PropSpawn reliable message arrives. Game-thread only, since

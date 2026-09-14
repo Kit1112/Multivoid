@@ -13,7 +13,7 @@ namespace ue_wrap::engine {
 
 // The world rotation of `actor`'s visible StaticMesh component, or the actor rotation if it owns
 // none. A chipPile's visual roll lives on the component (its UserConstructionScript), not the root,
-// so the host captures this and the bare proxy reproduces it with SetActorRotation. Game thread.
+// so the host captures this and a mirror reproduces it on its own mesh component. Game thread.
 FRotator GetVisibleMeshWorldRotation(void* actor);
 
 // The UCharacterMovementComponent subobject of a Character; nullptr if none.
@@ -84,15 +84,13 @@ bool ClearStaticMesh(void* staticMeshComponent);
 
 // USceneComponent::SetMobility (0 Static, 1 Stationary, 2 Movable). A runtime-spawned
 // AStaticMeshActor defaults to Static, on which SetStaticMesh and SetActorLocation are silent
-// no-ops, so a moving proxy must be Movable first. Game thread.
+// no-ops, so a moving mirror must be Movable first. Game thread.
 bool SetComponentMobility(void* sceneComponent, uint8_t mobility);
 
-// UPrimitiveComponent::SetMaterial; null reverts the slot to the mesh asset's default (the trash
-// proxy clears a stale clump override that way). Game thread.
+// UPrimitiveComponent::SetMaterial; null reverts the slot to the mesh asset's default, which is
+// how the skin lanes drop an override. Game thread.
 bool SetComponentMaterial(void* primitiveComponent, int32_t elementIndex, void* material);
 
-// UStaticMesh::GetMaterial(index); null on failure. Game thread.
-void* GetStaticMeshMaterial(void* staticMeshAsset, int32_t materialIndex);
 
 // UActorComponent::K2_DestroyComponent (`contextObject` = the owning actor, for the engine's auth
 // check). Game thread.

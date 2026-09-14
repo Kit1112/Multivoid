@@ -1,8 +1,8 @@
 // coop/props/pile_spawn_bind.cpp -- the pile spawn-time native-bind mechanism (see header).
 //
-// It holds the bracket-scoped GUObjectArray pile-bind index, the two spawn-time bind paths
-// (TryDestroyTwin / FindAndConsumeAdoptCandidate) and the [PILE-DELTA] dark probe. A
-// save-time-key MISS arms the order owner across modules
+// It holds the bracket-scoped GUObjectArray pile-bind index, the spawn-time bind
+// (BindOwnSavePile) and the [PILE-DELTA] dark probe. A save-time-key MISS arms the order owner
+// across modules
 // (coop::element::quiescence_drain::ArmPendingSaveTimeTwin) rather than keeping a pending map
 // of its own, so one module owns the order axis.
 
@@ -10,9 +10,12 @@
 
 #include "coop/element/quiescence_drain.h"  // ArmPendingSaveTimeTwin (the spawn mechanism CAPTURES into the order owner)
 #include "coop/config/config.h"  // ResolveFlag -- the [PILE-DELTA] probe flag (multivoid.ini [dev], not bats/env)
+#include "coop/element/registry.h"  // Element::SetSaveNative on the bound native
+#include "coop/props/join_membership_sweep.h"  // RecordClaimIfTracking (a bound native is expressed this bracket)
 #include "coop/props/prop_element_tracker.h"  // IsBoundMirrorNative / GetPropElementIdForActor
-#include "coop/props/save_time_retire_util.h"  // UnmarkAndDestroy + kExactMatchR2Cm (shared kernel)
-#include "coop/props/trash_proxy.h"  // NearestPileProxy (the L1 orphan census)
+#include "coop/props/prop_wire_parity.h"  // RestoreCollisionIfNeeded
+#include "coop/props/remote_prop.h"  // RegisterPropMirror
+#include "coop/props/save_time_retire_util.h"  // kExactMatchR2Cm (the shared match radius)
 #include "ue_wrap/engine/engine.h"
 #include "ue_wrap/core/log.h"
 #include "ue_wrap/actors/prop.h"
@@ -58,10 +61,10 @@ int  g_pileIndexBuiltCount = 0;  // size of g_pileBindIndex at build (the L1 orp
                                  // not divergence -> the census/removal must refuse it, like the >50%% sweep valve)
 
 // [PILE-DELTA]/[PILE-CENSUS] probe gate (L1 orphan histogram), read ONCE + cached. Ships dark (off => zero
-// cost). When on, logs the per-orphan nearest-proxy/native deltas so we can band the host-drift orphans
+// cost). When on, logs the per-orphan nearest-native deltas so we can band the host-drift orphans
 // (0-5cm near-miss vs >30cm true drift). HANDS-ON FLAG: multivoid.ini [dev] `pile_delta_probe=1` (the
 // established probe pattern: the ini is the toggle, not the launch bats). The env var is the
-// mp.py-harness override only. Used by TryDestroyTwin's delta-log AND LogCensus's verbose
+// mp.py-harness override only. Used by the bind's miss delta-log AND LogCensus's verbose
 // mode -- ONE concept, ONE gate, file-local to this module.
 bool DeltaProbeOn() {
     static const bool on = coop::config::ResolveFlag(::coop::config_registry::rows::pile_delta_probe) || [] {
@@ -84,11 +87,9 @@ void EnsureIndex(const std::unordered_set<void*>& claimed) {
         if (!R::IsLive(obj)) continue;
         if (R::NameStartsWith(R::NameOf(obj), L"Default__")) continue;  // CDO
         if (claimed.count(obj)) continue;  // already bound earlier this bracket
-        // Native-authoritative guard: a save_identity_bind BOUND native IS the authoritative
-        // host-range mirror, so it must NEVER be a reconcile-destroy candidate. Excluding it from
-        // the index here covers BOTH the world-ready TryDestroyTwin and the adopt path
-        // (FindAndConsumeAdoptCandidate), so a co-located UNBOUND pile's proxy can never
-        // 1 cm-destroy a bound native.
+        // Native-authoritative guard: a native already bound as a host-range mirror must never be
+        // a candidate for a second eid, so a co-located UNBOUND pile's expression can never bind
+        // over it.
         if (coop::prop_element_tracker::IsBoundMirrorNative(obj)) continue;
         const ue_wrap::FVector loc = ue_wrap::engine::GetActorLocation(obj);
         // chipType read once at build time: save-loaded piles carry it from the
@@ -104,6 +105,37 @@ void EnsureIndex(const std::unordered_set<void*>& claimed) {
             g_pileBindIndex.size());
 }
 
+// [PILE-DELTA] dark probe on a bind MISS: during the join bracket every expression names a LEVEL
+// pile, so a no-match is a host-DRIFT candidate (the native is not at the expression's save-time
+// pose). Log its nearest-native delta so the harness can band the orphans (read-only; no bind, no
+// index mutation). A native still IN the index is unbound -- a 1 cm match pops it -- so a nearby
+// chipType-matching entry is likely this pile's drifted twin, and a >30 cm nearest is a real
+// orphan (the host removed or moved the pile far).
+void LogNearestDelta(const coop::net::PropSpawnPayload& payload, const ue_wrap::FVector& matchPos) {
+    if (!DeltaProbeOn() || g_pileBindIndex.empty()) return;
+    float bestD2 = 3.4e38f; int bestI = -1;
+    for (int i = 0; i < static_cast<int>(g_pileBindIndex.size()); ++i) {
+        const auto& c = g_pileBindIndex[i];
+        if (!R::IsLiveByIndex(c.actor, c.idx)) continue;       // no deref of a GC'd ptr
+        const float dx = c.x - matchPos.X, dy = c.y - matchPos.Y, dz = c.z - matchPos.Z;
+        const float d2 = dx * dx + dy * dy + dz * dz;
+        if (d2 < bestD2) { bestD2 = d2; bestI = i; }
+    }
+    if (bestI < 0) {
+        UE_LOGI("[PILE-DELTA] eid=%u matchPos=(%.1f,%.1f,%.1f) chipType=%u nearestNative_d=NONE "
+                "(no live native in the index)",
+                payload.elementId, matchPos.X, matchPos.Y, matchPos.Z, static_cast<unsigned>(payload.chipType));
+        return;
+    }
+    const auto& c = g_pileBindIndex[bestI];
+    const uint32_t nativeEid = static_cast<uint32_t>(
+        coop::prop_element_tracker::GetPropElementIdForActor(c.actor));
+    UE_LOGI("[PILE-DELTA] eid=%u matchPos=(%.1f,%.1f,%.1f) chipType=%u nearestNative_d=%.1fcm "
+            "nearestChipTypeMatch=%d nativeEid=%u",
+            payload.elementId, matchPos.X, matchPos.Y, matchPos.Z, static_cast<unsigned>(payload.chipType),
+            std::sqrt(bestD2), (c.chipType == payload.chipType) ? 1 : 0, nativeEid);
+}
+
 }  // namespace
 
 void Reset() {
@@ -114,177 +146,158 @@ void Reset() {
     g_pileIndexBuiltCount = 0;
 }
 
-void TryDestroyTwin(const coop::net::PropSpawnPayload& payload,
-                    const ue_wrap::FVector& matchPos,
-                    bool isSaveTimeKey,
-                    const std::unordered_set<void*>& claimed) {
+void* BindOwnSavePile(const coop::net::PropSpawnPayload& payload,
+                      const std::wstring& classW,
+                      const ue_wrap::FVector& matchPos,
+                      bool isSaveTimeKey,
+                      int senderSlot,
+                      const std::unordered_set<void*>& claimed) {
     EnsureIndex(claimed);
     // Inline match (NOT save_time_retire_util::FindExactMatch): this path does an O(1) swap-pop CONSUME
     // from g_pileBindIndex on a match (lines below), which the non-mutating index-return kernel cannot
     // model; keep it inline. The 1cm + ambiguous(>1)->skip policy is the same as the shared kernel.
-    constexpr float kDestroyR2Cm = coop::save_time_retire_util::kExactMatchR2Cm;  // 1 cm^2 -- bit-exact twin
+    constexpr float kBindR2Cm = coop::save_time_retire_util::kExactMatchR2Cm;  // 1 cm^2 -- bit-exact twin
     int matchCount = 0, matchIdx = -1;
     for (int i = 0; i < static_cast<int>(g_pileBindIndex.size()); ++i) {
         const auto& c = g_pileBindIndex[i];
         const float dx = c.x - matchPos.X, dy = c.y - matchPos.Y, dz = c.z - matchPos.Z;
-        if (dx * dx + dy * dy + dz * dz > kDestroyR2Cm) continue;
+        if (dx * dx + dy * dy + dz * dz > kBindR2Cm) continue;
         if (c.chipType != payload.chipType) continue;          // same trash variant only
         if (!R::IsLiveByIndex(c.actor, c.idx)) continue;       // bracket-long raw ptr: no deref first
         ++matchCount;
         matchIdx = i;
     }
-    if (matchCount == 1) {
-        void* native = g_pileBindIndex[matchIdx].actor;
-        g_pileBindIndex[matchIdx] = g_pileBindIndex.back();   // O(1) remove (consume the twin)
-        g_pileBindIndex.pop_back();
-        // The EnsureIndex bound-mirror skip runs at index-BUILD time; a native that binds AFTER
-        // the (latched) build is still in the index. Re-check at the consume site so a bound native can never
-        // be destroyed even if it bound late (cheap -- one map lookup on the single matched candidate).
-        if (coop::prop_element_tracker::IsBoundMirrorNative(native)) return;
-        // Retire the superseded client-minted twin. The kernel marks the destroy as local
-        // bookkeeping so the K2_DestroyActor PRE observer does not broadcast it; the Unmark
-        // alone does not buy that silence.
-        coop::save_time_retire_util::UnmarkAndDestroy(native);
-        if (g_pileBindCount < 8 || (g_pileBindCount % 200) == 0)
-            UE_LOGI("[PILE] DESTROY native level-pile twin eid=%u at (%.1f,%.1f,%.1f) chipType=%u -- "
-                    "proxy is the sole mirror now (dup fixed; %zu native(s) left in index)",
-                    payload.elementId, matchPos.X, matchPos.Y, matchPos.Z,
-                    static_cast<unsigned>(payload.chipType), g_pileBindIndex.size());
-        ++g_pileBindCount;
-    } else if (matchCount > 1) {
-        UE_LOGW("[PILE] DESTROY SKIP eid=%u at (%.1f,%.1f,%.1f) -- %d native chipPile twins within "
-                "1cm (ambiguous cluster) -> keeping all (never destroy the wrong one); dup may persist",
-                payload.elementId, matchPos.X, matchPos.Y, matchPos.Z, matchCount);
-    }
-    // matchCount == 0: no twin within 1cm of matchPos in the CURRENT index.
-    else if (matchCount == 0) {
-        // If matchPos was a SAVE-TIME key -- a stamped pile that SHOULD have a save-loaded twin --
-        // the miss is almost always TIMING: this runs in the world-ready snapshot burst, before the
-        // client's async native-pile load tail has drained, so the native at the save-time key has
-        // not loaded or indexed yet and appears about ten seconds later, at the post-quiescence
-        // sweep. ARM it on the ORDER OWNER for a retry there
-        // (quiescence_drain::SweepReconcileSaveTimeTwins), where the late native is present. A
-        // non-save-time miss is a genuine DERIVED pile with no twin -- the common gameplay case --
-        // so do NOT record it. The spawn mechanism only CAPTURES; the order owner drains.
+    // Every way of leaving here without a binding arms the order owner, when the expression
+    // carries a save-time key. The caller cannot tell the misses apart and says so in its own
+    // comment, and an unarmed one leaves the eid with no actor for the rest of the session: the
+    // host has a pile the client can neither see nor aim at.
+    auto armAndFail = [&](const char* why) -> void* {
         if (isSaveTimeKey && payload.elementId != 0)
             coop::element::quiescence_drain::ArmPendingSaveTimeTwin(payload.elementId, matchPos, payload.chipType);
+        else
+            UE_LOGW("[PILE] BIND eid=%u at (%.1f,%.1f,%.1f) -- %s, and the expression carries no "
+                    "save-time key to retry from", payload.elementId, matchPos.X, matchPos.Y, matchPos.Z, why);
+        return nullptr;
+    };
+    if (matchCount > 1) {
+        UE_LOGW("[PILE] BIND SKIP eid=%u at (%.1f,%.1f,%.1f) -- %d native chipPile twins within "
+                "1cm (ambiguous cluster) -> binding none (never bind the wrong one)",
+                payload.elementId, matchPos.X, matchPos.Y, matchPos.Z, matchCount);
+        return armAndFail("an ambiguous cluster");
     }
-    // [PILE-DELTA] dark probe: during the join bracket every proxy is a LEVEL pile, so a no-match here
-    // is a host-DRIFT candidate (the native is not at the proxy's pose). Log its nearest-native delta so
-    // the harness can band the orphans (read-only; no destroy, no index mutation).
-    if (matchCount == 0 && DeltaProbeOn() && !g_pileBindIndex.empty()) {
-        float bestD2 = 3.4e38f; int bestI = -1;
-        for (int i = 0; i < static_cast<int>(g_pileBindIndex.size()); ++i) {
-            const auto& c = g_pileBindIndex[i];
-            if (!R::IsLiveByIndex(c.actor, c.idx)) continue;       // no deref of a GC'd ptr
-            const float dx = c.x - matchPos.X, dy = c.y - matchPos.Y, dz = c.z - matchPos.Z;
-            const float d2 = dx * dx + dy * dy + dz * dz;
-            if (d2 < bestD2) { bestD2 = d2; bestI = i; }
-        }
-        if (bestI >= 0) {
-            const auto& c = g_pileBindIndex[bestI];
-            // A native still IN the index is UNCLAIMED (a 1cm match pops it), so a nearby chipType-
-            // matching entry is likely this pile's drifted twin; a >30cm nearest = a real orphan
-            // (host removed/moved the pile far). nativeEid confirms FACT 1 (expect kInvalidId).
-            const uint32_t nativeEid = static_cast<uint32_t>(
-                coop::prop_element_tracker::GetPropElementIdForActor(c.actor));
-            UE_LOGI("[PILE-DELTA] eid=%u matchPos=(%.1f,%.1f,%.1f) chipType=%u nearestNative_d=%.1fcm "
-                    "nearestChipTypeMatch=%d nativeEid=%u",
-                    payload.elementId, matchPos.X, matchPos.Y, matchPos.Z, static_cast<unsigned>(payload.chipType),
-                    std::sqrt(bestD2), (c.chipType == payload.chipType) ? 1 : 0, nativeEid);
-        } else {
-            UE_LOGI("[PILE-DELTA] eid=%u matchPos=(%.1f,%.1f,%.1f) chipType=%u nearestNative_d=NONE "
-                    "(no live native in the index)",
-                    payload.elementId, matchPos.X, matchPos.Y, matchPos.Z, static_cast<unsigned>(payload.chipType));
-        }
+    if (matchCount == 0) {
+        // A save-time key names a pile that SHOULD have a save-loaded twin, so the miss is almost
+        // always TIMING: this runs in the world-ready snapshot burst, before the client's async
+        // native-pile load tail has drained, so the native at that key has not loaded or indexed
+        // yet and appears about ten seconds later, at the post-quiescence sweep, where the order
+        // owner binds it. A non-save-time miss is a genuine DERIVED pile with no twin -- the
+        // common gameplay case -- and the caller materialises a mirror for it. The spawn mechanism
+        // only CAPTURES; the order owner drains.
+        LogNearestDelta(payload, matchPos);
+        if (!isSaveTimeKey) return nullptr;   // the caller materialises; nothing to wait for
+        return armAndFail("no native at the save-time key yet");
     }
+    void* native = g_pileBindIndex[matchIdx].actor;
+    // The EnsureIndex bound-mirror skip runs at index-BUILD time; a native that binds AFTER the
+    // (latched) build is still in the index. Re-check BEFORE consuming it, so a candidate this
+    // expression cannot use is still there for the expression that can.
+    if (coop::prop_element_tracker::IsBoundMirrorNative(native))
+        return armAndFail("the matched native is already another eid's mirror");
+    g_pileBindIndex[matchIdx] = g_pileBindIndex.back();   // O(1) remove (consume the candidate)
+    g_pileBindIndex.pop_back();
+    // No physics reconcile: the shared helper resolves an Aprop_C mesh offset, and a chip pile is
+    // not an Aprop_C, so the call was a measured no-op. The pile's own construction sets its mesh
+    // Static, and both peers loaded the same save, so a bound pile is already at rest where the
+    // host has it. Converge only on real divergence: save-aligned piles are sub-millimetre
+    // identical, so the common case writes and wakes nothing.
+    const ue_wrap::FVector cur = ue_wrap::engine::GetActorLocation(native);
+    const float ddx = cur.X - payload.locX, ddy = cur.Y - payload.locY, ddz = cur.Z - payload.locZ;
+    constexpr float kAlignedCm = 2.0f;
+    const bool aligned = (ddx * ddx + ddy * ddy + ddz * ddz) <= (kAlignedCm * kAlignedCm);
+    if (!aligned) {
+        ue_wrap::engine::SetActorLocation(native, ue_wrap::FVector{payload.locX, payload.locY, payload.locZ});
+        ue_wrap::engine::SetActorRotation(native,
+            ue_wrap::FRotator{payload.rotPitch, payload.rotYaw, payload.rotRoll});
+    }
+    coop::prop_wire_parity::RestoreCollisionIfNeeded(L"pile-bind", classW, native);
+    AdoptOwnNative(native, payload.elementId, senderSlot, aligned ? "burst, aligned" : "burst, converged");
+    return native;
 }
 
-void* FindAndConsumeAdoptCandidate(const coop::net::PropSpawnPayload& payload,
-                                   const std::wstring& classW,
-                                   const std::unordered_set<void*>& claimed,
-                                   float* outD2, int* outBindSeq) {
-    EnsureIndex(claimed);
-    constexpr float kPileBindRadiusCm = 30.f;
-    int best = -1;
-    float bestD2 = kPileBindRadiusCm * kPileBindRadiusCm;
-    for (int i = 0; i < static_cast<int>(g_pileBindIndex.size()); ++i) {
-        const auto& c = g_pileBindIndex[i];
-        const float dx = c.x - payload.locX;
-        const float dy = c.y - payload.locY;
-        const float dz = c.z - payload.locZ;
-        const float d2 = dx * dx + dy * dy + dz * dz;
-        if (d2 > bestD2) continue;
-        if (c.chipType != payload.chipType) continue;
-        if (claimed.count(c.actor)) continue;  // keyed lane claimed it meanwhile
-        if (!R::IsLiveByIndex(c.actor, c.idx)) continue;  // bracket-long raw ptr: no deref before this
-        if (!R::NameEquals(R::NameOf(R::ClassOf(c.actor)), classW.c_str())) continue;
-        best = i;
-        bestD2 = d2;
+void AdoptOwnNative(void* native, uint32_t eid, int senderSlot, const char* why) {
+    if (!native || eid == 0u) return;
+    // The claim: this actor was expressed on the wire this bracket, so the membership sweep must
+    // not destroy it. Without it an entire host-expressed class claims zero and the sweep's
+    // completeness floor reads that as the host under-expressing. Outside a bracket it is a no-op.
+    coop::join_membership_sweep::RecordClaimIfTracking(native);
+    // Retire the client-local identity: the save-loaded pile was census-walked with a client-minted
+    // eid, and from this bind its sole cross-peer identity is the host eid. Left in place, a local
+    // morph would make the destroy observer broadcast a stray PropDestroy under the superseded eid.
+    coop::prop_element_tracker::UnmarkKnownKeyedProp(native);
+    coop::remote_prop::RegisterPropMirror(eid, native, L"", ue_wrap::reflection::ClassNameOf(native), senderSlot);
+    // Save-native is what the rest of the machinery tests (IsBoundMirrorNative): the grab route,
+    // the morph hand-off, the divergence-sweep exemption and the retire all read it.
+    if (auto* el = coop::element::Registry::Get().Get(eid)) el->SetSaveNative(true);
+    ++g_pileBindCount;
+    if (g_pileBindCount <= 8 || (g_pileBindCount % 200) == 0) {
+        const ue_wrap::FVector at = ue_wrap::engine::GetActorLocation(native);
+        UE_LOGI("[PILE] BIND #%d eid=%u -> OWN save-loaded native %p at (%.1f,%.1f,%.1f) [%s]",
+                g_pileBindCount, eid, native, at.X, at.Y, at.Z, why);
     }
-    if (best >= 0) {
-        void* pile = g_pileBindIndex[best].actor;
-        g_pileBindIndex[best] = g_pileBindIndex.back();
-        g_pileBindIndex.pop_back();
-        if (outD2) *outD2 = bestD2;
-        if (outBindSeq) *outBindSeq = ++g_pileBindCount;
-        return pile;
-    }
-    return nullptr;
 }
 
 void LogCensus() {
-    // ALWAYS log when the index was built this bracket, even at 0 orphans. A clean join drains the
-    // index to empty (every twin matched within 1 cm), so gating on non-empty would make that join
-    // silent and indistinguishable from a census that never ran. The summary line is the proof the
-    // census ran, and N=0 on a clean join is the expected result.
-    // FRESH walk at the sweep: do NOT re-use g_pileBindIndex's build-time internal indices. A
-    // mass-purge runs right at the sweep (prop_element_tracker reaps 256 dead Prop Elements per
-    // call, draining the join-tail backlog every few seconds), churning the GUObjectArray so every
-    // stored internalIdx goes stale and IsLiveByIndex false-negatives on every survivor. Re-
-    // enumerating live native chipPiles with fresh indices is exact instead: the burst's 1 cm
-    // twin-destroy already removed most matched natives, and the survivors are the orphan set up
-    // to the 1 cm proxy re-check below, whose `proxyMatched` count says how often that held.
-    // One GUObjectArray walk, once per join, pointer-compare class filter before any read.
+    // ALWAYS log when the index was built this bracket, even at zero orphans: the summary line is
+    // the proof the census ran, and a clean join binds every indexed candidate, which would
+    // otherwise be silent and indistinguishable from a census that never ran.
+    //
+    // A FRESH walk, not the build-time index: a mass purge runs right at the sweep (the tracker
+    // reaps dead Prop Elements in batches, draining the join-tail backlog every few seconds),
+    // churning the GUObjectArray so every stored internal index goes stale and IsLiveByIndex
+    // false-negatives on every survivor. One walk, once per join, with the class filter first.
     if (!g_pileBindIndexBuilt) return;
-    int live = 0, le5 = 0, mid = 0, gt30 = 0, none = 0;
-    int totalLive = 0, proxyMatched = 0;   // tells "0 orphans because every native DIED" (totalLive==0)
-                                           // apart from "0 because every survivor is 1cm-proxy-matched"
-                                           // (totalLive==proxyMatched): consumption vs no divergence.
-    const bool verbose = DeltaProbeOn();
+    struct Seen { float x, y, z; bool bound; };
+    std::vector<Seen> seen;
+    int totalLive = 0, bound = 0;
     const int32_t n = R::NumObjects();
     for (int32_t i = 0; i < n; ++i) {
         void* o = R::ObjectAt(i);
         if (!o || !R::IsLive(o)) continue;
-        if (!ue_wrap::prop::IsChipPile(o)) continue;                   // real actorChipPile_C only (NOT our proxy)
+        if (!ue_wrap::prop::IsChipPile(o)) continue;                   // real actorChipPile_C only
         if (R::NameStartsWith(R::NameOf(o), L"Default__")) continue;   // CDO
         ++totalLive;
+        const bool isBound = coop::prop_element_tracker::IsBoundMirrorNative(o);
+        if (isBound) ++bound;
         const ue_wrap::FVector loc = ue_wrap::engine::GetActorLocation(o);
-        float d = -1.f;
-        void* prox = coop::trash_proxy::NearestPileProxy(loc, &d);
-        const bool hasProx = (prox != nullptr && d >= 0.f);
-        if (hasProx && d <= 1.0f) { ++proxyMatched; continue; }   // a 1cm-matched twin -> not an orphan
-        ++live;
-        // The >50%% valve early-returns on an incomplete snapshot before this census is reached, so the
-        // proxy set is complete here -> "no proxy near" means the host genuinely has no pile there.
-        if (!hasProx)        ++none;   // no host pile anywhere near      -> COLLECTED orphan
-        else if (d <= 5.f)   ++le5;    // a proxy sits ~here              -> host pile settled slightly off = near-miss DUP
-        else if (d <= 30.f)  ++mid;    // ambiguous (settle vs neighbour) -> watch this band
-        else                 ++gt30;   // nearest host pile is far        -> MOVED / true orphan
-        if (verbose) {
-            const unsigned ct = static_cast<unsigned>(ue_wrap::prop::GetChipType(o));
-            if (hasProx)
-                UE_LOGI("[PILE-CENSUS] orphan native @(%.1f,%.1f,%.1f) chipType=%u nearestProxy_d=%.1fcm",
-                        loc.X, loc.Y, loc.Z, ct, d);
-            else
-                UE_LOGI("[PILE-CENSUS] orphan native @(%.1f,%.1f,%.1f) chipType=%u nearestProxy_d=NONE",
-                        loc.X, loc.Y, loc.Z, ct);
-        }
+        seen.push_back({loc.X, loc.Y, loc.Z, isBound});
     }
-    UE_LOGI("[PILE-CENSUS] %d live orphan native(s) (of %d built, FRESH walk; totalLiveNatives=%d proxyMatched<=1cm=%d): "
-            "le5=%d (near-miss dup) 5_30=%d (ambiguous) gt30=%d (true orphan/moved) noProxy=%d (collected) -- "
-            "[totalLive==0 => all natives DIED/consumed; totalLive>0 & orphans=0 => survivors all proxy-matched]",
-            live, g_pileIndexBuiltCount, totalLive, proxyMatched, le5, mid, gt30, none);
+    const int orphan = totalLive - bound;
+    // The bands, computed over the positions this walk already read -- no second engine call per
+    // pair. An orphan sitting on top of a bound native is a near-miss the 1 cm gate refused; one
+    // far from every bound native is a pile the host genuinely does not have.
+    int le5 = 0, mid = 0, gt30 = 0, none = 0;
+    const bool verbose = DeltaProbeOn();
+    for (const auto& a : seen) {
+        if (a.bound) continue;
+        float best = -1.f;
+        for (const auto& b : seen) {
+            if (!b.bound) continue;
+            const float dx = a.x - b.x, dy = a.y - b.y, dz = a.z - b.z;
+            const float d2 = dx * dx + dy * dy + dz * dz;
+            if (best < 0.f || d2 < best) best = d2;
+        }
+        const float d = (best >= 0.f) ? std::sqrt(best) : -1.f;
+        if (d < 0.f)        ++none;   // no bound native anywhere -> nothing of the host's is near
+        else if (d <= 5.f)  ++le5;    // a bound native sits ~here     -> near-miss the gate refused
+        else if (d <= 30.f) ++mid;    // ambiguous (settle vs neighbour)
+        else                ++gt30;   // the nearest host pile is far  -> moved or a true orphan
+        if (verbose)
+            UE_LOGI("[PILE-CENSUS] orphan native @(%.1f,%.1f,%.1f) nearestBound_d=%.1fcm", a.x, a.y, a.z, d);
+    }
+    UE_LOGI("[PILE-CENSUS] %d live native chipPile(s) (of %d indexed at the burst): %d BOUND to a host "
+            "eid, %d orphan -- le5=%d (near-miss) 5_30=%d (ambiguous) gt30=%d (moved/true orphan) "
+            "noBound=%d (nothing of the host's nearby)",
+            totalLive, g_pileIndexBuiltCount, bound, orphan, le5, mid, gt30, none);
 }
 
 }  // namespace coop::pile_spawn_bind

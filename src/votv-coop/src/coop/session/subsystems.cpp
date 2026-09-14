@@ -2,7 +2,7 @@
 // a new sync feature wires in here.
 
 #include "ue_wrap/core/gc_pin.h"
-#include "coop/props/native_pile_mirror.h"
+#include "coop/props/trash_mirror.h"
 #include "coop/session/subsystems.h"
 
 #include "coop/element/object_scan_hub.h"  // the shared pass over the object index
@@ -108,7 +108,6 @@
 #include "coop/props/prop_drive_host.h"    // HOST: the props a hook drags, streamed while they move
 #include "coop/props/prop_drive_stream.h"  // CLIENT: park and drive those props
 #include "coop/props/trash_collect_sync.h"
-#include "coop/props/trash_proxy.h"
 #include "coop/props/trash_pile_sync.h"
 #include "coop/save/save_block.h"
 #include "coop/save/save_button_disable.h"
@@ -367,7 +366,7 @@ void DisconnectSlot(coop::net::Session& session, int slot) {
     coop::chat_sync::OnSlotDisconnected(slot);
     // Per-slot cleanup: only subsystems with per-slot state are called here; the global-state ones
     // are handled by DisconnectAll.
-    coop::trash_proxy::OnDisconnectForSlot(slot);  // phase 1: retire the leaver's trash proxies BEFORE the generic mirror drain (else the rooted AStaticMeshActor leaks)
+    coop::trash_mirror::OnDisconnectForSlot(slot);  // phase 1: retire the leaver's trash mirrors BEFORE the generic mirror drain (else the rooted actor leaks)
     coop::trash_channel::OnGrabHolderLeft(static_cast<uint8_t>(slot));  // free any pile the leaver held via a client grab
     coop::puppet_carry_drive::OnPeerLeft(static_cast<uint8_t>(slot));  // drop the leaver's puppet-held clump drive
     coop::wisp_grab_hold::OnPeerLeft(static_cast<uint8_t>(slot));  // drop the leaver's grab-window puppet hold
@@ -386,14 +385,11 @@ void DisconnectSlot(coop::net::Session& session, int slot) {
 }
 
 DisconnectStats DisconnectAll() {
-    // Trash proxies first, before ForceRelease, which can consume a carried proxy without
-    // un-rooting it, a rooted leak; retiring a proxy un-roots, destroys and evicts its drive, so
-    // ForceRelease sees no live proxy and no stale drive entry.
-    coop::trash_proxy::OnDisconnect();
-    // Drop any GC pin on a materialised native pile too: unlike the proxies, these have no destroy
-    // path at session end, so a native that outlived the session would stay pinned, and a pin
-    // anchors its world's whole Outer chain.
-    coop::native_pile_mirror::OnDisconnect();
+    // The trash mirrors first, before ForceRelease, which can consume a carried one without
+    // releasing its GC pin -- and a rooted pending-kill actor anchors its world's whole Outer
+    // chain. Retiring them here un-roots, destroys and evicts each drive, so ForceRelease sees no
+    // live mirror and no stale drive entry.
+    coop::trash_mirror::OnDisconnect();
     coop::remote_prop::ForceRelease();
     // A disconnect mid-snapshot drops the armed claim set (dangling actor pointers must not survive
     // into the next session); no sweep.

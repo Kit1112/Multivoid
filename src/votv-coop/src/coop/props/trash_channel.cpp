@@ -120,7 +120,7 @@ uint8_t BroadcastConvert(coop::net::Session& s, coop::element::ElementId E, uint
     p.rotPitch = ue_wrap::NormalizeAxis(rot.Pitch);
     p.rotYaw   = ue_wrap::NormalizeAxis(rot.Yaw);
     p.rotRoll  = ue_wrap::NormalizeAxis(rot.Roll);
-    // The host's real per-form scale (a clump and a pile differ), so the proxy is host-sized.
+    // The host's real per-form scale (a clump and a pile differ), so the mirror is host-sized.
     p.scaleX = scale.X; p.scaleY = scale.Y; p.scaleZ = scale.Z;
     p.chipType = chipType;
     p.kind     = kind;
@@ -336,7 +336,7 @@ void TickCarry(coop::net::Session& s, void* localHeldActor) {
                 cloc   = ue_wrap::engine::GetActorLocation(ls.pileActor);
                 // The settled pile's visual orientation is on its mesh component's relative
                 // rotation (a random roll), not the actor root, so the mesh's world rotation is
-                // captured for the re-skinned proxy to reproduce it; otherwise every re-piled proxy
+                // captured for the mirror to reproduce it; otherwise every re-piled mirror
                 // looks identical.
                 crot   = ue_wrap::engine::GetVisibleMeshWorldRotation(ls.pileActor);
                 cscale = ue_wrap::engine::GetActorScale3D(ls.pileActor);

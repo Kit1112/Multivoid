@@ -28,9 +28,9 @@ struct HiddenRec { void* actor; int32_t idx; bool collisionOff; bool hold; };
 // hid and nothing can be left stuck hidden -- by construction, not by a sweep that looks for
 // strays. Game-thread only (no mutex).
 std::unordered_map<uint32_t, HiddenRec> g_hidden;
-// eids already revealed this join -- OnMirrorSpawned must NEVER re-hide one. A proxy
-// SpawnProxy is idempotent and re-skins for the same eid, so a post-lift re-spawn convergence
-// of an already-revealed confirmed proxy would otherwise vanish it until quiescence. The rule
+// eids already revealed this join -- OnMirrorSpawned must NEVER re-hide one. A trash spawn is
+// idempotent for the same eid, so a post-lift re-spawn convergence of an already-revealed
+// confirmed mirror would otherwise vanish it until quiescence. The rule
 // is: do not re-hide on the idempotent re-spawn return, for any mirror kind.
 std::unordered_set<uint32_t> g_revealed;
 bool g_armed = false;

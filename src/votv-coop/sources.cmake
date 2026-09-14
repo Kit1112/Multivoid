@@ -241,9 +241,9 @@ set(VOTVCOOP_SOURCES
     src/coop/props/trash_grab_intent.cpp
     src/coop/props/trash_collect_sync.cpp
     src/coop/props/trash_use_intercept.cpp
+    src/coop/props/trash_morph_gate.cpp
     src/coop/props/trash_pile_sync.cpp
-    src/coop/props/trash_proxy.cpp
-    src/coop/props/native_pile_mirror.cpp
+    src/coop/props/trash_mirror.cpp
     src/coop/player/puppet_carry_drive.cpp
     src/coop/props/trash_clump_pose_stream.cpp
     src/coop/props/prop_drive_host.cpp
@@ -476,6 +476,7 @@ set(VOTVCOOP_SOURCES
     src/harness/harness_diag.cpp
     src/harness/autotest/autotest_grab.cpp
     src/harness/autotest/autotest_chippile.cpp
+    src/harness/autotest/autotest_trashpark.cpp
     src/harness/autotest/autotest_clump.cpp
     src/harness/autotest/autotest_flashlight.cpp
     src/harness/autotest/autotest_tracker_selftest.cpp

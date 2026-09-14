@@ -6,7 +6,7 @@
 #include "coop/net/protocol.h"        // TrashClumpPoseSnapshot
 #include "coop/net/session.h"         // TakeRemoteTrashCarryBatch
 #include "coop/props/trash_channel.h"       // IsInboundStreamCtxFresh / CtxForEid (the stale-pose / pile-jump guard)
-#include "coop/props/trash_proxy.h"         // ProxyActorForEid (resolve the per-eid target)
+#include "coop/props/remote_prop.h"         // ResolveLiveActorByEid (the per-eid carry target)
 #include "ue_wrap/core/hot_path_guard.h"   // UE_ASSERT_GAME_THREAD
 #include "ue_wrap/core/log.h"
 #include "ue_wrap/core/reflection.h"       // IsLive
@@ -48,14 +48,14 @@ void TickApplyAndDrive(coop::net::Session& s) {
             // stream supersedes the held pose, so the carry just starts AT the convert.
             if (!coop::trash_channel::IsInboundStreamCtxFresh(snap.eid, snap.ctx, /*requireCurrentGen=*/true))
                 continue;
-            void* proxy = coop::trash_proxy::ProxyActorForEid(E);
-            if (!proxy) continue;  // no live proxy for this eid yet (its PropSpawn / convert has not landed)
+            void* mirror = coop::remote_prop::ResolveLiveActorByEid(E);
+            if (!mirror) continue;  // no live mirror for this eid yet (its PropSpawn / convert has not landed)
             AD::ActiveDrive& d = g_carryDrives[snap.eid];
-            if (d.actor != proxy || d.lastEid != snap.eid) {   // first pose for this eid, or the proxy actor changed
+            if (d.actor != mirror || d.lastEid != snap.eid) {   // first pose for this eid, or the mirror actor changed
                 AD::ResetDriveState(d);
-                d.actor    = proxy;
-                d.actorIdx = R::InternalIndexOf(proxy);  // rooted + live here; cache for IsLiveByIndex
-                d.isProxy  = true;            // host-authoritative follower: freeze on a gap, never drop to physics
+                d.actor    = mirror;
+                d.actorIdx = R::InternalIndexOf(mirror);  // rooted + live here; cache for IsLiveByIndex
+                d.isTrashMirror = true;       // host-authoritative follower: freeze on a gap, never drop to physics
                 d.lastEid  = snap.eid;
             }
             AD::BeginLerpToPose(d, ue_wrap::FVector{snap.x, snap.y, snap.z},
@@ -68,7 +68,7 @@ void TickApplyAndDrive(coop::net::Session& s) {
     }
 
     // 2. Advance EVERY drive one tick (whether or not a new pose arrived): smooth follow between sendHz
-    //    poses + freeze at the last target on a stream gap. Prune a drive whose proxy actor died (a retire
+    //    poses + freeze at the last target on a stream gap. Prune a drive whose mirror actor died (a retire
     //    that did not route through ClearDriveForEid -- defensive; AdvanceLerp itself no-ops on a dead actor).
     for (auto it = g_carryDrives.begin(); it != g_carryDrives.end(); ) {
         AD::ActiveDrive& d = it->second;

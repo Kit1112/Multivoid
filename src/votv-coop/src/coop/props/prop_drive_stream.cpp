@@ -143,7 +143,7 @@ void TickApplyAndDrive(coop::net::Session& s) {
             dr.d.actor    = actor;
             dr.d.actorIdx = R::InternalIndexOf(actor);
             dr.d.mesh     = PR::GetStaticMesh(actor);
-            dr.d.isProxy  = true;    // the fixed-delay follow of a carried clump: freeze on a gap
+            dr.d.isTrashMirror = true;  // the fixed-delay follow of a carried clump: freeze on a gap
             dr.d.lastEid  = eid;
             dr.gen        = e.ctx;
             dr.physicsParked = false;

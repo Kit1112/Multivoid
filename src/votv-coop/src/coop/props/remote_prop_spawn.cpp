@@ -31,8 +31,7 @@
 #include "coop/props/prop_lifecycle.h"
 #include "coop/props/prop_wire_parity.h"   // the shared physics and collision helpers
 #include "coop/props/remote_prop.h"
-#include "coop/props/trash_proxy.h"   // the host-authoritative trash mirror
-#include "coop/props/native_pile_mirror.h"  // a rooted real chipPile native as the pile mirror
+#include "coop/props/trash_mirror.h"  // a rooted real chipPile native as the pile mirror
 #include "ue_wrap/core/call.h"
 #include "ue_wrap/engine/engine.h"
 #include "ue_wrap/core/fname_utils.h"
@@ -144,17 +143,14 @@ void OnSpawn(const coop::net::PropSpawnPayload& payload, int senderSlot,
                 classW.c_str(), keyW.c_str());
         return;
     }
-    // The proxy path: trash (chipPile, clump and variants) is mirrored by an AStaticMeshActor we
-    // own (coop/trash_proxy), never the real BP (no self-morph, GC or stale index, so no dupe),
-    // branching before the BP dedupe, converge and physics machinery. SpawnProxy is idempotent (a
-    // re-spawn re-skins the proxy for the same eid); a re-skin is OnConvert's, a teardown
-    // OnDestroy's. With skipBind, OnConvert binds the element itself.
-    if (coop::trash_proxy::IsTrashProxyClass(classW)) {
-        // If this eid already resolves to a live bound-mirror native (the client loaded the same
-        // host save and save_identity_bind bound its native chipPile as the mirror), the native is
-        // the mirror: no proxy over it (a proxy has no interaction surface or collision), and
-        // nothing to register. Only save-loaded piles reach this; runtime piles and carried clumps
-        // spawn the proxy.
+    // The trash path: a chip pile, a garbage clump or a variant, mirrored as the GAME's own actor
+    // with its brain parked -- coop/props/trash_morph_gate refuses the three verbs a trash actor
+    // uses to author its own morph on a client. It branches before the Aprop_C dedupe, converge
+    // and physics machinery, because a pile is keyless and carries its identity as an eid. With
+    // skipBind, OnConvert binds the element itself.
+    if (ue_wrap::prop::IsTrashClassName(classW)) {
+        // If this eid already resolves to a live bound-mirror native, that native IS the mirror:
+        // nothing to spawn and nothing to register.
         if (auto* be = coop::element::Registry::Get().Get(payload.elementId)) {
             void* bn = be->GetActor();
             // IsLiveByIndex, not IsLive: the cached actor is engine-owned, so only its
@@ -165,66 +161,55 @@ void OnSpawn(const coop::net::PropSpawnPayload& payload, int senderSlot,
                 return;
             }
         }
-        const bool isClump = coop::trash_proxy::IsClumpClass(classW);
-        ue_wrap::FVector  loc{payload.locX, payload.locY, payload.locZ};
-        const ue_wrap::FVector scale{payload.scaleX, payload.scaleY, payload.scaleZ};
-        // A pile in steady state (outside the join bracket) becomes a rooted real chipPile native
-        // (the native hover GUI, collision and per-instance rotation) instead of the bare proxy.
-        // Scoped to the steady state: a runtime pile has no save-loaded twin, so it never races the
-        // in-bracket twin destroy below, and a native-plus-twin dupe is impossible by construction;
-        // in-bracket level piles are already native via the bind, and the clump form stays a proxy.
-        const bool nativePile = !isClump && !coop::join_membership_sweep::IsClaimTrackingActive();
-        void* proxy = nullptr;
-        if (nativePile) {
-            // Materialize binds and marks save-native itself (unless skipBind, OnConvert's). The
-            // payload rotation is the host's captured visible-mesh rotation, so the native's roll
-            // matches the host.
-            ue_wrap::FRotator meshRot{payload.rotPitch, payload.rotYaw, payload.rotRoll};
-            proxy = coop::native_pile_mirror::Materialize(payload.elementId, classW, payload.chipType,
-                                                          loc, meshRot, scale, senderSlot, skipBind, /*rebindInPlace=*/false);
-        } else {
-            ue_wrap::FRotator rot{payload.rotPitch, payload.rotYaw, payload.rotRoll};
-            proxy = coop::trash_proxy::SpawnProxy(payload.elementId, payload.chipType, isClump, senderSlot, loc, rot, scale);
-            if (proxy && !skipBind)
-                coop::remote_prop::RegisterPropMirror(payload.elementId, proxy, L"", classW, senderSlot);
+        const bool isClump = ue_wrap::prop::IsClumpClassName(classW);
+        const ue_wrap::FVector  loc{payload.locX, payload.locY, payload.locZ};
+        const ue_wrap::FVector  scale{payload.scaleX, payload.scaleY, payload.scaleZ};
+        const ue_wrap::FRotator rot{payload.rotPitch, payload.rotYaw, payload.rotRoll};
+        // A pile inside the join bracket names an actor this client loaded from the same save, so
+        // the answer is to BIND that actor, never to stand a copy beside it. The match is on the
+        // pile's save-time position (stamped by the host's snapshot), the value both peers loaded:
+        // a pile the host moved during the join window is expressed at the new spot while the
+        // native loaded at the old, and matching on the live position went blind to it. With no
+        // stamp (a mid-game spawn) the live position is the fallback.
+        if (!isClump && coop::join_membership_sweep::IsClaimTrackingActive()) {
+            const ue_wrap::FVector matchPos =
+                payload.hasMatchPos ? ue_wrap::FVector{payload.matchX, payload.matchY, payload.matchZ}
+                                    : loc;
+            if (void* own = coop::pile_spawn_bind::BindOwnSavePile(
+                    payload, classW, matchPos, payload.hasMatchPos != 0, senderSlot,
+                    coop::join_membership_sweep::ClaimedActors())) {
+                if (outSpawned) *outSpawned = own;
+                return;
+            }
+            if (payload.hasMatchPos) {
+                // The client's async load tail has not reached this pile yet: the miss armed the
+                // pending bind on the order owner, which binds the native when it appears. Standing
+                // up a mirror for an actor the game is about to load itself is what produced the
+                // duplicate the old twin destroy then had to clean up.
+                return;
+            }
+            // No save-time stamp: a pile derived during the window, with no counterpart to wait
+            // for. It falls through to the materialise below.
         }
-        if (proxy) {
-            if (!skipBind) {
-                // Hide the fresh mirror until the reveal: a moved-save pile (hasMatchPos) whose
-                // local native at the old spot is still visible holds to quiescence; a derived or
-                // window pile reveals at the curtain lift. A convert re-skin (skipBind) is
-                // OnConvert's.
-                coop::mirror_defer::OnMirrorSpawned(payload.elementId, proxy, /*collisionOff=*/false,
-                                                    /*holdUntilQuiescence=*/payload.hasMatchPos != 0);
-            }
-            if (outSpawned) *outSpawned = proxy;
-            // The level-pile twin destroy: a level-placed chipPile gets a host eid and this proxy,
-            // and the client's native level-loaded chipPile coexists with it, the visible dupe (the
-            // sweep is blind to natives, which enter the Registry lazily). The co-located native is
-            // destroyed after the proxy spawns: an exact ~1 cm match, graceful on none (a derived
-            // pile has no twin), skip on more than one (never destroy the wrong one). Destroy, not
-            // adopt: adopting brings back the BP self-morph the proxy model exists to avoid. The
-            // index is built once before the burst and shrinks as natives are consumed. Gated on
-            // the join bracket: only there does a native twin exist, and outside it the index would
-            // be rebuilt by a full array walk inside the spawn thunk, and a derived pile could
-            // destroy an unrelated level native within 1 cm.
-            if (!isClump && coop::join_membership_sweep::IsClaimTrackingActive()) {
-                // The twin destroy (coop/props/pile_spawn_bind) matches the client's native against
-                // the pile's save-time position (stamped by the host's snapshot), the value both
-                // peers loaded: a pile the host moved in the join window spawns its proxy at the
-                // new spot while the native loaded at the old, and matching on the live position
-                // went blind to it. With no stamp (a mid-game spawn) the live position is the
-                // fallback.
-                const ue_wrap::FVector twinMatchPos =
-                    payload.hasMatchPos ? ue_wrap::FVector{payload.matchX, payload.matchY, payload.matchZ}
-                                        : loc;
-                coop::pile_spawn_bind::TryDestroyTwin(payload, twinMatchPos, payload.hasMatchPos != 0,
-                                                     coop::join_membership_sweep::ClaimedActors());
-            }
-        } else {
-            UE_LOGW("remote_prop::OnSpawn: trash proxy spawn FAILED for eid=%u class='%ls'",
+        // Either form is the game's own actor, parked. Materialize binds and marks save-native
+        // itself (unless skipBind, OnConvert's); the payload rotation is the host's captured
+        // visible-mesh rotation, so the mirror's roll matches the host's.
+        void* mirror = coop::trash_mirror::Materialize(payload.elementId, classW, payload.chipType,
+                                                       loc, rot, scale, senderSlot, skipBind,
+                                                       /*rebindInPlace=*/false);
+        if (!mirror) {
+            UE_LOGW("remote_prop::OnSpawn: trash mirror spawn FAILED for eid=%u class='%ls'",
                     payload.elementId, classW.c_str());
+            return;
         }
+        if (!skipBind) {
+            // Hide the fresh mirror until the reveal: a moved-save pile (hasMatchPos) whose local
+            // native at the old spot is still visible holds to quiescence; a derived or window pile
+            // reveals at the curtain lift. A convert re-skin (skipBind) is OnConvert's.
+            coop::mirror_defer::OnMirrorSpawned(payload.elementId, mirror, /*collisionOff=*/false,
+                                                /*holdUntilQuiescence=*/payload.hasMatchPos != 0);
+        }
+        if (outSpawned) *outSpawned = mirror;
         return;
     }
     // The dedupe: a local Aprop_C with the same Key already exists (both peers loaded the same
@@ -351,59 +336,6 @@ void OnSpawn(const coop::net::PropSpawnPayload& payload, int senderSlot,
         // resolve here.
         coop::remote_prop::RegisterPropMirror(payload.elementId, existing, keyW, classW, senderSlot);
         return;
-    }
-    // The keyless-pile position bind, in the join bracket only (only a snapshot expression has a
-    // local twin; a mid-gameplay keyless spawn has none) and never for a convert (a convert-born
-    // pile has no counterpart, and binding it to a nearby pile in a dense cluster would
-    // mis-mirror): chipPile-lineage candidates only, the exact wire class and chipType, the nearest
-    // within 30 cm. No match falls through to the fresh mirror; a local pile the host no longer has
-    // stays unclaimed and is swept.
-    if (eidOnly && coop::join_membership_sweep::IsClaimTrackingActive() && !fromConvert && payload.elementId != 0) {
-        // The find-and-consume lives in coop/props/pile_spawn_bind: the matched native (removed
-        // from the index), the squared distance and the per-bracket log seq; the registration and
-        // the physics reconcile stay here.
-        float bestD2 = 0.f;
-        int   nBind  = 0;
-        void* pile = coop::pile_spawn_bind::FindAndConsumeAdoptCandidate(
-            payload, classW, coop::join_membership_sweep::ClaimedActors(), &bestD2, &nBind);
-        if (pile) {
-            coop::join_membership_sweep::RecordClaimIfTracking(pile);
-            // Retire the client-local identity: the save-loaded pile was census-walked with a
-            // client-minted eid, and from this bind its sole cross-peer identity is the host eid.
-            // Left in place, a local grab morph would make the destroy observer broadcast a stray
-            // PropDestroy under the superseded eid beside the death-watch's correct one; after the
-            // Unmark the observer stays silent (keyless, no eid) and the watch is the sole destroy
-            // speaker.
-            coop::prop_element_tracker::UnmarkKnownKeyedProp(pile);
-            // The exact-key path's reconcile: kinematic to the host physics, a converge only on
-            // real divergence (save-aligned piles are sub-millimetre identical, so the common case
-            // writes and wakes nothing).
-            ReconcileToHostPhysics(pile, payload.physFlags);
-            const ue_wrap::FVector curLoc = ue_wrap::engine::GetActorLocation(pile);
-            const float ddx = curLoc.X - payload.locX;
-            const float ddy = curLoc.Y - payload.locY;
-            const float ddz = curLoc.Z - payload.locZ;
-            constexpr float kAlignedCm = 2.0f;
-            const bool aligned = (ddx * ddx + ddy * ddy + ddz * ddz) <= (kAlignedCm * kAlignedCm);
-            if (!aligned) {
-                ue_wrap::engine::SetActorLocation(pile,
-                    ue_wrap::FVector{payload.locX, payload.locY, payload.locZ});
-                ue_wrap::engine::SetActorRotation(pile,
-                    ue_wrap::FRotator{payload.rotPitch, payload.rotYaw, payload.rotRoll});
-            }
-            RestoreCollisionIfNeeded(L"pile-bind", classW, pile);
-            coop::remote_prop::RegisterPropMirror(payload.elementId, pile, keyW, classW, senderSlot);
-            coop::prop_element_tracker::IndexActorKey(pile, keyW);  // a None-guarded no-op, as on the fresh path
-            // No death-watch enrol here: the mirror binding above lets a later local grab resolve
-            // the eid in the use observer, which tells the host through PropDestroy.
-            if (nBind <= 3 || (nBind % 200) == 0) {
-                UE_LOGI("remote_prop_spawn: pile-bind #%d -- eid=%u '%ls' chipType=%u -> OWN local pile %p (d=%.1fcm%s)",
-                        nBind, payload.elementId, classW.c_str(),
-                        static_cast<unsigned>(payload.chipType), pile,
-                        std::sqrt(bestD2), aligned ? ", aligned" : ", converged");
-            }
-            return;
-        }
     }
     // No exact key: the fuzzy dedupe for divergent-key, same-position spawns. The per-peer natural
     // spawners (mushrooms, underground garbage) place the same logical entity with different Keys

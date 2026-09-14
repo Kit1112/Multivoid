@@ -1,11 +1,11 @@
 // The pile SPAWN-TIME native-bind mechanism.
 //
-// At a host pile PROXY spawn, reconcile that proxy against the client's OWN
-// save-loaded native chipPile set, through a lazily-built bracket-scoped
-// GUObjectArray index rather than one walk per pile. The joiner's world came from
-// the host's save, so its chipPiles ARE the host's piles at the same positions --
-// which is why a keyless-eid expression can bind to a local pile instead of
-// sweep-destroying ~870 of them and spawning mirrors (docs/piles.md).
+// A joiner's world comes from the host's save, so the pile a host expression names is one the
+// client already owns, at the same position. This resolves the expression against the client's
+// OWN save-loaded native chipPile set -- through a lazily-built bracket-scoped GUObjectArray
+// index rather than one walk per pile -- and binds that actor as the host eid's mirror, so the
+// client keeps the game's own pile with its collision, its hover prompt and its look-at trace
+// (docs/piles.md).
 //
 // This is the SPAWN-time half only, driven by remote_prop_spawn during a PropSpawn;
 // the DRAIN-time half -- the deferred queues this arms and the ordered sweep that
@@ -30,36 +30,39 @@ namespace coop::pile_spawn_bind {
 // drain at quiescence / steady-state), cleared only at session teardown.
 void Reset();
 
-// A host pile PROXY for `payload.elementId` just spawned. Destroy the client's
-// save-loaded NATIVE twin matched by `matchPos`. chipType-gated, ambiguous-skip
-// (>1 within 1cm -> keep all). Lazily builds the index on first call. No-op if no
-// twin.
+// Bind the client's own save-loaded native for the pile expression `payload`: match it at
+// `matchPos` (bit-exact within 1 cm, same chipType, ambiguous cluster skipped so the wrong one is
+// never bound), consume it from the index, claim it for the membership sweep, retire its
+// client-local identity, converge its transform when it genuinely diverged, and register it as
+// the mirror at `payload.elementId`, marked save-native.
+// Returns the bound native, or nullptr when nothing matched. Lazily builds the index on the first
+// call.
 //
 // `isSaveTimeKey`: true when matchPos is the pile's frozen SAVE-TIME position
-// (payload.hasMatchPos). On a MISS (matchCount==0) with isSaveTimeKey, the twin is
-// recorded on the order owner (quiescence_drain::ArmPendingSaveTimeTwin) for a
-// retry at the post-quiescence sweep -- the world-ready snapshot burst runs BEFORE
-// the client's async native-pile load-tail has drained, so a moved pile's
-// save-loaded native at the old position may not exist yet at this call; it loads
-// in the tail about ten seconds later.
-void TryDestroyTwin(const coop::net::PropSpawnPayload& payload,
-                    const ue_wrap::FVector& matchPos,
-                    bool isSaveTimeKey,
-                    const std::unordered_set<void*>& claimed);
+// (payload.hasMatchPos). On a MISS with isSaveTimeKey the expression is recorded on the order
+// owner (quiescence_drain::ArmPendingSaveTimeTwin) for a retry at the post-quiescence sweep --
+// the world-ready snapshot burst runs BEFORE the client's async native-pile load tail has
+// drained, so the native at that position may not exist yet at this call and appears in the tail
+// about ten seconds later.
+void* BindOwnSavePile(const coop::net::PropSpawnPayload& payload,
+                      const std::wstring& classW,
+                      const ue_wrap::FVector& matchPos,
+                      bool isSaveTimeKey,
+                      int senderSlot,
+                      const std::unordered_set<void*>& claimed);
 
-// eid-only adopt: find + CONSUME (remove from the index) a live same-`classW`, same-chipType
-// native within 30cm of payload.loc. Returns the pile actor (the caller registers it as the
-// host-eid mirror + reconciles physics), or nullptr. On a hit, *outD2 = the matched squared
-// distance and *outBindSeq = the shared per-bracket bind-log counter.
-void* FindAndConsumeAdoptCandidate(const coop::net::PropSpawnPayload& payload,
-                                   const std::wstring& classW,
-                                   const std::unordered_set<void*>& claimed,
-                                   float* outD2, int* outBindSeq);
+// Adopt `native` as the mirror of `eid`: claim it for the membership sweep (a no-op outside a
+// bracket), retire its client-local identity, register it as the mirror and mark it save-native,
+// which is the flag the grab route, the morph hand-off, the sweep exemption and the retire all
+// read. The TRANSFORM is the caller's: the spawn path converges to the host pose, and the
+// order owner leaves the host's own position correction to snap a late bind. `why` names the
+// path in the log. Game thread.
+void AdoptOwnNative(void* native, uint32_t eid, int senderSlot, const char* why);
 
 // L1 orphan census (logged once per join, called by the quiescence_drain sequence on the join
 // sweep). FRESH GC-robust GUObjectArray walk (NOT the build-time index -- a mass-purge at the
 // sweep churns the array, staling stored internal indices). Reports the leftover native chipPiles
-// no arriving proxy claimed within 1cm, banded by distance to the nearest live pile proxy. No-op
+// no arriving expression bound, banded by distance to the nearest bound native. No-op
 // if the index was never built this bracket. Reads this module's own build-time count + dark-probe
 // gate -- it reports on THIS module's bind outcome, so it lives here. Game-thread only.
 void LogCensus();

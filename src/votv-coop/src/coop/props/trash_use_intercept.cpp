@@ -19,12 +19,11 @@
 #include "coop/props/prop_element_tracker.h"
 #include "coop/props/prop_sound.h"           // client-own-grab pickup cue
 #include "coop/props/prop_synth_key.h"
-#include "coop/props/remote_prop.h"          // ResolveMirrorEidByActor
+#include "coop/props/remote_prop.h"          // ResolveMirrorEidByActor / ResolveLiveActorByEid
 #include "coop/props/remote_prop_spawn.h"
 #include "coop/props/save_identity_bind.h"
 #include "coop/props/save_identity_map.h"
 #include "coop/props/trash_channel.h"      // ClientCarryEid / SendGrabIntent / SendThrowIntent / ClearClientCarry
-#include "coop/props/trash_proxy.h"        // EidForAimedPileProxy / ProxyActorForEid (client-grab camera-ray cone)
 #include "coop/save/save_transfer.h"      // RecordGrabTimePileXform
 #include "ue_wrap/engine/engine.h"                // ReadMainPlayerLookAtActor / GetCamera{Location,Rotation}
 #include "ue_wrap/core/game_thread.h"           // RegisterInterceptor / RegisterPreObserver
@@ -74,7 +73,7 @@ bool g_cancelPairedUseRelease = false;
 // press and a release beside the grab press, all reaching the deny, so the second press gets
 // this side-effect-free suppressor: on a client pile interaction it only cancels the dispatch
 // (the grab press alone sends the intent and plays the cue), with the same recognition
-// (carrying, or aimed at any native or proxy pile), and on cancel it arms the release latch.
+// (carrying, or aimed at any pile), and on cancel it arms the release latch.
 static bool OnPileUseDenySuppress(void* self, void* /*params*/) {
     if (!self) return false;
     auto* s = g_session.load(std::memory_order_acquire);
@@ -83,21 +82,10 @@ static bool OnPileUseDenySuppress(void* self, void* /*params*/) {
     if (coop::trash_channel::ClientCarryEid() != coop::element::kInvalidId) {
         cancel = true;  // carrying a clump -> this press is the throw toggle -> the native press would deny
     } else {
-        void* aimedNative = ue_wrap::engine::ReadMainPlayerLookAtActor(self);
-        if (aimedNative && ue_wrap::prop::IsChipPile(aimedNative)) {
-            // Any native pile aim, bound or unbound, mirrors the grab interceptor, which cancels
-            // the unbound press too; this seam must die with it or the deny plays alone.
-            cancel = true;
-        } else {
-            const ue_wrap::FVector  camLoc = ue_wrap::engine::GetCameraLocation();
-            const ue_wrap::FRotator camRot = ue_wrap::engine::GetCameraRotation();
-            const float d2r = 3.14159265f / 180.f;
-            const float yaw = camRot.Yaw * d2r, pitch = camRot.Pitch * d2r;
-            const float cp = std::cos(pitch);
-            const ue_wrap::FVector camFwd{ cp * std::cos(yaw), cp * std::sin(yaw), std::sin(pitch) };
-            cancel = coop::trash_proxy::EidForAimedPileProxy(camLoc, camFwd, /*maxRangeCm=*/400.f,
-                                                             /*minDot=*/0.94f) != coop::element::kInvalidId;
-        }
+        // Any pile aim, bound or unbound, mirrors the grab interceptor, which cancels the unbound
+        // press too; this seam must die with it or the deny plays alone.
+        void* aimed = ue_wrap::engine::ReadMainPlayerLookAtActor(self);
+        cancel = aimed && ue_wrap::prop::IsChipPile(aimed);
     }
     if (cancel) g_cancelPairedUseRelease = true;
     return cancel;  // false: not a pile interaction -> native use runs (devices, other interactions, SP deny)
@@ -119,22 +107,19 @@ static bool OnPileUseIntercept(void* self, void* /*params*/) {
     auto* s = g_session.load(std::memory_order_acquire);
     if (!s || !s->connected()) return false;  // no coop session -> native use runs normally (SP / disconnected)
 
-    // Client: it has no real chip pile; every pile it sees is a static-mesh proxy, and recognition
-    // is a camera-ray cone, the most-centred proxy within range of the aim. Giving the proxy
-    // collision so the game's own trace hit it was disproven: the pile mesh has no simple
-    // collision body, so the trace never hit. The proxy itself needs no suppression, since it
-    // fails every native interaction cast on press; the host re-validates and enforces one hold
-    // per peer.
+    // Client: every pile it sees is the game's own actor, so recognition is the game's own
+    // look-at trace -- occlusion-correct, wall-stopped and honouring the per-prop interaction
+    // flags -- and the host re-validates the eid and enforces one hold per peer.
     if (s->role() != coop::net::Role::Host) {
         // Toggle: carrying a clump already, a press is a throw regardless of aim; else, aimed at a
         // mirrored pile, a press is a grab request. A player holds at most one clump.
         const coop::element::ElementId carry = coop::trash_channel::ClientCarryEid();
         if (carry != coop::element::kInvalidId) {
-            // Self-heal: if we think we are carrying but the proxy is gone (a missed host abort
+            // Self-heal: if we think we are carrying but the mirror is gone (a missed host abort
             // edge), clear the stale toggle and fall through to a fresh grab rather than throwing a
             // dead eid forever.
-            if (!coop::trash_proxy::ProxyActorForEid(carry)) {
-                UE_LOGW("[THROW-INTENT] CLIENT carry eid=%u has NO live proxy -- stale toggle, clearing + falling "
+            if (!coop::remote_prop::ResolveLiveActorByEid(static_cast<uint32_t>(carry))) {
+                UE_LOGW("[THROW-INTENT] CLIENT carry eid=%u has NO live mirror -- stale toggle, clearing + falling "
                         "through to grab", static_cast<unsigned>(carry));
                 coop::trash_channel::ClearClientCarry(static_cast<uint32_t>(carry));
             } else {
@@ -146,13 +131,10 @@ static bool OnPileUseIntercept(void* self, void* /*params*/) {
                 return true;  // handled: cancel the native InpActEvt_use (the client holds no native clump -> would deny)
             }
         }
-        // Native-authoritative grab recognition first: a save-loaded pile the client bound as the
-        // host-range mirror is a real chip pile, so it is the game's own looked-at actor,
-        // occlusion-correct and collision-blocked, unlike a bare proxy. If the looked-at actor is a
-        // bound native pile, the whole native dispatch is cancelled, so the grab and the deny both
-        // die, and the grab goes to the host as an intent, the sole author of the shared mutation,
-        // which runs the grab on the requester's puppet. The camera cone below stays for unbound
-        // proxy piles only.
+        // A pile the client bound as the host-range mirror is the game's own looked-at actor. The
+        // whole native dispatch is cancelled, so the grab and the deny both die, and the grab goes
+        // to the host as an intent, the sole author of the shared mutation, which runs the grab on
+        // the requester's puppet.
         {
             void* aimedNative = ue_wrap::engine::ReadMainPlayerLookAtActor(self);
             if (aimedNative && ue_wrap::prop::IsChipPile(aimedNative)) {
@@ -169,7 +151,7 @@ static bool OnPileUseIntercept(void* self, void* /*params*/) {
                         // grab-intent line for the same eid must match, and a mismatch names an
                         // identity misalignment.
                         const ue_wrap::FVector cloc = ue_wrap::engine::GetActorLocation(aimedNative);
-                        UE_LOGI("[GRAB-INTENT] CLIENT E-PRESS on BOUND native pile eid=%u at(%.1f,%.1f,%.1f) "
+                        UE_LOGI("[GRAB-INTENT] CLIENT E-PRESS on BOUND pile eid=%u at(%.1f,%.1f,%.1f) "
                                 "chipType=%u (lookAtActor, occlusion-correct) -> native use CANCELLED "
                                 "(no grab, no use_deny) + requesting grab from host",
                                 static_cast<unsigned>(beid), cloc.X, cloc.Y, cloc.Z,
@@ -209,30 +191,8 @@ static bool OnPileUseIntercept(void* self, void* /*params*/) {
                 return true;
             }
         }
-        // The aim ray from the live view camera, the fallback for unbound proxy piles: the unit
-        // forward vector the cone tests each proxy against, a generous 400 cm reach and a forgiving
-        // cone of about 20 degrees.
-        const ue_wrap::FVector  camLoc = ue_wrap::engine::GetCameraLocation();
-        const ue_wrap::FRotator camRot = ue_wrap::engine::GetCameraRotation();
-        const float d2r = 3.14159265f / 180.f;
-        const float yaw = camRot.Yaw * d2r, pitch = camRot.Pitch * d2r;
-        const float cp = std::cos(pitch);
-        const ue_wrap::FVector camFwd{ cp * std::cos(yaw), cp * std::sin(yaw), std::sin(pitch) };
-        const coop::element::ElementId eid =
-            coop::trash_proxy::EidForAimedPileProxy(camLoc, camFwd, /*maxRangeCm=*/400.f, /*minDot=*/0.94f);
-        if (eid == coop::element::kInvalidId)
-            return false;  // not aiming at a mirrored pile -> let the native use run (devices, other interactions)
-        // The pickup cue at the aimed proxy, as in the bound-native branch; the native use is
-        // cancelled below, so the grabber would otherwise hear nothing.
-        if (void* proxyActor = coop::trash_proxy::ProxyActorForEid(eid)) {
-            coop::prop_sound::PlayUseClick(proxyActor);
-            coop::prop_sound::PlayGrabSound(proxyActor);
-        }
-        UE_LOGI("[GRAB-INTENT] CLIENT E-PRESS aimed at pile proxy eid=%u (camera-ray cone) -> native use CANCELLED "
-                "(no use_deny) + requesting grab from host", static_cast<unsigned>(eid));
-        coop::trash_channel::SendGrabIntent(*s, static_cast<uint32_t>(eid));
-        g_cancelPairedUseRelease = true;  // pair: the _42 release of this cancelled press dies too
-        return true;  // handled: cancel the native InpActEvt_use dispatch (a bare proxy would deny)
+        // Not aiming at a pile: the native use runs (devices, other interactions).
+        return false;
     }
 
     // Host: aimed at a real chip pile, the looked-at actor. The host always runs the native use,
@@ -259,8 +219,8 @@ static bool OnPileUseIntercept(void* self, void* /*params*/) {
 
 // The left-button hard-throw bridge. The native throw input is the fire event, which throws
 // the held prop with a camera-directed velocity, a separate input from use, which grabs and
-// drops. The client holds no native clump (it renders a proxy), so the native fire finds
-// nothing to throw and no-ops. Here, while carrying a clump proxy, a fire press requests a
+// drops. The client holds no clump of its own -- the one it sees is a host-driven mirror -- so
+// the native fire finds nothing to throw and no-ops. Here, while carrying a clump, a fire press requests a
 // hard throw with the client's instantaneous camera forward, and the host applies the native
 // velocity formula with the real clump mass. The native fire is left to run, since it no-ops.
 // Client only; the host throws natively.
@@ -271,7 +231,7 @@ static void OnFirePre(void* self, void* /*function*/, void* /*params*/) {
     if (s->role() == coop::net::Role::Host) return;          // the host throws natively; this is the client bridge
     const coop::element::ElementId carry = coop::trash_channel::ClientCarryEid();
     if (carry == coop::element::kInvalidId) return;          // not carrying a clump -> let native fire do its thing
-    if (!coop::trash_proxy::ProxyActorForEid(carry)) {       // stale toggle (proxy gone) -> clear + let native run
+    if (!coop::remote_prop::ResolveLiveActorByEid(static_cast<uint32_t>(carry))) {  // stale toggle -> clear + let native run
         coop::trash_channel::ClearClientCarry(static_cast<uint32_t>(carry));
         return;
     }

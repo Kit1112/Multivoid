@@ -247,7 +247,7 @@ bool BuildPropSpawnPayload_(void* obj, coop::element::ElementId eid, int32_t int
     const auto loc = ue_wrap::engine::GetActorLocation(obj);
     // A chipPile's visual variety is the StaticMesh component's relative rotation (a random roll
     // from the construction script), not the actor root, and the trash mirror is a bare
-    // AStaticMeshActor: the visible mesh's world rotation goes on the wire, or every proxy pile
+    // AStaticMeshActor: the visible mesh's world rotation goes on the wire, or every mirrored pile
     // renders identically oriented. A native keyed prop keeps its actor rotation.
     const auto rot = ue_wrap::prop::IsChipPile(obj)
                          ? ue_wrap::engine::GetVisibleMeshWorldRotation(obj)

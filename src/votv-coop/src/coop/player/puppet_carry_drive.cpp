@@ -35,7 +35,7 @@ struct PuppetHeld {
     // FLIGHT (set by NoteThrown at a client's ThrowIntent): the throw released the puppet's grab + applied
     // physics velocity, so the host STOPS hand-driving and the clump flies free. We keep streaming its
     // (physics) pose each tick so every client renders the throw ARC, until the clump re-piles (the latch
-    // closes / a settle commits) -> the entry is dropped + the ToPile convert snaps the proxy.
+    // closes / a settle commits) -> the entry is dropped + the ToPile convert lands the pile.
     bool     flying = false;
     // Inherit-hand-velocity throw: the hold point last drive tick + its timestamp, and an EMA of the
     // per-tick hand velocity (cm/s). At a ThrowIntent the host releases with THIS velocity (the kinematic

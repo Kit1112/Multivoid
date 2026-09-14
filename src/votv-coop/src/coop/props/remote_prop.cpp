@@ -8,6 +8,7 @@
 
 #include "coop/props/active_drive.h"   // the fixed-delay snapshot interp, shared with the trash carry stream
 #include "coop/props/prop_sound.h"
+#include "coop/props/trash_mirror.h"   // Retire (a trash mirror retires whole, pin released after the destroy)
 #include "coop/element/mirror_manager.h"
 #include "coop/element/mirror_managers.h"  // PropMirrors
 #include "coop/element/prop.h"
@@ -20,7 +21,6 @@
 #include "coop/props/unresolved_pose_ledger.h"  // a pose-before-spawn race vs a sustained identity gap
 #include "coop/element/identity_create.h"  // CreateOrAdoptPropMirror, the prop-mirror bind
 #include "coop/props/trash_channel.h"  // the per-eid sync-time context; stale carry and release drops
-#include "coop/props/trash_proxy.h"    // the host-authoritative trash mirror
 #include "ue_wrap/core/call.h"
 #include "ue_wrap/engine/engine.h"
 #include "ue_wrap/core/fname_utils.h"
@@ -218,9 +218,12 @@ void ResolveAndStartDrive(int slot, const coop::net::PropPoseSnapshot& pose) {
     g_drives[slot].mesh  = mesh;
     g_drives[slot].lastKey.assign(pose.key.data, pose.key.len);
     g_drives[slot].lastEid = pose.elementId;
-    // A host-authoritative trash proxy freezes on a stream gap instead of timing out; it releases
-    // only on the explicit reliable edge.
-    g_drives[slot].isProxy = (pose.elementId != 0 && coop::trash_proxy::IsProxy(pose.elementId));
+    // A host-authoritative trash mirror freezes on a stream gap instead of timing out; it releases
+    // only on the explicit reliable edge, and it interpolates rather than snapping. The test is
+    // whether WE made the actor, not what class it is: a client's own save-loaded pile is bound as
+    // a mirror too, and suppressing its 500 ms implicit release would leave it kinematic and
+    // drive-held for the session if the reliable edge never arrived.
+    g_drives[slot].isTrashMirror = coop::trash_mirror::WeMade(prop);
     // A fresh identity: the next pose primes (a snap, no drift-in from the rest position), later
     // poses interpolate.
     g_drives[slot].lerpSeeded   = false;
@@ -280,7 +283,7 @@ void Tick(coop::net::Session& session) {
                     UE_LOGI("remote_prop: slot %d drive #%llu -> target(%.1f, %.1f, %.1f) rot(%.1f, %.1f, %.1f)%s",
                             slot, static_cast<unsigned long long>(n),
                             pose.x, pose.y, pose.z, pose.pitch, pose.yaw, pose.roll,
-                            drive.isProxy ? " [proxy]" : "");
+                            drive.isTrashMirror ? " [trash]" : "");
                 }
             } else if (drive.actor) {
                 // The cached actor died (a level unload or GC).
@@ -291,10 +294,10 @@ void Tick(coop::net::Session& session) {
         // The interpolation advances every tick, pose or no pose: a smooth follow between sends,
         // and a stream gap freezes at the last target.
         AdvanceLerp(drive, nowMs);
-        // The stream-stop release, for a non-proxy held item only: 500 ms of silence is a release.
-        // A trash proxy freezes through a gap and releases only on the reliable edge (a throw, a
+        // The stream-stop release, for a held item that is not a trash mirror: 500 ms of silence is a release.
+        // A trash mirror freezes through a gap and releases only on the reliable edge (a throw, a
         // ToPile convert, a disconnect), so a hitch mid-walk no longer drops the carried pile.
-        if (drive.actor && !drive.isProxy && (nowMs - drive.lastApplyMs) > 500) {
+        if (drive.actor && !drive.isTrashMirror && (nowMs - drive.lastApplyMs) > 500) {
             UE_LOGI("remote_prop: slot %d implicit release (%llu ms since last PropPose)",
                     slot, static_cast<unsigned long long>(nowMs - drive.lastApplyMs));
             void* liveA = drive.LiveActor();
@@ -366,15 +369,15 @@ void OnRelease(int senderSlot, const coop::net::PropReleasePayload& payload, voi
         meshToActOn = nullptr;
         propActor = nullptr;
     }
-    // A trash proxy throw is not simulated here: local physics would diverge from the host's
-    // trajectory and re-enable the collision the proxy runs without. It freezes at the release pose
-    // until the host's ToPile convert re-skins it at the landed pile; the swing still plays.
-    if (payload.elementId != 0 && coop::trash_proxy::IsProxy(payload.elementId)) {
+    // A thrown trash mirror is not simulated here: local physics would diverge from the host's
+    // trajectory, and the host streams the clump's flight as poses until it re-piles. It freezes at
+    // the release pose until that stream or the host's ToPile convert moves it; the swing plays.
+    if (propActor && coop::trash_mirror::WeMade(propActor)) {
         if (propActor && linSpeed > coop::net::kThrownLinVelThreshold)
             coop::prop_sound::PlayThrowWhoosh(propActor);
         if (propActor) ClearAnyDriveFor(propActor);  // stop the carry drive; freeze in place
-        UE_LOGI("[PILE] CLIENT proxy throw eid=%u |v|=%.1f cm/s -- frozen at release (no local physics); "
-                "awaiting host ToPile convert to reposition to the landed pile",
+        UE_LOGI("[PILE] CLIENT trash throw eid=%u |v|=%.1f cm/s -- frozen at release (no local physics); "
+                "the host's pose stream and its ToPile convert place it",
                 payload.elementId, linSpeed);
     } else if (meshToActOn) {
         // Simulate first, then the velocities: a kinematic body ignores a velocity write.
@@ -504,11 +507,11 @@ void ForceRelease() {
     int released = 0;
     for (auto& d : g_drives) {
         if (!d.actor) continue;
-        // A trash proxy retires whole (destroy, unbind, the pin released on the erase), never
-        // through ConsumeLocalActor, which would leave a rooted PendingKill actor anchoring its
-        // world. RetireProxy clears this drive.
-        if (d.isProxy) {
-            coop::trash_proxy::RetireProxy(d.lastEid);
+        // A trash mirror retires whole (drives evicted, destroyed if we made it, unbound, the pin
+        // released after the destroy), never through ConsumeLocalActor, which would leave a rooted
+        // PendingKill actor anchoring its world. Retire clears this drive.
+        if (d.isTrashMirror) {
+            coop::trash_mirror::Retire(d.lastEid, /*authoritative=*/false);
             ++released;
             continue;
         }
@@ -553,12 +556,12 @@ void OnDisconnectForSlot(int peerSlot) {
     }
     ActiveDrive& d = g_drives[peerSlot];
     if (!d.actor) return;
-    // A held trash proxy retires whole, as in ForceRelease. Normally
-    // trash_proxy::OnDisconnectForSlot already retired it (it runs first in DisconnectSlot) and the
-    // drive is empty; RetireProxy is idempotent.
-    if (d.isProxy) {
-        coop::trash_proxy::RetireProxy(d.lastEid);  // clears this drive via ClearAnyDriveFor
-        UE_LOGI("remote_prop: peer slot %d disconnected -- retired held trash proxy eid=%u", peerSlot, d.lastEid);
+    // A held trash mirror retires whole, as in ForceRelease. Normally
+    // trash_mirror::OnDisconnectForSlot already retired it (it runs first in DisconnectSlot) and
+    // the drive is empty; Retire is idempotent.
+    if (d.isTrashMirror) {
+        coop::trash_mirror::Retire(d.lastEid, /*authoritative=*/false);  // clears this drive via ClearAnyDriveFor
+        UE_LOGI("remote_prop: peer slot %d disconnected -- retired the held trash mirror eid=%u", peerSlot, d.lastEid);
         return;
     }
     if (d.mesh && R::IsLiveByIndex(d.actor, d.actorIdx)) {

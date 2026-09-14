@@ -13,6 +13,7 @@
 #include "coop/props/join_membership_sweep.h"  // HasLoadTailQuiesced
 #include "coop/props/save_identity_bind.h"     // BindUnboundReCreates
 #include "coop/player/players_registry.h"      // Local
+#include "coop/props/pile_spawn_bind.h"  // AdoptOwnNative (the shared bind primitive)
 #include "coop/props/save_time_retire_util.h"  // FindExactMatch, UnmarkAndDestroy
 #include "coop/config/config.h"           // ResolveFlag
 #include "ue_wrap/engine/engine.h"
@@ -105,6 +106,23 @@ std::chrono::steady_clock::time_point g_lastPurgeAt{};
 
 // The drain steps, called only by RunReconcile, in sequence.
 
+// Giving up on a pending row is a terminal answer, so it says which one. An eid that is BOUND
+// simply keeps the actor it has and loses a twin it no longer needs. An eid that is UNBOUND ends
+// the join with no actor at all: the host has a pile this client will not see until a later join
+// re-expresses it. Nothing is materialised in its place, because the only position the row
+// carries is the stale save-time key and the host may have moved or removed the pile since --
+// inventing one there would be a second divergence on top of the first.
+void NoteGaveUp(uint32_t eid, const PendingTwin& p, void* bound) {
+    if (bound) {
+        UE_LOGI("[PILE-1C] twin eid=%u dropped after %d pass(es) -- E keeps its actor; the twin at "
+                "(%.1f,%.1f,%.1f) never resolved", eid, p.unresolvedPasses, p.x, p.y, p.z);
+        return;
+    }
+    UE_LOGW("[PILE-1C] eid=%u GIVEN UP after %d pass(es) with NO actor -- no native ever appeared at "
+            "its save-time key (%.1f,%.1f,%.1f), so this pile is absent on this client until a later "
+            "join re-expresses it", eid, p.unresolvedPasses, p.x, p.y, p.z);
+}
+
 int SweepReconcileSaveTimeTwins() {
     if (g_pendingSaveTimeTwin.empty()) return 0;
     const size_t pendingN = g_pendingSaveTimeTwin.size();
@@ -124,7 +142,7 @@ int SweepReconcileSaveTimeTwins() {
     for (int32_t i = 0; i < n; ++i) {
         void* o = R::ObjectAt(i);
         if (!o || !R::IsLive(o)) continue;
-        if (!ue_wrap::prop::IsChipPile(o)) continue;                   // real actorChipPile_C only (NOT our proxy)
+        if (!ue_wrap::prop::IsChipPile(o)) continue;                   // chip piles only
         if (R::NameStartsWith(R::NameOf(o), L"Default__")) continue;   // CDO
         if (coop::prop_element_tracker::IsBoundMirrorNative(o)) {
             if (probe) {
@@ -149,7 +167,7 @@ int SweepReconcileSaveTimeTwins() {
     // could claim it.
     std::vector<bool> consumedFlags(natives.size(), false);
     std::vector<uint32_t> resolvedEids;  // erase from the pending map (retired OR dropped-after-N)
-    int confirmedRetired = 0, held = 0;
+    int confirmedRetired = 0, held = 0, lateBound = 0;
     for (auto& [eid, p] : g_pendingSaveTimeTwin) {
         const ue_wrap::FVector key{p.x, p.y, p.z};
         const int idx = coop::save_time_retire_util::FindExactMatch(
@@ -195,10 +213,21 @@ int SweepReconcileSaveTimeTwins() {
                 coop::save_time_retire_util::UnmarkAndDestroy(natives[idx].actor);  // per-eid evidence -> no cap
                 resolvedEids.push_back(eid);
                 ++confirmedRetired;
+            } else if (!bound) {
+                // The eid owns no actor and an unbound native sits exactly at its key: that native
+                // IS the element's expression. The join burst ran before the client's async load
+                // tail reached this pile, or a purge re-created it at the save position, and either
+                // way the answer is to bind it rather than to keep holding a mirror-less eid. The
+                // host's own position correction snaps it afterwards if the pile has since moved.
+                consumedFlags[idx] = true;
+                coop::pile_spawn_bind::AdoptOwnNative(natives[idx].actor, eid, /*senderSlot=*/0,
+                                                      p.hostVacate ? "load tail, host-vacate key" : "load tail");
+                resolvedEids.push_back(eid);
+                ++lateBound;
             } else {
                 // Hold, the candidate not consumed: it is likely the element's own re-create, which
                 // step 2 of this pass claims. Bounded.
-                if (++p.unresolvedPasses >= kMaxTwinPasses) resolvedEids.push_back(eid);
+                if (++p.unresolvedPasses >= kMaxTwinPasses) { resolvedEids.push_back(eid); NoteGaveUp(eid, p, bound); }
                 ++held;
             }
         } else {
@@ -227,15 +256,18 @@ int SweepReconcileSaveTimeTwins() {
                                : (u1 ? "unbound-present-but-unmatched(?)"
                                      : (u30 ? "unbound near but >1cm off (fuzzy)" : "CLEAN (no orphan @old)")));
             }
-            if (++p.unresolvedPasses >= kMaxTwinPasses)
+            if (++p.unresolvedPasses >= kMaxTwinPasses) {
                 resolvedEids.push_back(eid);  // no native@old ever materialized here -> stop retrying (FPS-pin guard)
+                NoteGaveUp(eid, p, bound);
+            }
         }
     }
 
     for (uint32_t e : resolvedEids) g_pendingSaveTimeTwin.erase(e);
     UE_LOGI("[PILE-1C] sweep-reconcile -- %zu pending twin(s): %d confirmed-moved retired (per-eid, no cap), "
+            "%d bound LATE (the load tail's native adopted by an eid that owned none), "
             "%d HELD (unconfirmed -- kept bounded for a later confirmed pass), %zu still pending",
-            pendingN, confirmedRetired, held, g_pendingSaveTimeTwin.size());
+            pendingN, confirmedRetired, lateBound, held, g_pendingSaveTimeTwin.size());
     return confirmedRetired;
 }
 
@@ -428,7 +460,7 @@ void RunReconcile() {
     // the join quiescence edge the sequence runs before the membership doom sweep, so a re-run
     // converge-claims the re-creates that raced their wire expression, and doom judges last; the
     // orphan census lives at the sweep's tail in join_membership_sweep.cpp for the same reason.
-    SweepReconcileSaveTimeTwins();                               // 1: retire the stale native chipPile at the old position
+    SweepReconcileSaveTimeTwins();                               // 1: bind or retire the native chipPile at the old position
     bool ghostDrained = true;
     coop::save_identity_bind::BindUnboundReCreates(&ghostDrained);  // 2: re-bind unbound natives, then retire the identity-less ghosts
     // The arm is consumed only when the tail drained: a capped pass or a valve abort keeps the

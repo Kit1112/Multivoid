@@ -96,7 +96,7 @@ int SweepReconcileSaveTimeKerfurs() {
             continue;
         }
 
-        // Mirror-aware teardown (mirror the trash_proxy::RetireProxy shape): clear the bound-mirror mark +
+        // Mirror-aware teardown (the trash_mirror::Retire shape): clear the bound-mirror mark +
         // local maps, destroy the actor, unbind the Prop mirror Element via the single destroy funnel.
         coop::prop_element_tracker::UnmarkKnownKeyedProp(actor);
         ue_wrap::engine::DestroyActor(actor);
