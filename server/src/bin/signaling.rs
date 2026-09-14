@@ -425,6 +425,13 @@ async fn serve<S: AsyncRead + AsyncWrite + Unpin>(
 /// Parse one inbound line ("<dest> <hexpayload>\n") and forward it to the destination
 /// as "<sender-identity> <hexpayload>\n" (best-effort; drop if dest absent or its
 /// relay queue is full).
+///
+/// A line a peer addresses to ITSELF is routed like any other, and that is LOAD-BEARING, not an
+/// accident to tidy away: it is the only way a registered peer can learn that its name still
+/// resolves to its connection, which a live socket cannot tell it (see the keepalive note on
+/// KEEPALIVE_IDLE for what that cost in the field). The client sends one every 20 s with an empty
+/// payload and retires its registration after 45 s of silence, so a self-route guard here would
+/// make every host reconnect on a timer forever.
 fn relay_line(sender: &str, line: &[u8]) {
     // S-1 (audit 2026-07-16): drop over-length lines BEFORE building/queuing the
     // relayed frame, so a single sender can't pin RELAY_QUEUE * MAX_LINE per dest.
