@@ -7,12 +7,14 @@
 // Winsock before any header that may pull in windows.h (steamnetworkingtypes.h does).
 #include <winsock2.h>
 #include <ws2tcpip.h>
+#include <mstcpip.h>   // tcp_keepalive / SIO_KEEPALIVE_VALS
 
 #include "signaling_client.h"
 
 #include "coop/net/peer_identity.h"
 #include "ue_wrap/core/log.h"
 
+#include <cstdio>
 #include <cstring>
 #include <utility>
 
@@ -52,10 +54,65 @@ constexpr size_t kMaxInboundBuffer = 64 * 1024;
 // Poll.
 constexpr auto kReconnectBackoff = std::chrono::seconds(5);
 
+// The keepalive on the rendezvous flow (armed in ConnectLocked, which says why). 20 s of idle
+// then a probe every 3 s: comfortably under any plausible middlebox reap. A dead path answers
+// NOTHING -- an RST is what a live peer sends to refuse -- so the local stack gives up after the
+// idle plus its probe run and fails the socket with WSAETIMEDOUT, which arrives as the recv error
+// the reconnect already handles. MSDN fixes the probe count at ten for SIO_KEEPALIVE_VALS on Vista
+// and later, putting that at about 50 s; unmeasured here, since the only detection this lane could
+// stage came from a FIN. Four packets a minute on one socket.
+constexpr DWORD kKeepAliveIdleMs  = 20'000;
+constexpr DWORD kKeepAliveProbeMs = 3'000;
+
+// What a fresh socket's keepalive carries. `on` is the flag READ BACK off the socket; `tuned` is
+// only the ioctl's own verdict, because SIO_KEEPALIVE_VALS has no query form -- so the idle/probe
+// pair is reported as requested, never as confirmed, and a refused ioctl leaves the OS default
+// idle (two hours on Windows), which is observability far too late to matter.
+struct KeepAliveState {
+    bool on    = false;
+    bool tuned = false;
+};
+
+KeepAliveState ArmKeepAlive(SOCKET s) {
+    KeepAliveState st;
+    BOOL on = TRUE;
+    if (setsockopt(s, SOL_SOCKET, SO_KEEPALIVE, reinterpret_cast<const char*>(&on),
+                   sizeof(on)) != 0) {
+        UE_LOGW("signaling: SO_KEEPALIVE refused (%d) -- a rendezvous flow that dies without a FIN "
+                "will not be detected, and this peer stays unreachable while looking registered",
+                WSAGetLastError());
+        return st;
+    }
+    tcp_keepalive vals{};
+    vals.onoff             = 1;
+    vals.keepalivetime     = kKeepAliveIdleMs;
+    vals.keepaliveinterval = kKeepAliveProbeMs;
+    DWORD written = 0;
+    st.tuned = WSAIoctl(s, SIO_KEEPALIVE_VALS, &vals, sizeof(vals), nullptr, 0, &written,
+                        nullptr, nullptr) != SOCKET_ERROR;
+    if (!st.tuned) {
+        UE_LOGW("signaling: SIO_KEEPALIVE_VALS refused (%d) -- keepalive runs at the OS default "
+                "idle, which is longer than any joiner waits", WSAGetLastError());
+    }
+    BOOL back = FALSE;
+    int backLen = static_cast<int>(sizeof(back));
+    if (getsockopt(s, SOL_SOCKET, SO_KEEPALIVE, reinterpret_cast<char*>(&back), &backLen) == 0)
+        st.on = (back != FALSE);
+    return st;
+}
+
 // How long to wait for the server's registration challenge after the greeting leaves the
 // socket. Generous: it turns a relay that predates the challenge into one named error line
 // instead of a silent hang. Matches the server's pre-auth budget.
 constexpr auto kChallengeTimeout = std::chrono::seconds(15);
+
+// How long a connect may stay in progress. Both socket paths answer WSAENOTCONN while a connect
+// is unfinished, and a connect that FAILED answers exactly the same, so nothing below can tell
+// the two apart and the reconnect backoff never re-arms -- it fires only when there is no socket
+// at all. Without this a peer that retried once into a relay which was briefly away (a restart, a
+// deploy, a blip) keeps a socket that will never connect, registered nowhere and reachable by
+// nobody, for the life of the process. The greeting leaving the socket is the positive signal.
+constexpr auto kConnectTimeout = std::chrono::seconds(10);
 
 // Must equal REGISTER_TAG in server/src/bin/signaling.rs. The instrument that covers the pair is
 // the p2p_smoke scenario, whose two peers sign with this code and register against the real relay:
@@ -213,6 +270,9 @@ void SignalingClient::CloseSocketLocked() {
         sock_ = kInvalidSock;
     }
     inBuf_.clear();
+    // The connect deadline dies with the socket it was armed for, so "a live socket always carries
+    // a fresh deadline" is readable here instead of inferred from ConnectLocked.
+    connectDeadline_ = std::chrono::steady_clock::time_point{};
     // sendQueue_ is deliberately kept: pending GNS signals survive a reconnect, so a TCP blip
     // mid-handshake does not drop them; ConnectLocked re-inserts the greeting at the front, and
     // the Enqueue cap bounds the queue meanwhile.
@@ -263,10 +323,26 @@ void SignalingClient::ConnectLocked() {
         return;
     }
 
+    // The one long-lived link in the join chain that carries no traffic of its own: a host that
+    // has seated its peers sends nothing here until the next joiner dials. A field pair measured
+    // 56 minutes of that silence -- two joins died at `Connecting` against a host whose listen
+    // socket was still open, whose lobby the master's own 30 s heartbeat kept listed, and whose
+    // log held not one line about either attempt. Nothing on either end could say so: no FIN
+    // arrived, so recv kept answering would-block and the reconnect below never fired, and the
+    // relay's keepalive waits the OS default of two hours for a first probe
+    // (server/src/bin/signaling.rs, set_keepalive). Keepalive makes the flow both warm -- a
+    // middlebox never gets an idle mapping to reap -- and OBSERVABLE, which is what turns a
+    // permanently unreachable host into one that reconnects and re-proves on its own. MTA keeps a
+    // central registration the same way, re-announcing on a timer rather than registering once
+    // (reference/mtasa-blue/Server/mods/deathmatch/utils/CMasterServerAnnouncer.h); our own lobby
+    // announcer heartbeats, and this socket was the one registration that registered and assumed.
+    const KeepAliveState keepAlive = ArmKeepAlive(s);
+
     // A nonblocking connect returns would-block and completes asynchronously; queued lines flush
     // in Poll once writable.
     connect(s, reinterpret_cast<const sockaddr*>(resolvedAddr_), resolvedLen_);
     sock_ = static_cast<std::uintptr_t>(s);
+    connectDeadline_ = std::chrono::steady_clock::now() + kConnectTimeout;
 
     // The greeting must be the first line on every fresh socket; inserted at the front unless
     // already there, so repeated reconnects do not pile up duplicates ahead of the preserved
@@ -287,20 +363,34 @@ void SignalingClient::ConnectLocked() {
     // relay refuses it with the same words a squat produces, which would make an own goal
     // indistinguishable from an attack in the one log meant to tell them apart. The queue is
     // preserved across a drop, so this is the one line that must not survive.
+    // The greeting is exempt by identity: a relay token of literally `auth` makes the greeting
+    // itself start with "auth ", and stripping it here would delete the line ConnectLocked just
+    // queued.
     for (auto it = sendQueue_.begin(); it != sendQueue_.end();) {
-        it = (it->rfind("auth ", 0) == 0) ? sendQueue_.erase(it) : it + 1;
+        const bool isStaleProof = it->rfind("auth ", 0) == 0 && *it != greeting_;
+        it = isStaleProof ? sendQueue_.erase(it) : it + 1;
     }
-    UE_LOGI("signaling: connecting to %s:%s as '%s'",
-            host_.c_str(), service_.c_str(), selfIdentity_.c_str());
+    char kaWhat[64];
+    if (!keepAlive.on)        std::snprintf(kaWhat, sizeof(kaWhat), "OFF");
+    else if (keepAlive.tuned) std::snprintf(kaWhat, sizeof(kaWhat), "on, %u ms idle / %u ms probe",
+                                           static_cast<unsigned>(kKeepAliveIdleMs),
+                                           static_cast<unsigned>(kKeepAliveProbeMs));
+    else                      std::snprintf(kaWhat, sizeof(kaWhat), "on, OS default idle");
+    UE_LOGI("signaling: connecting to %s:%s as '%s' (keepalive %s)",
+            host_.c_str(), service_.c_str(), selfIdentity_.c_str(), kaWhat);
 }
 
 void SignalingClient::Enqueue(const std::string& line) {
     std::lock_guard<std::recursive_mutex> lk(sockMutex_);
     // Best-effort delivery: a backed-up queue drops the oldest signals, which are the most stale;
     // GNS retries current ones.
+    // The trim never touches the FRONT line: ConnectLocked puts the greeting there, and a burst of
+    // ICE signals queued while the connect is still in flight would otherwise discard it -- after
+    // which the relay reads the next line as the greeting and refuses the connection, while the
+    // liveness deadline that waits on the greeting goes inert on a socket that never greeted.
     bool dropped = false;
     while (sendQueue_.size() > 32) {
-        sendQueue_.pop_front();
+        sendQueue_.erase(sendQueue_.begin() + 1);
         dropped = true;
     }
     if (dropped) {
@@ -443,16 +533,18 @@ void SignalingClient::Poll() {
                 // wins that race, so only a real-RTT relay shows it.
                 if (regState_ == RegState::AwaitingChallenge && greetingSent_) break;
                 const std::string& line = sendQueue_.front();
+                // Taken before the pop, which invalidates the reference.
+                const bool isGreeting = (line == greeting_);
                 const int l = static_cast<int>(line.size());
                 const int r = ::send(s, line.c_str(), l, 0);
                 if (r < 0 && IgnoreSockErr(WSAGetLastError())) break;  // would block
                 if (r == l) {
                     sendQueue_.pop_front();
-                    // The greeting is always the first line on a fresh socket, so the first
-                    // successful send is the moment our greeting reached the server, from which a
-                    // missing challenge means the relay is old rather than that we never got
-                    // through.
-                    if (!greetingSent_) {
+                    // The moment our GREETING reached the server, from which a missing challenge
+                    // means the relay is old rather than that we never got through. Identity, not
+                    // position: two liveness decisions hang off this flag, and "some line left the
+                    // socket" is not the same fact as "we introduced ourselves".
+                    if (!greetingSent_ && isGreeting) {
                         greetingSent_ = true;
                         challengeDeadline_ = std::chrono::steady_clock::now() + kChallengeTimeout;
                     }
@@ -463,6 +555,17 @@ void SignalingClient::Poll() {
                     break;
                 }
             }
+        }
+
+        // Give up on a connect that never completed, so the backoff can retry it. Checked after
+        // the flush above, which is where a live socket sets greetingSent_ and leaves this inert.
+        if (sock_ != kInvalidSock && !greetingSent_ &&
+            connectDeadline_ != std::chrono::steady_clock::time_point{} &&
+            std::chrono::steady_clock::now() > connectDeadline_) {
+            UE_LOGW("signaling: the connect to %s:%s did not complete -- closing it so the "
+                    "reconnect can retry (a socket stuck mid-connect is registered nowhere)",
+                    host_.c_str(), service_.c_str());
+            CloseSocketLocked();
         }
 
         // Fail closed on a relay that never challenges: registering unproved would reopen what the

@@ -111,6 +111,11 @@ private:
     // relay", so it gates the fail-closed deadline and the send gate.
     bool greetingSent_ = false;
     std::chrono::steady_clock::time_point challengeDeadline_{};
+    // When a connect that is still in progress gives up. A non-blocking connect signals failure
+    // the same way it signals "not finished yet", so without this the ONE thing the backoff cannot
+    // retry is a socket that never connected. Written by ConnectLocked (the ctor's call included,
+    // so not the net thread alone) and read by Poll; both under sockMutex_.
+    std::chrono::steady_clock::time_point connectDeadline_{};
 };
 
 }  // namespace coop::net
