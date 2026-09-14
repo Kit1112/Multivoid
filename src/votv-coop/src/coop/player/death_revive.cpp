@@ -59,13 +59,21 @@ std::atomic<bool>     g_seamReady{false};      // run_end_travel can cancel a ru
 std::wstring g_pendingAuthorClass;
 bool         g_pendingAuthorIsLocalPawn = false;
 
-// The readiness window, stamped once per session. `g_pawnFirstMs` is game thread only (Tick
-// writes it); the span is an atomic because the drills read it from their own threads. The four
-// per-term stamps are game thread only and exist so the window's own line says WHICH term the
-// wait was spent on -- a total alone cannot be acted on, and this is the number a fix moves.
-uint64_t g_pawnFirstMs = 0;
+// The readiness window. Every field here is ATOMIC, and not because two threads compete for it
+// in the steady state -- Tick owns them all and Tick is game-thread only -- but because the RESET
+// is not on that thread: `OnSessionStart` is called straight out of `StartCoopSession`, which the
+// harness runs on the TimelineThread (`harness/session_runtime.cpp:362`), so a Stop/Start can zero
+// these while an already-dequeued pump composite is still in Tick. Relaxed is enough: nothing is
+// published through them, the drills only read the span, and what is being bought is a whole read
+// rather than an ordering. The four per-term stamps exist so the window's own line says WHICH term
+// the wait was spent on -- a total alone cannot be acted on, and this is the number a fix moves.
+// The module's OLDER per-session fields (`g_wasDead`, `g_cancelAtMs`, `g_reviveRanThisDeath`,
+// `g_screenCleanupLeft`, `g_pendingAuthorClass`) are plain and are reset down that same path: the
+// same race, pre-dating this window, and its root is that a game-thread module's per-session reset
+// is invoked from the session's thread rather than posted. Named here, not quietly inherited.
+std::atomic<uint64_t>  g_pawnFirstMs{0};
 std::atomic<long long> g_armReadyAfterPawnMs{-1};
-long long g_tSeam = -1, g_tVerbs = -1, g_tSession = -1, g_tDeadOff = -1;
+std::atomic<long long> g_tSeam{-1}, g_tVerbs{-1}, g_tSession{-1}, g_tDeadOff{-1};
 
 // Pump-side state, game thread only.
 bool  g_wasDead = false;
@@ -465,9 +473,11 @@ void NoteRunEndCancelled(void* author, const wchar_t* authorClass, bool authorIs
 }
 
 void OnSessionStart() {
-    g_pawnFirstMs = 0;
+    // Not the game thread (see the window's own note): every field it touches here is atomic.
+    g_pawnFirstMs.store(0, std::memory_order_relaxed);
     g_armReadyAfterPawnMs.store(-1, std::memory_order_release);
-    g_tSeam = g_tVerbs = g_tSession = g_tDeadOff = -1;
+    for (std::atomic<long long>* s : {&g_tSeam, &g_tVerbs, &g_tSession, &g_tDeadOff})
+        s->store(-1, std::memory_order_relaxed);
     g_armed.store(false, std::memory_order_release);
     g_revivePending.store(false, std::memory_order_release);
     g_cancelAtMsAtomic.store(0, std::memory_order_release);
@@ -513,20 +523,29 @@ void Tick(coop::net::Session& session, void* localPawn) {
     // tests the role -- but a client reaches its own pawn later than a host does, so a client
     // meets the window more often. It is stamped once per session and logged, which puts the
     // number in a field log where no drill can go.
-    if (localPawn && g_pawnFirstMs == 0) g_pawnFirstMs = ::GetTickCount64();
-    if (g_pawnFirstMs != 0 && g_armReadyAfterPawnMs.load(std::memory_order_relaxed) < 0) {
-        const long long now = static_cast<long long>(::GetTickCount64() - g_pawnFirstMs);
-        if (g_tSeam < 0 && seamReady) g_tSeam = now;
-        if (g_tVerbs < 0 && verbsOk) g_tVerbs = now;
-        if (g_tSession < 0 && sessionLive) g_tSession = now;
-        if (g_tDeadOff < 0 && deadOffsetKnown) g_tDeadOff = now;
+    if (localPawn && g_pawnFirstMs.load(std::memory_order_relaxed) == 0)
+        g_pawnFirstMs.store(::GetTickCount64(), std::memory_order_relaxed);
+    const uint64_t pawnAt = g_pawnFirstMs.load(std::memory_order_relaxed);
+    if (pawnAt != 0 && g_armReadyAfterPawnMs.load(std::memory_order_relaxed) < 0) {
+        const long long now = static_cast<long long>(::GetTickCount64() - pawnAt);
+        auto stamp = [now](std::atomic<long long>& slot, bool term) {
+            if (term && slot.load(std::memory_order_relaxed) < 0)
+                slot.store(now, std::memory_order_relaxed);
+        };
+        stamp(g_tSeam, seamReady);
+        stamp(g_tVerbs, verbsOk);
+        stamp(g_tSession, sessionLive);
+        stamp(g_tDeadOff, deadOffsetKnown);
         if (armReady) {
             g_armReadyAfterPawnMs.store(now, std::memory_order_release);
             UE_LOGI("death_revive: the arm is READY +%lld ms after the local pawn first ticked "
                     "(seam +%lld, verbs +%lld, session +%lld, deadOffset +%lld) -- a death before "
                     "that point could not have been answered and the pump's flee would have ended "
                     "the session, so the largest term is what a fix has to move",
-                    now, g_tSeam, g_tVerbs, g_tSession, g_tDeadOff);
+                    now, g_tSeam.load(std::memory_order_relaxed),
+                    g_tVerbs.load(std::memory_order_relaxed),
+                    g_tSession.load(std::memory_order_relaxed),
+                    g_tDeadOff.load(std::memory_order_relaxed));
         }
     }
 

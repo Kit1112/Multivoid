@@ -69,8 +69,9 @@ bool LastReviveSucceeded();
 // not. The arm's terms are all readiness terms, and a client reaches its own pawn later than a
 // host does -- so a death inside that window is not armed, and the pump's flee ends the session
 // for everyone. This is that window, measured: the number now rides every log, and a drill reads
-// it to tell the steady-state death it means to test from a race it does not. Reset per session.
-// Any thread.
+// it to tell the steady-state death it means to test from a race it does not. Reset per session,
+// from the session's own thread rather than the game thread, which is why the window's fields are
+// atomic. Any thread.
 long long ArmReadyAfterPawnMs();
 
 // The negative control, armed by VOTVCOOP_DEATH_NO_RECONCILE=1: the reconcile does nothing, so
