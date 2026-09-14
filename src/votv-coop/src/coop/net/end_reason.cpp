@@ -6,6 +6,7 @@
 
 #include <steam/steamnetworkingtypes.h>
 
+#include <cstdio>
 #include <cstring>
 
 namespace coop::net {
@@ -37,7 +38,7 @@ constexpr Row kRows[] = {
     {EndReason::CouldNotSendProof,   {"MV-J16", "Could not send the identity proof to the host."}},
     {EndReason::ClientBacklogFatal,  {"MV-J17", "The connection fell too far behind and was closed."}},
     {EndReason::LeftSession,         {"MV-J18", "Left the session."}},
-    {EndReason::RendezvousUnreachable, {"MV-J19", "This machine is not connected to the signaling server, so the host could not be dialled."}},
+    {EndReason::RendezvousUnreachable, {"MV-J19", "This machine has no working connection to the signaling server, so the host could not be dialled."}},
     {EndReason::NoRendezvousAnswer,    {"MV-J20", "The host did not answer through the signaling server. It may be offline, or reconnecting -- try again in a minute."}},
     // H -- the host decided
     {EndReason::WrongPassword,           {"MV-H01", "Wrong password."}},
@@ -103,6 +104,18 @@ char FamilyOf(EndReason code) {
     return '\0';
 }
 
+// The two digits an id must carry: its position inside its own family, counted from one. The ids
+// are hand-written literals, so without this only the LETTER was ever checked and a typo in the
+// digits would ship a code that names a site nobody can find twice.
+int NumberOf(EndReason code) {
+    switch (FamilyOf(code)) {
+    case 'J': return V(code) - V(EndReason::kJoinerFirst) + 1;
+    case 'H': return V(code) - V(EndReason::kHostFirst) + 1;
+    case 'T': return V(code) - V(EndReason::kTransportFirst) + 1;
+    default:  return 0;
+    }
+}
+
 }  // namespace
 
 const EndReasonInfo& Describe(EndReason code) {
@@ -163,6 +176,10 @@ bool RunSelftest() {
         check(std::strlen(r.info.id) == 6 && std::strncmp(r.info.id, "MV-", 3) == 0 &&
                   r.info.id[3] == FamilyOf(r.code),
               "id names the family its value sits in", r.info.id);
+        char want[8];
+        std::snprintf(want, sizeof(want), "MV-%c%02d", FamilyOf(r.code), NumberOf(r.code));
+        check(std::strcmp(r.info.id, want) == 0, "id's digits are its place in its family",
+              r.info.id);
         for (int j = 0; j < i; ++j) {
             check(std::strcmp(kRows[j].info.id, r.info.id) != 0, "id is unique", r.info.id);
             check(kRows[j].code != r.code, "code has one row", r.info.id);

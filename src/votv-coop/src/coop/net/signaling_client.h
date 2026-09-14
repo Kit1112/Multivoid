@@ -45,10 +45,16 @@ struct DialReport {
     // and the one a keepalive cannot answer. Unknown is a real answer, and the honest one early --
     // a socket that is up and proved but whose first echo is still in flight knows nothing yet, so
     // a verdict is named on Live or Down and never on a guess.
+    // Live is a claim about NOW (an echo answered within kEchoFreshWindow); Down is a claim about
+    // the WHOLE dial (never registered at any point of it). Two tenses because the two sentences
+    // they produce make two different claims, and each must be true of what it says.
     enum class Registration { Unknown, Live, Down };
     Registration registration = Registration::Unknown;
     bool     peerAnswered = false;  // a line came back from the dialled identity
-    uint32_t linesToPeer = 0;       // lines addressed to it: a dial that sent nothing is its own fact
+    // Lines ADDRESSED to it, which is not the same as lines that left: the queue drops its oldest
+    // past its cap, and a socket stuck mid-connect never flushes. It is a diagnostic for the log,
+    // never an input to the verdict.
+    uint32_t linesToPeer = 0;
 };
 
 // enable_shared_from_this: each per-connection ConnectionSignaling co-owns the client, so a
@@ -85,7 +91,9 @@ public:
     void NoteDialing(const SteamNetworkingIdentity& peer);
 
     // The rendezvous half of why a dial ended, for the site that turns a close into a sentence.
-    // A snapshot under the lock; no engine calls, cheap, and safe from any thread.
+    // A snapshot under the lock; no engine calls, cheap. Call it from the polling thread: every
+    // field it reads is written there or under the lock, and the one caller (the connection-status
+    // callback) already runs on it.
     DialReport ReportDial();
 
 private:
@@ -116,6 +124,11 @@ private:
     // on each socket. Net thread (the dispatch pass, which runs outside the lock) -- it takes
     // sockMutex_ itself.
     void NoteRegistrationEcho();
+
+    // The two halves of a dial's registration verdict, each answering its own tense. Callers hold
+    // sockMutex_.
+    bool RegistrationFreshLocked(std::chrono::steady_clock::time_point now) const;
+    bool RegistrationAbsentLocked() const;
 
     const std::string host_;
     const std::string service_;     // port, as a string for getaddrinfo
@@ -163,6 +176,9 @@ private:
     // When unanswered probes mean the name no longer routes here. Armed by the first probe and
     // pushed out by every echo, so it moves only on evidence.
     std::chrono::steady_clock::time_point echoDeadline_{};
+    // When the routing was last PROVED. Separate from the deadline above, which is a budget for
+    // giving up: a dial's verdict may only read this one (see kEchoFreshWindow).
+    std::chrono::steady_clock::time_point lastEchoAt_{};
     bool echoSeen_ = false;  // an echo has come back on THIS socket (the first one logs)
 
     // The dial a client is making, and what crossed for it. One identity, not a map: a joiner
@@ -172,6 +188,10 @@ private:
     std::string dialledPeer_;
     uint32_t    dialLinesOut_ = 0;
     uint32_t    dialLinesIn_ = 0;
+    // Whether the registration was ever demonstrably live during THIS dial -- seeded from the
+    // state the dial starts in and set by any echo while it runs. It is what keeps a relay that
+    // went away mid-dial from being reported as one we never reached.
+    bool        dialSawRegistration_ = false;
 };
 
 }  // namespace coop::net

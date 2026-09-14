@@ -12,6 +12,7 @@
 #include "signaling_client.h"
 
 #include "coop/net/peer_identity.h"
+#include "signaling_proof.h"
 #include "ue_wrap/core/log.h"
 
 #include <cstdio>
@@ -127,6 +128,19 @@ constexpr auto kEchoProbeInterval = std::chrono::seconds(20);
 // re-register verb mid-stream -- reconnecting IS our re-announce.
 constexpr auto kEchoTimeout = std::chrono::seconds(45);
 
+// How old an answered echo may be and still prove the routing works NOW: one probe interval plus a
+// grace for a probe in flight. In healthy operation the newest echo is at most one interval old,
+// and the grace is three orders of magnitude above the round trip this rig measures (~5 ms, the
+// number NoteRegistrationEcho prints), so it is headroom rather than a tuned value.
+//
+// Deliberately NOT kEchoTimeout, and the difference is a defect an audit caught. That budget is how
+// long silence may last before the registration is RETIRED, generous on purpose so two lost probes
+// do not tear down a working one. Reusing it here would answer a different question with the same
+// number: a relay that stopped routing our name one second after an echo would still read "live"
+// for another 44 s, and a dial inside that window would blame the HOST for the half that had
+// actually gone quiet -- the exact inversion this verdict exists to prevent.
+constexpr auto kEchoFreshWindow = kEchoProbeInterval + std::chrono::seconds(5);
+
 // How long a connect may stay in progress. Both socket paths answer WSAENOTCONN while a connect
 // is unfinished, and a connect that FAILED answers exactly the same, so nothing below can tell
 // the two apart and the reconnect backoff never re-arms -- it fires only when there is no socket
@@ -134,17 +148,6 @@ constexpr auto kEchoTimeout = std::chrono::seconds(45);
 // deploy, a blip) keeps a socket that will never connect, registered nowhere and reachable by
 // nobody, for the life of the process. The greeting leaving the socket is the positive signal.
 constexpr auto kConnectTimeout = std::chrono::seconds(10);
-
-// Must equal REGISTER_TAG in server/src/bin/signaling.rs. The instrument that covers the pair is
-// the p2p_smoke scenario, whose two peers sign with this code and register against the real relay:
-// if the bytes drift, both fail to register and the verdict goes red. A release gate carries its
-// own copy of the tag and never runs this client.
-constexpr char kRegisterTag[] = "multivoid-signaling-register-v1";
-constexpr char kChallengePrefix[] = "nonce ";
-constexpr size_t kNonceHexLen = 64;
-// gen: plus 64 hex; the relay accepts exactly this width, which is what makes the un-delimited
-// blob unambiguous.
-constexpr size_t kIdentityLen = 4 + 64;
 
 const char kHexDigit[] = "0123456789abcdef";
 
@@ -175,13 +178,12 @@ struct SignalingClient::ConnectionSignaling : ISteamNetworkingConnectionSignalin
             signal.push_back(kHexDigit[*p & 0xf]);
         }
         signal.push_back('\n');
-        {
-            // Counted where the destination is known: Enqueue takes a finished line and cannot
-            // tell one addressee from another. Recursive, so the Enqueue below re-takes it.
-            std::lock_guard<std::recursive_mutex> lk(owner_->sockMutex_);
-            if (!owner_->dialledPeer_.empty() && peerIdentity_ == owner_->dialledPeer_)
-                ++owner_->dialLinesOut_;
-        }
+        // Counted where the destination is known: Enqueue takes a finished line and cannot tell one
+        // addressee from another. The lock spans the enqueue too, so the count and the line it
+        // counts land together; the mutex is recursive, so Enqueue's own acquisition is free.
+        std::lock_guard<std::recursive_mutex> lk(owner_->sockMutex_);
+        if (!owner_->dialledPeer_.empty() && peerIdentity_ == owner_->dialledPeer_)
+            ++owner_->dialLinesOut_;
         owner_->Enqueue(signal);
         return true;
     }
@@ -307,6 +309,7 @@ void SignalingClient::CloseSocketLocked() {
     nextEchoProbe_ = std::chrono::steady_clock::time_point{};
     lastEchoProbe_ = std::chrono::steady_clock::time_point{};
     echoDeadline_  = std::chrono::steady_clock::time_point{};
+    lastEchoAt_    = std::chrono::steady_clock::time_point{};
     echoSeen_ = false;
     // sendQueue_ is deliberately kept: pending GNS signals survive a reconnect, so a TCP blip
     // mid-handshake does not drop them; ConnectLocked re-inserts the greeting at the front, and
@@ -451,62 +454,17 @@ ISteamNetworkingConnectionSignaling* SignalingClient::CreateSignalingForConnecti
     return new ConnectionSignaling(shared_from_this(), peerRender.c_str());
 }
 
-// The registration proof: sign the server's nonce with the key our identity names. See the
-// header for why it is load-bearing.
+// The registration proof, answered: the bytes live in coop/net/signaling_proof, which is a
+// three-party contract (this client, the relay, the release gate); this is the state change.
 bool SignalingClient::AnswerChallenge(const char* line, size_t len) {
-    // A trailing CR is tolerated, so a relay behind a line-ending-normalising proxy is not a
-    // protocol violation.
-    while (len > 0 && (line[len - 1] == '\r' || line[len - 1] == ' ')) --len;
-
-    constexpr size_t kPrefixLen = sizeof(kChallengePrefix) - 1;
-    if (len != kPrefixLen + kNonceHexLen ||
-        std::memcmp(line, kChallengePrefix, kPrefixLen) != 0) {
-        UE_LOGE("signaling: expected a registration challenge and got a %zu-byte "
-                "line that is not one -- this relay does not speak the "
-                "nonce/auth exchange. REFUSING to register unproved.", len);
-        return false;
-    }
-    const char* nonce = line + kPrefixLen;
-    for (size_t i = 0; i < kNonceHexLen; ++i) {
-        const char c = nonce[i];
-        // Lowercase only, matching the server's alphabet: a proof must not be laxer about its
-        // inputs than the name it proves.
-        if (!(('0' <= c && c <= '9') || ('a' <= c && c <= 'f'))) {
-            UE_LOGE("signaling: the registration challenge is not 64 lowercase "
-                    "hex digits -- refusing to sign it");
-            return false;
-        }
-    }
-
-    // The blob is tag, identity, nonce with no separators: every field is fixed width, so the
-    // concatenation is unambiguous. The identity's width is asserted, not assumed: nothing
-    // upstream checks it (Create only rejects a spaced one), and signing an off-width identity
-    // would produce a blob the relay cannot rebuild, so the honest failure is here.
-    if (selfIdentity_.size() != kIdentityLen) {
-        UE_LOGE("signaling: our identity is %zu chars, not %zu -- refusing to sign "
-                "a blob the relay cannot rebuild", selfIdentity_.size(), kIdentityLen);
-        return false;
-    }
-    std::string blob;
-    blob.reserve(sizeof(kRegisterTag) - 1 + selfIdentity_.size() + kNonceHexLen);
-    blob.append(kRegisterTag, sizeof(kRegisterTag) - 1);
-    blob.append(selfIdentity_);
-    blob.append(nonce, kNonceHexLen);
-
-    const peer_identity::Sig sig = peer_identity::SignBlob(
-        reinterpret_cast<const uint8_t*>(blob.data()), blob.size());
-
-    std::string out;
-    out.reserve(5 + sig.size() * 2 + 1);
-    out.append("auth ");
-    for (uint8_t b : sig) {
-        out.push_back(kHexDigit[b >> 4U]);
-        out.push_back(kHexDigit[b & 0xf]);
-    }
-    out.push_back('\n');
+    std::string proof;
+    if (!signaling_proof::AnswerChallenge(line, len, selfIdentity_, proof)) return false;
     // At the front: the relay reads the line after its challenge as the proof, and the queue may
-    // already hold ICE signals GNS produced meanwhile.
-    EnqueueFront(out);
+    // already hold ICE signals GNS produced meanwhile. Under the lock, with the state change, for
+    // the same reason SendSignal's count is: this runs in the dispatch pass, which is deliberately
+    // OUTSIDE the lock, and regState_ is read under it by Poll and by a dial's verdict.
+    std::lock_guard<std::recursive_mutex> lk(sockMutex_);
+    EnqueueFront(proof);
     regState_ = RegState::ProofSent;
     // Answered, not accepted: the relay's verdict is not observable here. A rejected proof closes
     // the socket, which arrives as the ordinary closed-connection path; the reason lives in the
@@ -521,6 +479,12 @@ void SignalingClient::NoteRegistrationEcho() {
     std::lock_guard<std::recursive_mutex> lk(sockMutex_);
     const auto now = std::chrono::steady_clock::now();
     echoDeadline_ = now + kEchoTimeout;
+    // When the routing was last PROVED, which is a different fact from when it would be given up
+    // on, and the only one a dial's verdict may read (see kEchoFreshWindow).
+    lastEchoAt_ = now;
+    // A dial in flight has now seen its registration work, so a later drop cannot be reported as
+    // "never registered".
+    if (!dialledPeer_.empty()) dialSawRegistration_ = true;
     if (echoSeen_) return;
     echoSeen_ = true;
     // Once per socket, because three lines a minute is noise and the first one is the fact: it
@@ -540,29 +504,43 @@ void SignalingClient::NoteDialing(const SteamNetworkingIdentity& peer) {
     dialledPeer_ = render.c_str();
     dialLinesOut_ = 0;
     dialLinesIn_ = 0;
+    // Seeded from the state the dial STARTS in, not left false for the first echo to set: a dial
+    // that begins on a proved registration and ends after the relay went away must not be reported
+    // as "this machine was never registered" -- lines of ours did leave, and the host may have had
+    // them. With the seed, that dial reports neither verdict and the transport's own stands.
+    dialSawRegistration_ = RegistrationFreshLocked(std::chrono::steady_clock::now());
 }
 
-// The rendezvous half of why a dial ended.
+// Is the relay routing our name to this socket RIGHT NOW? Caller holds sockMutex_.
+bool SignalingClient::RegistrationFreshLocked(std::chrono::steady_clock::time_point now) const {
+    return echoSeen_ && now - lastEchoAt_ <= kEchoFreshWindow;
+}
+
+// Are we certainly NOT in the relay's routing map right now? Caller holds sockMutex_. By the
+// relay's own order of business: it inserts us only after verifying the proof it asks for AFTER our
+// greeting, so a socket that is gone, one whose greeting has not left, and one still owed a
+// challenge are the same fact. That covers a relay which is down, unreachable, restarting, or a
+// registration of ours that retired itself and is being rebuilt -- three of which sit in the
+// reconnect backoff holding a socket, and would read as "merely unknown" on the socket alone.
+bool SignalingClient::RegistrationAbsentLocked() const {
+    return sock_ == kInvalidSock || !greetingSent_ || regState_ == RegState::AwaitingChallenge;
+}
+
+// The rendezvous half of why a dial ended. The two verdicts are in different TENSES on purpose,
+// because their sentences are: Live says the routing works NOW (so the silence is the host's), and
+// Down says we were never registered at any point of THIS dial (so nothing of ours can have
+// reached anybody). A state that is neither -- registered but stale, or absent now after having
+// been live while the dial ran -- is genuinely ambiguous and says nothing.
 DialReport SignalingClient::ReportDial() {
     std::lock_guard<std::recursive_mutex> lk(sockMutex_);
     DialReport r;
     r.linesToPeer = dialLinesOut_;
     r.peerAnswered = dialLinesIn_ > 0;
-    if (sock_ == kInvalidSock || !greetingSent_ || regState_ == RegState::AwaitingChallenge) {
-        // Certainly not in the relay's routing map, by the relay's own order of business: it
-        // inserts us only after it has verified the proof it asks for AFTER our greeting, so a
-        // socket that is gone, one whose greeting has not left, and one still owed a challenge are
-        // the same fact. All three are what a relay that is down, unreachable, restarting, or a
-        // registration of ours that retired itself and is being rebuilt look like from in here --
-        // and three of the four would otherwise sit in the reconnect backoff with a socket in
-        // hand, reading as Unknown and saying nothing. The claim is about US and blames no host.
-        r.registration = DialReport::Registration::Down;
-    } else if (echoSeen_ && std::chrono::steady_clock::now() <= echoDeadline_) {
-        // The relay has routed our own name back to this socket and that proof has not lapsed, so
-        // the rendezvous demonstrably works for us and the destination is the part that is
-        // missing. Nothing weaker earns this: a socket that is merely open proves the path to the
-        // relay, never the routing table inside it.
+    const auto now = std::chrono::steady_clock::now();
+    if (RegistrationFreshLocked(now)) {
         r.registration = DialReport::Registration::Live;
+    } else if (RegistrationAbsentLocked() && !dialSawRegistration_) {
+        r.registration = DialReport::Registration::Down;
     }
     return r;
 }
@@ -736,65 +714,69 @@ void SignalingClient::Poll() {
             // registered after the proof, never copied from the line, so no peer can send one.
             const bool isEcho =
                 hexLen == 0 && inBuf_.compare(cursor, spc - cursor, selfIdentity_) == 0;
-            if (!isEcho) {
-                // A line from somebody else. If it is the host this client dialled, the rendezvous
-                // reached it -- which is what stops a dead dial from being blamed on a destination
-                // that did answer. ARRIVAL is the evidence, so this counts a malformed line too:
-                // the sender is stamped by the relay from the identity it registered, and what the
-                // payload turns out to hold is a separate question, judged below. The lock is
-                // taken and RELEASED here: ReceivedP2PCustomSignal takes a GNS lock that a thread
-                // inside SendSignal holds while it waits for this one, and holding both is the
-                // deadlock this dispatch pass runs outside the lock to avoid.
-                std::lock_guard<std::recursive_mutex> lk(sockMutex_);
-                if (!dialledPeer_.empty() &&
-                    inBuf_.compare(cursor, spc - cursor, dialledPeer_) == 0) {
-                    ++dialLinesIn_;
-                }
-            }
             if (isEcho) {
                 NoteRegistrationEcho();
-            } else if ((hexLen & 1u) != 0) {
-                UE_LOGW("signaling: odd-length hex payload -- dropping line");
             } else {
-                std::string data;
-                data.reserve(hexLen / 2);
-                bool ok = true;
-                for (size_t i = spc + 1; i + 2 <= nl; i += 2) {
-                    const int dh = HexDigitVal(inBuf_[i]);
-                    const int dl = HexDigitVal(inBuf_[i + 1]);
-                    if ((dh | dl) & ~0xf) {
-                        // Malformed hex from the server: drop the line, never crash.
-                        UE_LOGW("signaling: bad hex in signal -- dropping line");
-                        ok = false;
-                        break;
+                // A line from somebody else. If it is the host this client dialled, the rendezvous
+                // reached it -- which is what stops a dead dial from being blamed on a destination
+                // that did answer, and it has to be counted HERE, before the dispatch below, since
+                // a host's own refusal arrives as one of these lines. ARRIVAL is the evidence, so
+                // a malformed line counts too: the sender is stamped by the relay from the identity
+                // it registered, and what the payload turns out to hold is a separate question,
+                // judged just below. The lock is taken and RELEASED in this block:
+                // ReceivedP2PCustomSignal takes a GNS lock that a thread inside SendSignal holds
+                // while it waits for this one, and holding both is the deadlock that this dispatch
+                // pass runs outside the lock to avoid.
+                {
+                    std::lock_guard<std::recursive_mutex> lk(sockMutex_);
+                    if (!dialledPeer_.empty() &&
+                        inBuf_.compare(cursor, spc - cursor, dialledPeer_) == 0) {
+                        ++dialLinesIn_;
                     }
-                    data.push_back(static_cast<char>((dh << 4) | dl));
                 }
-                if (ok && !data.empty()) {
-                    // The receive context: an inbound connect request goes through the normal
-                    // listen-socket state machine, with CreateSignalingForConnection as the reply
-                    // channel. Rejections are silently ignored, since returning a failure lets an
-                    // attacker scrape who is online.
-                    struct Context : ISteamNetworkingSignalingRecvContext {
-                        SignalingClient* owner = nullptr;
-                        ISteamNetworkingConnectionSignaling* OnConnectRequest(
-                            HSteamNetConnection hConn, const SteamNetworkingIdentity& peer,
-                            int nLocalVirtualPort) override {
-                            (void)hConn;
-                            (void)nLocalVirtualPort;
-                            return owner->CreateSignalingForConnection(peer);
+                if ((hexLen & 1u) != 0) {
+                    UE_LOGW("signaling: odd-length hex payload -- dropping line");
+                } else {
+                    std::string data;
+                    data.reserve(hexLen / 2);
+                    bool ok = true;
+                    for (size_t i = spc + 1; i + 2 <= nl; i += 2) {
+                        const int dh = HexDigitVal(inBuf_[i]);
+                        const int dl = HexDigitVal(inBuf_[i + 1]);
+                        if ((dh | dl) & ~0xf) {
+                            // Malformed hex from the server: drop the line, never crash.
+                            UE_LOGW("signaling: bad hex in signal -- dropping line");
+                            ok = false;
+                            break;
                         }
-                        void SendRejectionSignal(const SteamNetworkingIdentity& peer,
-                                                 const void* pMsg, int cbMsg) override {
-                            (void)peer;
-                            (void)pMsg;
-                            (void)cbMsg;
-                        }
-                    };
-                    Context ctx;
-                    ctx.owner = this;
-                    sockets_->ReceivedP2PCustomSignal(
-                        data.c_str(), static_cast<int>(data.size()), &ctx);
+                        data.push_back(static_cast<char>((dh << 4) | dl));
+                    }
+                    if (ok && !data.empty()) {
+                        // The receive context: an inbound connect request goes through the normal
+                        // listen-socket state machine, with CreateSignalingForConnection as the reply
+                        // channel. Rejections are silently ignored, since returning a failure lets an
+                        // attacker scrape who is online.
+                        struct Context : ISteamNetworkingSignalingRecvContext {
+                            SignalingClient* owner = nullptr;
+                            ISteamNetworkingConnectionSignaling* OnConnectRequest(
+                                HSteamNetConnection hConn, const SteamNetworkingIdentity& peer,
+                                int nLocalVirtualPort) override {
+                                (void)hConn;
+                                (void)nLocalVirtualPort;
+                                return owner->CreateSignalingForConnection(peer);
+                            }
+                            void SendRejectionSignal(const SteamNetworkingIdentity& peer,
+                                                     const void* pMsg, int cbMsg) override {
+                                (void)peer;
+                                (void)pMsg;
+                                (void)cbMsg;
+                            }
+                        };
+                        Context ctx;
+                        ctx.owner = this;
+                        sockets_->ReceivedP2PCustomSignal(
+                            data.c_str(), static_cast<int>(data.size()), &ctx);
+                    }
                 }
             }
         }

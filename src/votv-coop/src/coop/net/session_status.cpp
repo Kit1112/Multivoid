@@ -37,27 +37,32 @@ namespace {
 // asking the relay -- and asking it is refused, because an `unroutable` answer would hand every
 // token holder a presence oracle for any identity it knows.
 //
-// Nothing here needs to ask "did this dial ever connect": a line from the dialled peer is the
-// prerequisite for ICE, so a peer that answered rules out every case below, and one that did not
-// rules out an application close, which can only arrive through a connection that ICE built. So a
-// host's own reason (a kick, a ban, a full server) is never overwritten, and neither is a link
-// lost after a session ran.
+// Nothing here needs to ask "did this dial ever connect", and the reason is the LINE, not ICE: a
+// host that refuses at its own accept edge (a ban, the connection cap) never reaches ICE either,
+// but its close still travels the rendezvous channel as a line from its identity, which the
+// dispatch pass counts BEFORE handing it to the transport. So any host-decided reason arrives with
+// peerAnswered already true and is never overwritten, and neither is a link lost after a session
+// ran. The exception, and it is honest: a GNS-level rejection is answered by SendRejectionSignal,
+// which this client deliberately keeps mute so nobody can scrape who is online -- so a host that is
+// registered and running but has no listen socket sends nothing at all and reads as
+// NoRendezvousAnswer. Its sentence covers that ("may be offline"), which is why the mute stays.
 EndReason JudgeDial(const DialReport& d) {
     if (d.peerAnswered) return EndReason::None;
     switch (d.registration) {
     case DialReport::Registration::Down:
-        // No socket to the relay while we dialled, so nothing we addressed to the host left this
-        // machine. The claim is about US, and it names no fault of the host's.
+        // Never registered with the relay at any point of this dial -- no socket, or one that
+        // never finished registering. The claim is about US and names no fault of the host's.
         return EndReason::RendezvousUnreachable;
     case DialReport::Registration::Live:
-        // The relay was routing our own name back to us throughout, so the rendezvous works and
-        // the destination is the part that is missing. Deliberately does NOT claim the host is
-        // unregistered: a wedged host process, and a relay queue that dropped our line, look the
-        // same from here, and the sentence states the observation rather than a cause.
+        // The relay answered our own name within one probe interval, so the routing works right
+        // now and the destination is the part that is missing. Deliberately does NOT claim the
+        // host is unregistered: a wedged host process, and a relay queue that dropped our line,
+        // look the same from here, and the sentence states the observation rather than a cause.
         return EndReason::NoRendezvousAnswer;
     case DialReport::Registration::Unknown:
-        // Registered but the first echo is still in flight: we do not know our own half yet, and
-        // a code that says we do would be a guess. The transport's verdict stands.
+        // Our own half is not settled -- the first echo still in flight, a stale one, or a
+        // registration that went away after this dial began on a live one. Saying either code here
+        // would be a guess, so the transport's verdict stands.
         break;
     }
     return EndReason::None;
@@ -549,12 +554,12 @@ void Session::HandleConnStatusChanged(void* info) {
                 rendezvous = JudgeDial(dial);
                 if (rendezvous != EndReason::None) {
                     UE_LOGW("net: the rendezvous names this dial [%s] -- %u line(s) addressed to "
-                            "'%s', %s came back, and our own registration was %s",
+                            "'%s', %s came back, and our own registration %s",
                             Describe(rendezvous).id, dial.linesToPeer, cfg_.hostIdentity.c_str(),
                             dial.peerAnswered ? "something" : "nothing",
                             dial.registration == DialReport::Registration::Live
-                                ? "live (the relay still routes our name here)"
-                                : "not connected to the relay");
+                                ? "was live (the relay answered our own name within one probe)"
+                                : "was never established during this dial");
                 }
             }
             {   std::lock_guard<std::mutex> lk(hostCloseMutex_);
@@ -562,7 +567,7 @@ void Session::HandleConnStatusChanged(void* info) {
                 // reason for a close we initiated is the generic one.
                 if (hostClose_.code == EndReason::None) {
                     // The rendezvous wins when it has something to say, and it only ever speaks
-                    // for a dial NOTHING came back from -- see JudgeRendezvousDial. Its detail is
+                    // for a dial NOTHING came back from -- see JudgeDial above. Its detail is
                     // deliberately empty: the sentence is complete on its own, and the evidence
                     // (who we dialled, how many lines we sent it, what our own registration was
                     // doing) belongs in the log, where a reader can act on it.
