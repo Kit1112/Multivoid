@@ -76,6 +76,17 @@ const GREETING_TIMEOUT: Duration = Duration::from_secs(15);
 const MAX_PENDING: usize = 128;
 const MAX_AUTHED: usize = 512;
 const MAX_AUTHED_PER_IP: u32 = 32;
+// The relay loop has no app idle timeout, so keepalive IS the reap of a dead authed peer -- and at
+// the OS default (Linux waits two hours for a first probe) that reap is far too late to matter. A
+// registration outlives its socket for the whole of that window, and `relay_line` then routes a
+// joiner's rendezvous into a channel nobody reads: the dial dies at `Connecting` with nothing said
+// on either end, which is what the field measured against a host that had been idle here for an
+// hour with its listener still open. 30 s idle, a probe every 5 s -- with Linux's default nine
+// probes that is a ~75 s reap, not the minute it reads like; TCP_KEEPCNT would need socket2's
+// `all` feature, which this crate does not enable. The client arms its own pair for the other half
+// of the same defect (coop/net/signaling_client.cpp, kKeepAliveIdleMs).
+const KEEPALIVE_IDLE: Duration = Duration::from_secs(30);
+const KEEPALIVE_INTERVAL: Duration = Duration::from_secs(5);
 // 80, not 64 (raised 2026-08-29): since b144 a peer registers under its DURABLE
 // identity, which GNS renders as `gen:` + 64 hex = 68 chars. At 64 the greeting
 // was refused outright, which reads as "P2P is down" rather than as a length cap.
@@ -440,11 +451,18 @@ fn relay_line(sender: &str, line: &[u8]) {
     }
 }
 
-/// Enable SO_KEEPALIVE (dead authed peers are reaped without an app idle timeout).
-/// Portable via socket2's SockRef; failure is non-fatal.
+/// Enable TCP keepalive with an explicit idle/interval, so a dead authed peer is reaped in about a
+/// minute instead of at the OS default (see KEEPALIVE_IDLE for what the default costs). Portable
+/// via socket2's SockRef; failure is non-fatal, and falls back to the bare flag so the reap still
+/// arrives eventually.
 fn set_keepalive(stream: &TcpStream) {
     let sock = socket2::SockRef::from(stream);
-    let _ = sock.set_keepalive(true);
+    let ka = socket2::TcpKeepalive::new()
+        .with_time(KEEPALIVE_IDLE)
+        .with_interval(KEEPALIVE_INTERVAL);
+    if sock.set_tcp_keepalive(&ka).is_err() {
+        let _ = sock.set_keepalive(true);
+    }
 }
 
 #[tokio::main]
