@@ -19,7 +19,6 @@
 #include "coop/player/death_revive.h"
 #include "coop/player/players_registry.h"
 #include "ue_wrap/core/log.h"
-#include "ue_wrap/core/cached_obj_ref.h"
 #include "ue_wrap/core/reflection.h"
 #include "ue_wrap/core/script_gate.h"
 
@@ -46,10 +45,6 @@ constexpr const wchar_t* kMenuLevel = L"menu";
 // The class that owns the travel author, and the discriminator against its namesake.
 constexpr const wchar_t* kTravelAuthorClass = L"lib_C";
 
-// Gameplay ticks between class-resolve attempts. The pump is posted behind a 16 ms sleep, so it
-// is ~60 Hz -- not the 125 the tree's older comments claim -- and 60 ticks is about a second.
-constexpr uint32_t kResolveEveryNTicks = 60;
-
 // The one author allowed to reach the menu from inside a session: the pause menu's own quit.
 // The discrimination has to happen here because the author is a PARAMETER of `loadLevel` -- all
 // 26 sites pass `this` as `__WorldContext` -- and it is gone one hop later, where `transition`
@@ -58,14 +53,21 @@ constexpr const wchar_t* kQuitAuthorClass = L"ui_menu_C";
 
 std::atomic<coop::net::Session*> g_session{nullptr};
 std::atomic<bool> g_watchInstalled{false};
+// The watch is REGISTERED (above) and then goes LIVE when the gate resolves its name. One-way: a
+// resolved watch does not come undone. Atomic because Install may be called off the game thread.
+std::atomic<bool> g_seamLive{false};
 
-// Both classes are resolved on the game thread in Tick and read in the callback, which the gate
-// runs on the game thread only. A class lookup walks the object array, so it is kept off the VM's
-// body -- and each is held as a CachedObjRef, not a raw pointer: a blueprint class dies on world
-// unload and its address can be recycled, and a stale ui_menu_C would refuse the player's own
-// quit, which is the one outcome this seam must never produce.
-ue_wrap::CachedObjRef g_quitAuthorClass;    // ui_menu_C
-ue_wrap::CachedObjRef g_travelAuthorClass;  // lib_C, the owner of the loadLevel we judge
+// NEITHER AUTHOR CLASS IS RESOLVED AHEAD OF THE QUESTION, and that is the whole of this seam's
+// readiness. Both are compared BY NAME against an object that is in front of us -- the function's
+// outer, the travel's author -- so the class it names is loaded by the very fact that we are
+// being asked about it. The pointer version had to find `ui_menu_C` before it could judge
+// anything, which is a widget class that loads late: measured at 500 ms after a CLIENT's pawn
+// first ticked and 344 ms after a host's, a span in which a death was not armed and
+// the pump's flee ended the session for everyone. It also had to be thrown away per session and
+// re-found, because a blueprint class dies with its world and its address is recycled -- a stale
+// one refused the player's own quit, which is the one outcome this seam must never produce. A
+// name cannot go stale and needs no cache, and the cost moves from a throttled full-array scan
+// per session to one name compare per `loadLevel` call, of which a whole run sees about two.
 
 std::atomic<unsigned long long> g_seen{0};
 std::atomic<unsigned long long> g_menuSeen{0};
@@ -75,23 +77,19 @@ std::atomic<unsigned long long> g_cancelled{0};
 // seam does not act on those at all, so they are logged as a trail rather than per call.
 unsigned long long g_subLevelLogged = 0;
 
-// The class resolve runs at ~1 Hz of the gameplay tick, not every tick: a FindClass MISS walks
-// every UObject slot and is never cached, so an unthrottled retry is a full-array scan per frame
-// for as long as the widget class is not loaded. The player_damage / wisp_attack Install shape.
-uint32_t g_resolveThrottle = 0;
-
 // One-shot warnings, so a permanent shortfall says so once instead of once per travel.
-bool g_saidNoQuitClass = false;
 bool g_saidNoRevive = false;
 bool g_saidNoParams = false;
 
-// Does `obj`'s class chain reach `cls`? The quit menu is one exact class today; the walk costs
-// nothing on a travel and survives a recook that subclasses it.
-bool IsOrDerivesFrom(void* obj, void* cls) {
-    if (!obj || !cls) return false;
+// Does `obj`'s class chain reach a class of this NAME? The quit menu is one exact class today;
+// the walk costs nothing on a travel and survives a recook that subclasses it. By name because
+// the alternative is holding the class, and this seam holds nothing (see the note above the
+// counters).
+bool IsOrDerivesFromNamed(void* obj, const wchar_t* className) {
+    if (!obj || !className) return false;
     void* c = R::ClassOf(obj);
     for (int hops = 0; c && hops < 16; ++hops) {
-        if (c == cls) return true;
+        if (R::NameEquals(R::NameOf(c), className)) return true;
         c = R::SuperStructOf(c);
     }
     return false;
@@ -107,13 +105,12 @@ sg::Verdict OnLoadLevelPre(const sg::Call& call) {
     // TWO blueprints declare a function called `loadLevel`: lib_C's, the game's only travel
     // author, and waterVolume_basementFlooder_C's, which takes a float and floods a basement. A
     // name watch sees both -- measured on the first run of this seam, which logged the second one
-    // as a resolve failure -- so the OWNER decides, every call, as one pointer compare against the
-    // revalidated lib_C. That also settles the recycled-address question the header raises about a
-    // name watch: lib_C declares exactly one loadLevel, so owner plus name identify the function
-    // whatever its address, and the cached offsets cannot be carried into a stranger's frame.
+    // as a resolve failure -- so the OWNER decides, every call, by its own name. That also settles
+    // the recycled-address question the header raises about a name watch: lib_C declares exactly
+    // one loadLevel, so owner plus name identify the function whatever its address, and the cached
+    // offsets cannot be carried into a stranger's frame.
     void* owner = R::OuterOf(call.function);
-    if (!owner || owner != g_travelAuthorClass.Raw() || !g_travelAuthorClass.Alive())
-        return sg::Verdict::Run;
+    if (!owner || !R::NameEquals(R::NameOf(owner), kTravelAuthorClass)) return sg::Verdict::Run;
 
     static void*   sFn = nullptr;
     static int32_t sLevelOff = -1;
@@ -157,10 +154,6 @@ sg::Verdict OnLoadLevelPre(const sg::Call& call) {
         if (v == Judgement::RunPlayerAsked) {
             UE_LOGI("run_end_travel: allowed lib_C::loadLevel(\"menu\") authored by %ls -- the "
                     "player asked to leave", R::ClassNameOf(author).c_str());
-        } else if (v == Judgement::RunNoQuitClass && !g_saidNoQuitClass) {
-            g_saidNoQuitClass = true;
-            UE_LOGW("run_end_travel: %ls has not resolved -- menu travels pass through unjudged "
-                    "rather than risk refusing the player's own quit", kQuitAuthorClass);
         } else if (v == Judgement::RunNoRevive && !g_saidNoRevive) {
             g_saidNoRevive = true;
             UE_LOGW("run_end_travel: a run-ending travel authored by %ls is passing through -- the "
@@ -193,11 +186,9 @@ Judgement JudgeMenuTravel(void* author) {
     // whenever the lane installs, and it refuses nothing without a live session.
     coop::net::Session* s = g_session.load(std::memory_order_acquire);
     if (!s || !s->running()) return Judgement::RunNoSession;
-    // Without the quit author's class every menu travel would read as a run-ending, including the
-    // player's own quit, and refusing THAT traps them in the world.
-    void* quitCls = g_quitAuthorClass.Alive() ? g_quitAuthorClass.Raw() : nullptr;
-    if (!quitCls) return Judgement::RunNoQuitClass;
-    if (IsOrDerivesFrom(author, quitCls)) return Judgement::RunPlayerAsked;
+    // The player's own quit reads as a run-ending to everything except this test, and refusing
+    // THAT traps them in the world.
+    if (IsOrDerivesFromNamed(author, kQuitAuthorClass)) return Judgement::RunPlayerAsked;
     // Refusing a travel we cannot answer is the one outcome worse than the menu.
     if (!coop::death_revive::ReviveAvailable()) return Judgement::RunNoRevive;
     return Judgement::Cancel;
@@ -209,6 +200,22 @@ Judgement JudgeMenuTravel(void* author) {
 // site.
 void Install(coop::net::Session* session) {
     g_session.store(session, std::memory_order_release);
+    // THE WATCH'S NAME IS RESOLVED FROM HERE, not from Tick, for the reason this lane already
+    // re-asserts the gate's enable rather than riding another consumer's: the resolve is shared,
+    // and driving it only from Tick -- which is session-scoped -- left this watch's readiness in
+    // the hands of whichever other consumer's tick happened to run. A name watch is inert until
+    // the gate has turned the literal into an FName, so an unresolved one is a seam that cannot
+    // intercept the travel it is supposed to judge. This runs on the harness's unconditional
+    // per-frame game-thread tick, which runs at the menu too, costs one reflected call per frame
+    // while the name is pending, and stops for good once the watch is live.
+    if (!g_seamLive.load(std::memory_order_acquire)) {
+        sg::ResolvePendingNames();
+        if (sg::NameWatchLive(kLoadLevelName, kLoadLevelTag)) {
+            g_seamLive.store(true, std::memory_order_release);
+            UE_LOGI("run_end_travel: the watch on lib_C::%ls is LIVE -- from here a run-ending "
+                    "travel is judged, so a death can be answered", kLoadLevelName);
+        }
+    }
     if (g_watchInstalled.load(std::memory_order_acquire)) return;
     // A name watch registers immediately and the gate resolves the name itself on the game
     // thread, so there is nothing to wait for and no retry throttle to own.
@@ -231,46 +238,23 @@ void Tick() {
         coop::death_revive::NoteRunEndSeamReady(false);
         return;
     }
-    sg::ResolvePendingNames();
     // This lane owns its own enable: the gate's switch is shared, and riding another consumer's
     // would leave this watch green and its callback silent the moment that consumer retired.
     sg::SetEnabled(true);
-    // Revalidated every tick (a slot read, never a dereference) and re-resolved when either has
-    // gone: a world unload kills a blueprint class and its address can be recycled.
-    const bool haveClasses = g_quitAuthorClass.Alive() && g_travelAuthorClass.Alive();
-    if (!haveClasses && (g_resolveThrottle++ % kResolveEveryNTicks) == 0) {
-        if (!g_quitAuthorClass.Alive()) {
-            if (void* c = R::FindClass(kQuitAuthorClass)) {
-                g_quitAuthorClass.Set(c);
-                UE_LOGI("run_end_travel: %ls resolved (%p) -- the player's own quit-to-menu is now "
-                        "told apart from the game ending the run", kQuitAuthorClass, c);
-            }
-        }
-        if (!g_travelAuthorClass.Alive()) {
-            if (void* c = R::FindClass(kTravelAuthorClass)) {
-                g_travelAuthorClass.Set(c);
-                UE_LOGI("run_end_travel: %ls resolved (%p) -- the travel author is told apart from "
-                        "its namesake by owner, per call", kTravelAuthorClass, c);
-            }
-        }
-    }
     // The revive's arm asks whether this seam can answer a death at all: published from here so
-    // `death_revive` never has to name this module back.
-    coop::death_revive::NoteRunEndSeamReady(g_watchInstalled.load(std::memory_order_acquire) &&
-                                            haveClasses);
+    // `death_revive` never has to name this module back. The readiness itself is settled in
+    // Install, which runs before a session exists; this tick only publishes it.
+    coop::death_revive::NoteRunEndSeamReady(g_seamLive.load(std::memory_order_acquire));
 }
 
 void OnSessionStart() {
-    // The classes are NOT carried across sessions: the next one may load a different world, and a
-    // stale quit-menu class refuses the player's own quit.
-    g_quitAuthorClass.Reset();
-    g_travelAuthorClass.Reset();
-    g_resolveThrottle = 0;
+    // Nothing world-scoped is carried across sessions, and this lane now holds nothing that is:
+    // both authors are judged by name against the object in hand. What is reset is the counters
+    // and the one-shot warnings. The watch itself is process-wide and outlives a session.
     g_seen.store(0, std::memory_order_relaxed);
     g_menuSeen.store(0, std::memory_order_relaxed);
     g_cancelled.store(0, std::memory_order_relaxed);
     g_subLevelLogged = 0;
-    g_saidNoQuitClass = false;
     g_saidNoRevive = false;
     g_saidNoParams = false;
 }

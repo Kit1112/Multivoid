@@ -57,7 +57,6 @@ void Check(bool ok, const char* name, const char* why) {
 const wchar_t* JudgementName(RET::Judgement j) {
     switch (j) {
         case RET::Judgement::RunNoSession:   return L"RunNoSession";
-        case RET::Judgement::RunNoQuitClass: return L"RunNoQuitClass";
         case RET::Judgement::RunPlayerAsked: return L"RunPlayerAsked";
         case RET::Judgement::RunNoRevive:    return L"RunNoRevive";
         case RET::Judgement::Cancel:         return L"Cancel";

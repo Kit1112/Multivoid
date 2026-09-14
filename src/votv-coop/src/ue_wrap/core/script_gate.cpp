@@ -441,6 +441,22 @@ bool WatchName(const wchar_t* name, int tag, PreFn pre, PostFn post) {
     return true;
 }
 
+bool NameWatchLive(const wchar_t* name, int tag) {
+    if (!name) return false;
+    // The whole table, not the probe chain: before the resolve the entry sits at its placeholder
+    // key and after it at the real one, and this answers across both. The resolve leaves the
+    // placeholder disabled and nameless, so a name that resolved into a FULL table -- the watch
+    // the gate calls dead -- matches nothing here and reads as not live, which is the truth.
+    for (int i = 0; i < kSlots; ++i) {
+        const Entry& e = g_nameTable[i];
+        if (e.key.load(std::memory_order_acquire) == 0) continue;
+        if (e.name != name || e.tag != tag) continue;
+        if (e.enabled.load(std::memory_order_acquire) && e.resolved.load(std::memory_order_acquire))
+            return true;
+    }
+    return false;
+}
+
 void ResolvePendingNames() {
     if (g_namesPending.load(std::memory_order_acquire) == 0 || !GT::IsGameThread()) return;
     // The string-to-name conversion dispatches ProcessEvent, so it runs OUTSIDE the registration

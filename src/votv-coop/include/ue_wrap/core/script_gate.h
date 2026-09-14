@@ -62,6 +62,12 @@ bool Unwatch(void* ufunction, int tag, PreFn pre, PostFn post);
 bool WatchName(const wchar_t* name, int tag, PreFn pre, PostFn post);
 void ResolvePendingNames();
 
+// Is that watch LIVE -- registered AND its FName resolved, so the gate really will intercept?
+// `WatchName` returns true the moment it registers, and the watch is inert until the resolve has
+// run, so a consumer that publishes its own readiness has to ask this instead. `name` is the same
+// literal that was registered. Any thread.
+bool NameWatchLive(const wchar_t* name, int tag);
+
 // The session gate: disabled (the default, the solo single-player state) the detour pays one
 // load and a branch per call and never consults the tables. Any thread.
 void SetEnabled(bool on);

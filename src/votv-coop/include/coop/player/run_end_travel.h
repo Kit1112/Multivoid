@@ -44,7 +44,6 @@ void OnSessionStart();
 // than Verdict because the gate's own `script_gate::Verdict` sits beside it at every call site.
 enum class Judgement : uint8_t {
     RunNoSession,    // solo, or a session that is not running: never our business
-    RunNoQuitClass,  // ui_menu_C unresolved -- allowed rather than risk trapping the player
     RunPlayerAsked,  // the author is the pause menu: they asked to leave
     RunNoRevive,     // we cannot answer it, so we must not refuse it
     Cancel,          // the game is ending the run and nobody asked
