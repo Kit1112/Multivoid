@@ -179,8 +179,17 @@ separate 30 s heartbeat. Joiners then burn a dial timeout against a server the b
 Both ends now keep that flow warm and observable with TCP keepalive, and the client gives up on a
 connect that never completes (a non-blocking connect reports failure exactly as it reports progress,
 so without a deadline one retry into a relay that was briefly away -- a restart, a deploy -- would
-strand the peer for the life of the process). A host whose registration is lost now rebuilds it
-itself, with the world kept; re-hosting is not the remedy.
+strand the peer for the life of the process).
+
+Keepalive answers a narrower question than it looks, though: it proves the SOCKET, while what a
+joiner needs is that the relay still routes the host's NAME to that socket. The two come apart
+whenever something in between terminates TCP and answers the probes itself, and whenever the relay
+is up but has stopped routing -- so a peer now asks the question it actually cares about, directly.
+Every 20 seconds it sends the relay a line addressed to its own identity, which comes back only
+while the registration is live; 45 seconds without one of those answers retires the registration and
+rebuilds it on a fresh connection. It is the ANSWER that counts, not traffic: a player's own data on
+that socket says nothing about whether the relay still knows the host's name. A host whose registration dies therefore repairs itself, with the world and the
+session kept, and re-hosting is not the remedy.
 
 ### When a join ends early
 
