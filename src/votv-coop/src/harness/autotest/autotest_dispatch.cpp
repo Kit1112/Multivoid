@@ -4,6 +4,7 @@
 #include "harness/autotest_dispatch.h"
 
 #include "harness/autotest.h"
+#include "harness/autotest/broomstroke.h"   // the drill that declares itself
 
 #include "harness/autotest/slip_drill.h"
 #include "coop/session/join_seed.h"  // the inline seed selftest
@@ -67,6 +68,7 @@ void SpawnEnvGatedTests(coop::net::Role role) {
     SpawnIf("VOTVCOOP_RUN_PILE_DRIFT", "host-drift pile scenario", &PileDriftScenarioThread, role);
 
     SpawnIf("VOTVCOOP_RUN_TRASH_PARK", "trash morph gate red/green probe", &TrashParkProbeThread, role);
+    SpawnIf("VOTVCOOP_RUN_BROOM_STROKE", "broom stroke, both peers and both directions", &BroomStrokeProbeThread, role);
     // The flashlight test, both peers: each toggles its own flashlight, and the other's puppet
     // must reflect it through the item-activate path.
     SpawnIf("VOTVCOOP_RUN_FLASHLIGHT_TEST", "flashlight test", &FlashlightTestThread, role);

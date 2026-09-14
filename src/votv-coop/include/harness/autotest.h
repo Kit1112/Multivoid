@@ -51,9 +51,9 @@ DWORD WINAPI PuppetGrabProbeThread(LPVOID arg);
 void RunGrabIntentTest();
 DWORD WINAPI GrabIntentTestThread(LPVOID arg);
 
-// The trash morph gate, red and green in one run: each peer drops a prop onto the nearest chip
-// pile. The host's morphs, proving the trigger fires; the client's survives with its element id.
-// Env VOTVCOOP_RUN_TRASH_PARK=1, both peers.
+// The trash morph gate, red and green in one run: each peer calls the guarded verb, toClump, on
+// the nearest chip pile. The host's pile morphs, proving the verb does what is being refused; the
+// client's survives with its element id. Env VOTVCOOP_RUN_TRASH_PARK=1, both peers.
 void RunTrashParkProbe();
 DWORD WINAPI TrashParkProbeThread(LPVOID arg);
 
