@@ -105,14 +105,26 @@ silently and leaves the clump world-tracked and re-grabbable, which is what sing
 ### Trash-bits piles
 
 The dispenser piles ("uses 6 of 7") are keyed save actors; a press, the vacuum or the broom
-dispenses one item and decrements a counter pair inside the Blueprint. Each peer polls its
+dispenses items and decrements a counter pair inside the Blueprint. Each peer polls its
 indexed piles and broadcasts the pair on a decrease; receivers apply a per-component minimum,
 so concurrent collects converge, and the host's connect snapshot is applied as sent
 (`coop/props/trash_pile_sync`). Depletion destroys the pile inside the Blueprint, caught by a
-proximity-gated death-watch in the poll (an indexed pile that vanishes near the local camera
-outside a transition window) and broadcast as the ordinary keyed destroy. The dispensed item is
-born keyless and grabbed the same frame; the held-edge broadcast mints it a key and spawns the
-mirror on every peer (`coop/props/trash_collect_sync`).
+death-watch in the poll and broadcast as the ordinary keyed destroy: outside a transition window,
+an indexed pile that vanishes is a depletion if this peer has just run a destroying verb on it, or
+if it vanished near the local camera, and any other disappearance is a sublevel stream-out. The
+first rule exists because the host runs a client's broom stroke on its own pile, which can die
+anywhere in the world; widening the camera test to every player's body instead would read a
+stream-out beside a remote player as a depletion. The dispensed item is born keyless and grabbed the same frame; the held-edge broadcast mints it a
+key and spawns the mirror on every peer (`coop/props/trash_collect_sync`).
+
+The vacuum and the broom put their items on the floor: each pop spawns a real actor at a rolled
+transform, one per vacuum call and up to three per broom stroke, and the pile is destroyed once
+both counters reach zero. A client's broom
+authors none of that: the verb is refused per call at the script-body gate, the pile's own key
+goes up as a `BroomIntent`, and the host runs the game's own `broomed`, whose trash, counter
+drop and depletion then leave the host on the three channels above
+(`coop/props/trash_broom_intent`). Before that, the two halves that had channels crossed and
+the spawn did not, so a client's stroke read to everyone else as the trash being deleted.
 
 ### Save-loaded piles at a join
 
@@ -133,12 +145,14 @@ replacement for the position key.
 | grab, throw, land | the host, by intent | a client's press is an intent, reach-checked |
 | the pile-to-clump identity | the host | one id, rebound onto each successor at its birth, guarded by the sync context |
 | a dispenser's counters | each peer, minimum wins | the host as sent at join |
+| a broom stroke | the host | a client's stroke is an intent naming the pile by key, reach-checked |
 
 ## Wire messages
 
 | Kind | Direction | Carries |
 |---|---|---|
 | `GrabIntent`, `ThrowIntent` | a client to the host | the pile id; the release or a hard throw with its direction |
+| `BroomIntent` | a client to the host | the key of the dispenser pile its broom stroke struck |
 | `PropConvert` | the host to all | the atomic pile-clump convert: id, form, pose, scale, chip type, context |
 | `TrashCarryPose` (stream) | the host to all | per-id pose batches for client-grabbed clumps |
 | `PropPose` (stream) | the host to all | the host's own held clump and its flight |
@@ -167,6 +181,8 @@ save position, because the host may have moved or removed the pile since.
 | A clump has its collision off for its whole life -- carried and in flight -- so a player walks through the ball someone else is holding or has thrown. The pile it lands as has the game's own collision | `[V]` `coop/props/trash_mirror` |
 | Trash dropped into a garbage container updates the container on the host only: every client's container has its brain cancelled, so none of them -- not even the one whose player dropped the trash -- ever learns what is inside it, and the two pickup flags the game writes from those contents stay frozen | `[V]` `coop/interactables/garbage_sync`, and the cancelled Blueprint body read from the cook |
 | Dispenser piles born by an event carry per-process keys and never resolve across peers | `[V]` `coop/props/trash_pile_sync` |
+| A client's vacuum on a dispenser pile spawns its item on that client only: the broom's intent does not cover the vacuum's own spawn | `[V]` the vacuum verb's bytecode; `coop/props/trash_broom_intent` watches the broom verb alone |
+| Sweeping CHIP piles with the broom does not cross in either direction: a client's stroke leaves the host's piles untouched, and a host's stroke makes them vanish on clients until they re-pile. The broom copies the pile's morph into its own graph, so the host's birth seam never sees a clump born | `[V]` `coop/props/trash_collect_sync` (the birth seam's source test), and a hands-on |
 | The join-window bind is by save-time position; the sidecar that replaces it is off by default | `[V]` see [join.md](join.md) |
 
 ## Code map
