@@ -83,8 +83,8 @@ post it. `[V]`
 | the player's damage verb (`Add Player Damage`) | `EX_LocalVirtualFunction` on itself, and the same opcode through a context switch from each attacker | no, on every one of its call sites | the script-body gate, refusing per call by the verb's own `source` argument -- the attacker the Blueprint passes `[V]` |
 | a base cleaner's begin-play (it box-overlaps and destroys) | engine | yes | a client cancels it; the verb is declared on the base class, so a leaf variant that declares nothing resolves only by climbing `[V]` |
 | the lethal chain (damage, kill, ragdoll, fallen) | `EX_LocalVirtualFunction` | no | the death lane cuts at the native level open below it `[V]` |
-| the level travel (`loadLevel`, `transition`) | `EX_LocalVirtualFunction` | no, to both the detour and the native seam | the script-body gate can see it; nothing watches it today `[RD]` |
-| `UGameplayStatics::OpenLevel` | a final call into a native | not to the detour; yes to a plain function detour | the death lane's veto `[V]` |
+| the level travel (`loadLevel`, `transition`) | `EX_LocalVirtualFunction` | no, to both the detour and the native seam | the script-body gate watches `lib_C::loadLevel` BY NAME and cancels per call, judging the author the call still carries -- the only place it is still there (`coop/player/run_end_travel`) `[V]` |
+| `UGameplayStatics::OpenLevel` | a final call into a native | not to the detour; yes to a plain function detour | nothing of ours sits here any more: the author is a parameter of `loadLevel` and is gone by this hop, so the veto moved UP to the gate and this detour was deleted with its AOB `[V]` |
 | an engine-initiated destroy of a tracked actor | engine | yes | the creature and world-actor pre observers `[V]` |
 | any Blueprint destroy (a pickup, a morph) | `EX_CallMath` or a final call into the native | not to the detour; yes to the native seam | the prop destroy seam `[V]` |
 | a finish-spawning from a graph (a container extract, a drop, a place) | `EX_CallMath` | not to the detour; yes to the native seam | the host spawn watcher with a one-tick drain `[V]` |
