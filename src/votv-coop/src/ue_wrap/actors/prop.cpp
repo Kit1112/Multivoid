@@ -120,6 +120,26 @@ inline void* TrashBitsPileCls() { return g_trashBitsPileCls.load(std::memory_ord
 inline void* GarbageClumpCls()  { return g_garbageClumpCls.load(std::memory_order_acquire); }
 inline void* ActorChipPileCls() { return g_actorChipPileCls.load(std::memory_order_acquire); }
 
+// The per-class-name trash kind: a spawn burst asks this once per prop and FindClass is a full
+// object-array walk on a miss, so only the dozen distinct class names ever walk. Game-thread
+// serial, so no mutex.
+struct TrashClassKind { bool isTrash = false; bool isClump = false; };
+std::unordered_map<std::wstring, TrashClassKind> g_trashClassKind;
+
+TrashClassKind ResolveTrashClassKind(const std::wstring& className) {
+    if (className.empty()) return {};
+    if (auto it = g_trashClassKind.find(className); it != g_trashClassKind.end()) return it->second;
+    ResolveExtraBases();
+    void* cls = R::FindClass(className.c_str());
+    if (!cls) return {};  // class not loaded yet -- do NOT memoise (it could load later)
+    TrashClassKind k;
+    k.isClump = WalksToBase(cls, GarbageClumpCls());
+    k.isTrash = k.isClump || WalksToBase(cls, ActorChipPileCls());
+    g_trashClassKind[className] = k;
+    return k;
+}
+
+
 }  // namespace
 
 // Declared in prop.h so container_contents_sync can test container descent with the tree's one
@@ -132,6 +152,19 @@ bool WalksToBase(void* cls, void* base) {
             reinterpret_cast<uint8_t*>(cls) + P::off::UStruct_SuperStruct);
     }
     return false;
+}
+
+bool IsTrashClassName(const std::wstring& className) { return ResolveTrashClassKind(className).isTrash; }
+bool IsClumpClassName(const std::wstring& className)  { return ResolveTrashClassKind(className).isClump; }
+
+void* ChipPileClass() {
+    ResolveExtraBases();
+    return ActorChipPileCls();
+}
+
+void* GarbageClumpClass() {
+    ResolveExtraBases();
+    return GarbageClumpCls();
 }
 
 bool IsClassKeyedInteractable(void* cls) {
@@ -417,32 +450,6 @@ void SetChipTypeAndRebuild(void* actor, uint8_t chipType) {
     }
 }
 
-void* ResolvePileMesh(uint8_t chipType, void* worldContext) {
-    // The game's own chip-type-to-mesh resolver, getChipPileType on the function library's default
-    // object, so the client computes a trash proxy's mesh exactly as the game does, with no asset
-    // paths. The last non-null result is kept as a fallback, so a transient null (a variant not yet
-    // streamed, an out-of-range type) never leaves a proxy invisible. Game thread only.
-    static void* sCdo = nullptr;
-    static void* sFn = nullptr;
-    static void* sLastGood = nullptr;
-    if (!sFn || !sCdo) {
-        if (!sFn) {
-            if (void* cls = R::FindClass(L"lib_getFunc_C"))
-                sFn = R::FindFunction(cls, L"getChipPileType");
-        }
-        if (!sCdo) sCdo = R::FindClassDefaultObject(L"lib_getFunc_C");
-    }
-    if (!sFn || !sCdo || !worldContext) return sLastGood;
-    void* mesh = nullptr;
-    {
-        ue_wrap::ParamFrame f(sFn);
-        f.Set<uint8_t>(L"Type", chipType);          // TEnumAsByte<enum_chipPileType::Type>
-        f.Set<void*>(L"__WorldContext", worldContext);
-        if (ue_wrap::Call(sCdo, f)) mesh = f.Get<void*>(L"ReturnValue");
-    }
-    if (mesh && R::IsLive(mesh)) { sLastGood = mesh; return mesh; }
-    return sLastGood;  // transient null -> last good (never invisible)
-}
 
 NearestResult FindNearest(const FVector& anchor, bool wantHeavy, ScanStats* outStats) {
     NearestResult best;

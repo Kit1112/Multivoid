@@ -45,6 +45,21 @@ bool IsChipPile(void* obj);
 // ball a chipPile morphs into on grab. A pointer-chain test, no strings. False for null.
 bool IsGarbageClump(void* obj);
 
+// The same two tests taken on a CLASS NAME rather than an instance, for a wire payload that
+// names its class before any actor exists: true for the chip-pile and garbage-clump families, a
+// descendant test against the two bases rather than a string match, memoised per name so a spawn
+// burst walks the object array once per distinct class. An unloaded class answers false and is
+// not memoised. Game thread.
+bool IsTrashClassName(const std::wstring& className);
+bool IsClumpClassName(const std::wstring& className);
+
+// The two trash base UClasses themselves, from the same cache the tests above use; null until
+// the class is loaded. A caller that needs the class rather than the test -- a hook resolving a
+// verb declared on the base, a spawn of the mirror form -- takes it here instead of spelling the
+// asset name a fourth time. Game thread.
+void* ChipPileClass();
+void* GarbageClumpClass();
+
 // The AtrashBitsPile_C test and its collect counters, amountA and amountB
 // (raw int32); the displayed count is their sum, formatted live by lookAt, so raw writes are
 // consistent (no refresh verb exists). The pair returns false for any other actor.
@@ -146,11 +161,6 @@ void SetChipType(void* actor, uint8_t chipType);
 // thread.
 void SetChipTypeAndRebuild(void* actor, uint8_t chipType);
 
-// The pile static mesh for a chipType, as the game computes it: Ulib_getFunc_C::getChipPileType
-// on the lib's CDO, with `worldContext` any live UObject; the last non-null result is cached as
-// the never-invisible fallback. Null only before the lib loads with no prior success. Game
-// thread.
-void* ResolvePileMesh(uint8_t chipType, void* worldContext);
 
 // FindNearest's result.
 struct NearestResult {

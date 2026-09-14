@@ -77,7 +77,7 @@ post it. `[V]`
 | the ATV's seven component-hit delegates | delegate broadcast | yes, and interceptable | the hit guard zeroes a non-owner's impulse `[V]` |
 | the inventory widget's buttons | widget delegate | yes | `[V]` |
 | the hotbar switch (`updateHold`) | Blueprint-internal | no, but one synchronous call does the destroy, the spawn and the name | poll the holding actor `[V]` |
-| the pile's grab and re-pile verbs | `EX_LocalVirtualFunction` | no | the use input's pre observer reads the aimed pile while it is alive `[V]` |
+| the pile's grab and re-pile verbs | `EX_LocalVirtualFunction`, the grab one through an interface context | no, to the detour | the script-body gate watches `toClump` and `playerGrabbed` and refuses each per call on a client, which covers every caller of them -- the collision component's overlap handler and the arir follower alike; the use input's pre observer still reads the aimed pile while it is alive `[V]` |
 | the weather-event rolls (red sky, black fog, rolling fog) | `EX_LocalVirtualFunction` | no | a field poll on the host; a birth catch at the finish-spawning seam on clients `[V]` |
 | the impact damage entries | native impact system into a Blueprint event | yes, and interceptable | cancelled on any body that is not the local player `[V]` |
 | the player's damage verb (`Add Player Damage`) | `EX_LocalVirtualFunction` on itself, and the same opcode through a context switch from each attacker | no, on every one of its call sites | the script-body gate, refusing per call by the verb's own `source` argument -- the attacker the Blueprint passes `[V]` |

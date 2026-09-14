@@ -218,6 +218,18 @@ inline constexpr const wchar_t* SetAnimClassFn = L"SetAnimClass";         // USk
 inline constexpr const wchar_t* StaticMeshComponentClass = L"StaticMeshComponent";
 inline constexpr const wchar_t* SetStaticMeshFn = L"SetStaticMesh";       // UStaticMeshComponent
 
+// The three trash morph verbs a client refuses at the script-body gate (coop/props/
+// trash_morph_gate). `toClump` is the pile's morph verb and covers every caller of it -- the
+// collision component's overlap handler and the arir follower alike; `playerGrabbed` spawns the
+// carried clump inline instead of calling it, so it needs its own watch; the clump's re-pile is
+// inline in its ubergraph, so the contact handler that enters there is the verb. All three are
+// declared on the two base classes, so one resolve covers every variant under them. The classes
+// come from ue_wrap::prop::ChipPileClass / GarbageClumpClass, which already cache them.
+inline constexpr const wchar_t* PileToClumpFn = L"toClump";
+inline constexpr const wchar_t* PilePlayerGrabbedFn = L"playerGrabbed";
+inline constexpr const wchar_t* ClumpContactFn =
+    L"BndEvt__prop_garbageClump_StaticMesh_K2Node_ComponentBoundEvent_0_ComponentHitSignature__DelegateSignature";
+
 // The kerfur AnimBP generated class (the asset AnimBlueprint_kerfurOmega_regular plus the '_C'
 // suffix of BP-generated classes).
 inline constexpr const wchar_t* AnimBPKerfurRegularClass = L"AnimBlueprint_kerfurOmega_regular_C";
