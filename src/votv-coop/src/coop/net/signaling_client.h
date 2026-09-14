@@ -4,7 +4,9 @@
 // <hex-payload>", routed by the server to the connection registered under that identity.
 // Registration is proved: the server sends "nonce <64 hex>" and we answer "auth <128 hex>", an
 // Ed25519 signature by the key our identity names; a relay that never challenges is refused
-// (a release gate proves the deployed relay speaks the challenge before a release). One
+// (a release gate proves the deployed relay speaks the challenge before a release), then kept
+// proved on a timer: a line addressed to our own identity returns only while the relay still
+// routes that name here, and silence retires the registration (see kEchoProbeInterval). One
 // client per P2P Session: it keeps the connection (auto-reconnect), hands GNS a per-connection
 // signaling object whose SendSignal hex-encodes and enqueues, and Poll() drains inbound lines
 // into ReceivedP2PCustomSignal. SendSignal may run on any thread and Poll() on the net thread;
@@ -79,6 +81,12 @@ private:
     // cannot sign, and the caller drops the connection. Net thread.
     bool AnswerChallenge(const char* line, size_t len);
 
+    // An inbound line from our own identity with an empty payload: the relay resolved our name to
+    // this connection, so the registration is live. Pushes the deadline out and logs the first one
+    // on each socket. Net thread (the dispatch pass, which runs outside the lock) -- it takes
+    // sockMutex_ itself.
+    void NoteRegistrationEcho();
+
     const std::string host_;
     const std::string service_;     // port, as a string for getaddrinfo
     const std::string token_;       // shared bearer token sent in the greeting
@@ -116,6 +124,16 @@ private:
     // retry is a socket that never connected. Written by ConnectLocked (the ctor's call included,
     // so not the net thread alone) and read by Poll; both under sockMutex_.
     std::chrono::steady_clock::time_point connectDeadline_{};
+
+    // The registration's own liveness, all three cleared by CloseSocketLocked so a fresh socket
+    // starts owing a fresh proof of routing. Written on the net thread and by the ctor's
+    // ConnectLocked, read on the net thread; all under sockMutex_.
+    std::chrono::steady_clock::time_point nextEchoProbe_{};  // epoch = probe as soon as registered
+    std::chrono::steady_clock::time_point lastEchoProbe_{};  // for the round trip in the log
+    // When unanswered probes mean the name no longer routes here. Armed by the first probe and
+    // pushed out by every echo, so it moves only on evidence.
+    std::chrono::steady_clock::time_point echoDeadline_{};
+    bool echoSeen_ = false;  // an echo has come back on THIS socket (the first one logs)
 };
 
 }  // namespace coop::net

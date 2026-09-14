@@ -106,6 +106,27 @@ KeepAliveState ArmKeepAlive(SOCKET s) {
 // instead of a silent hang. Matches the server's pre-auth budget.
 constexpr auto kChallengeTimeout = std::chrono::seconds(15);
 
+// The registration's own heartbeat, and the only thing that can see the defect the keepalive
+// above cannot: the keepalive proves the SOCKET, while a joiner depends on the relay still
+// ROUTING our name to it, and those two facts separate exactly where the field found them. A
+// relay whose map entry is gone, whose task is wedged, or that reads our lines and forwards
+// nothing -- and any TCP-terminating middlebox that answers probes on its behalf -- leaves a
+// socket alive by every local measure and a host nobody can reach. So we ask the relay's routing
+// table directly, by addressing a line to OURSELVES: it comes back only while `<our identity>`
+// still resolves to this connection. 70 bytes each way, three times a minute.
+constexpr auto kEchoProbeInterval = std::chrono::seconds(20);
+
+// Silence this long retires the registration: two consecutive probes may be lost (the relay's
+// per-destination queue drops on full) before the socket is dropped and rebuilt, which is how the
+// host repairs itself -- the relay evicts on duplicate identity, so the new connection replaces
+// the dead entry with the world and the session kept. That is the re-host the field had to do by
+// hand. MTA keeps a central registration the same way, re-announcing on a timer rather than
+// registering once (reference/mtasa-blue/Server/mods/deathmatch/utils/CMasterServerAnnouncer.h:
+// ANNOUNCE_STAGE_REMINDER, every 24 h with a 5-minute retry stage); the cadence diverges because
+// a joiner waits seconds rather than a day, and the repair diverges because this protocol has no
+// re-register verb mid-stream -- reconnecting IS our re-announce.
+constexpr auto kEchoTimeout = std::chrono::seconds(45);
+
 // How long a connect may stay in progress. Both socket paths answer WSAENOTCONN while a connect
 // is unfinished, and a connect that FAILED answers exactly the same, so nothing below can tell
 // the two apart and the reconnect backoff never re-arms -- it fires only when there is no socket
@@ -273,6 +294,13 @@ void SignalingClient::CloseSocketLocked() {
     // The connect deadline dies with the socket it was armed for, so "a live socket always carries
     // a fresh deadline" is readable here instead of inferred from ConnectLocked.
     connectDeadline_ = std::chrono::steady_clock::time_point{};
+    // Likewise the registration's liveness: it is a property of THIS connection's routing, so an
+    // echo answered on a socket that is gone must never vouch for the next one. The epoch value
+    // is what makes the next registration probe immediately rather than 20 s later.
+    nextEchoProbe_ = std::chrono::steady_clock::time_point{};
+    lastEchoProbe_ = std::chrono::steady_clock::time_point{};
+    echoDeadline_  = std::chrono::steady_clock::time_point{};
+    echoSeen_ = false;
     // sendQueue_ is deliberately kept: pending GNS signals survive a reconnect, so a TCP blip
     // mid-handshake does not drop them; ConnectLocked re-inserts the greeting at the front, and
     // the Enqueue cap bounds the queue meanwhile.
@@ -481,10 +509,46 @@ bool SignalingClient::AnswerChallenge(const char* line, size_t len) {
     return true;
 }
 
+// The relay routed our own name back to this connection: the registration is live.
+void SignalingClient::NoteRegistrationEcho() {
+    std::lock_guard<std::recursive_mutex> lk(sockMutex_);
+    const auto now = std::chrono::steady_clock::now();
+    echoDeadline_ = now + kEchoTimeout;
+    if (echoSeen_) return;
+    echoSeen_ = true;
+    // Once per socket, because three lines a minute is noise and the first one is the fact: it
+    // confirms the proof was ACCEPTED, which the relay otherwise never says (it answers a rejected
+    // one by closing and a good one with silence) and which until now only a PEER's line could
+    // show, by arriving. The round trip is measured from the probe's enqueue, so it carries one
+    // flush with it.
+    const auto rtt = std::chrono::duration_cast<std::chrono::milliseconds>(now - lastEchoProbe_);
+    UE_LOGI("signaling: the relay routes '%s' to this connection -- registration live (round trip "
+            "~%lld ms)", selfIdentity_.c_str(), static_cast<long long>(rtt.count()));
+}
+
 // Poll, on the net thread: drain inbound and dispatch, flush outbound, reconnect.
 void SignalingClient::Poll() {
     {
         std::lock_guard<std::recursive_mutex> lk(sockMutex_);
+
+        // A registration that has stopped answering for itself. Nothing local is wrong here -- the
+        // socket is open, sends succeed, the keepalive is satisfied -- and that is precisely the
+        // state the field reported: listed, listening, and reachable by nobody until a re-host.
+        // Dropping the socket lets the backoff rebuild the registration instead, session kept.
+        //
+        // FIRST in the pass, unlike the two deadlines below, and the difference is the evidence
+        // each waits on. Theirs is a SEND, which the flush under this lock performs; this one waits
+        // on a line that ARRIVES, and arrivals are parsed after the lock is released -- so judging
+        // it later in the same pass would judge it against a deadline this pass has not yet had the
+        // chance to extend, and CloseSocketLocked clears inBuf_, deleting the very echo that proved
+        // us wrong. Here it reads what the previous pass finished parsing.
+        if (sock_ != kInvalidSock && echoDeadline_ != std::chrono::steady_clock::time_point{} &&
+            std::chrono::steady_clock::now() > echoDeadline_) {
+            UE_LOGW("signaling: the relay at %s:%s stopped routing our own name back to us -- our "
+                    "registration is gone while this socket still looks healthy, so no joiner can "
+                    "reach us. Dropping it to re-register.", host_.c_str(), service_.c_str());
+            CloseSocketLocked();
+        }
 
         if (sock_ == kInvalidSock) {
             // Reconnect, backoff-gated; ConnectLocked does no DNS.
@@ -518,6 +582,22 @@ void SignalingClient::Poll() {
                     CloseSocketLocked();
                     break;
                 }
+            }
+        }
+
+        // Ask the relay whether our name still routes here (see kEchoProbeInterval). Enqueued
+        // before the flush so it leaves on this same Poll, and only once the proof is on its way:
+        // the relay reads the line after its challenge as the proof, and it registers us only
+        // after that, so an earlier probe would be addressed to a name the relay does not yet
+        // hold. The payload is empty, which our own inbound path already drops before dispatch.
+        if (sock_ != kInvalidSock && regState_ == RegState::ProofSent) {
+            const auto now = std::chrono::steady_clock::now();
+            if (now >= nextEchoProbe_) {
+                Enqueue(selfIdentity_ + " \n");
+                lastEchoProbe_ = now;
+                nextEchoProbe_ = now + kEchoProbeInterval;
+                if (echoDeadline_ == std::chrono::steady_clock::time_point{})
+                    echoDeadline_ = now + kEchoTimeout;
             }
         }
 
@@ -582,6 +662,7 @@ void SignalingClient::Poll() {
                     host_.c_str(), service_.c_str());
             CloseSocketLocked();
         }
+
     }  // released before dispatch: ReceivedP2PCustomSignal takes a GNS lock a GNS thread may hold while calling SendSignal
 
     // Complete lines are dispatched from inBuf_ outside the lock: it is touched only on this
@@ -609,7 +690,12 @@ void SignalingClient::Poll() {
         const size_t spc = inBuf_.find(' ', cursor);
         if (spc != std::string::npos && spc < nl) {
             const size_t hexLen = nl - (spc + 1);
-            if ((hexLen & 1u) != 0) {
+            // Our own name with no payload is the echo of a liveness probe, and it is the relay
+            // that says so: the sender field is stamped by the relay from the identity it
+            // registered after the proof, never copied from the line, so no peer can send one.
+            if (hexLen == 0 && inBuf_.compare(cursor, spc - cursor, selfIdentity_) == 0) {
+                NoteRegistrationEcho();
+            } else if ((hexLen & 1u) != 0) {
                 UE_LOGW("signaling: odd-length hex payload -- dropping line");
             } else {
                 std::string data;
