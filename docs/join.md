@@ -219,8 +219,8 @@ end reason, so both ends log one code; `T` the transport.
 | `MV-J16` | The identity proof could not be sent |
 | `MV-J17` | The joiner's own send backlog fell too far behind |
 | `MV-J18` | This peer stopped its own session; the host logs it, the leaver never sees it |
-| `MV-J19` | This machine had no connection to the relay while it dialled, so nothing reached the host |
-| `MV-J20` | The relay was routing this machine's own name throughout, and the host never answered |
+| `MV-J19` | This machine was never registered with the relay at any point of the dial; it names no fault of the host's |
+| `MV-J20` | The relay answered this machine's own name within one probe interval, and the host never answered at all |
 | `MV-H01` | Wrong password |
 | `MV-H02` | This server needs a password |
 | `MV-H03` | Too many password attempts; try again in ten minutes |
@@ -268,17 +268,31 @@ So the joiner builds the verdict from what it already owns, and names one only o
 (`coop/net/signaling_client.h`, `DialReport`; the judgement is `JudgeDial` in
 `coop/net/session_status.cpp`). Two facts: whether the relay is still routing OUR own name to this
 connection -- the registration echo above, which is the question a joiner's host failed -- and
-whether any line came back from the identity we dialled. A line from that identity rules both codes
-out, because ICE cannot start without one, so a host's own refusal and a link lost after a session
-ran are never relabelled. A registration that is live with nothing coming back is `MV-J20`; no
-connection to the relay at all is `MV-J19`; and a socket that is up and proved but whose first echo
-is still in flight knows neither, so the transport's own verdict stands. Measured on
-`tools/sig_unroutable.py`, both halves, 9 s each.
+whether any line came back from the identity we dialled. ANY line from that identity rules both
+codes out -- a host that refuses at its own accept edge never reaches ICE either, but its refusal
+still travels this channel and is counted before the transport ever sees it, so a host's own reason
+and a link lost after a session ran are never relabelled.
+
+The two verdicts answer in different tenses, because their sentences do. `MV-J20` needs the routing
+to be working NOW: an echo answered within one probe interval, not merely inside the much longer
+budget before a registration is given up on -- a relay that stopped routing a second after an echo
+would otherwise still read as live for the next 44 s, and blame the host for our own silence.
+`MV-J19` needs the opposite tense: no registration at any point of the whole dial, so a dial that
+began on a live one and ended after the relay went away claims neither and leaves `MV-T01`
+standing, and so does a socket whose first echo has not landed yet.
 
 `MV-J20` deliberately does not claim the host is unregistered: from here a wedged host process, a
-relay queue that dropped the line, and a missing map entry are one silence, and the sentence states
-the observation. The advice it gives -- try again in a minute -- is the measured repair window of
-the registration echo, not a guess.
+relay queue that dropped the line, a missing map entry, and a host still registered but with its
+session stopped -- which answers nothing, because a refusal at that level is deliberately mute --
+are one silence, and the sentence states the observation. The advice it gives -- try again in a
+minute -- is rounded up from the registration echo's own measured repair window, which is
+25-45 s plus a reconnect by design and has been measured at both ends of that range.
+
+One honest limit on the separation itself: knowing a host's 64-hex identity, a dial now tells
+"not reachable" from "answered" in one word rather than by reading a log. That is a smaller
+leak than the relay answering would be -- it costs a full 10 s dial and a running game per
+identity, where a relay answer would cost one connection and scale -- but it is not nothing,
+and it is the reason the relay's own silence stays.
 
 ## Who owns what
 
