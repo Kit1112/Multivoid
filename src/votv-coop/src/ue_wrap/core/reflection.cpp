@@ -339,9 +339,12 @@ void* OuterOf(void* uobject) {
 
 namespace {
 // Render `name` into the per-thread scratch FString and return its characters and length, or
-// null on failure. The buffer is reused across calls: the zero-allocation primitive under
-// ToString, NameEquals and NameStartsWith. The pointer is valid until the next render on this
-// thread.
+// null on failure. What is reused across calls is the scratch HEADER, never its buffer:
+// FName::ToString allocates a fresh engine buffer every call, which the body frees on the next
+// render. So this is the primitive that keeps the engine heap FLAT under ToString, NameEquals and
+// NameStartsWith -- one alloc and one free per render, no growth, nothing on the CRT heap -- and
+// it is not free. A caller comparing names in a loop should count renders, not assume none. The
+// pointer is valid until the next render on this thread.
 const wchar_t* RenderNameToScratch(const FName& name, int& lenOut) {
     lenOut = 0;
     if (!g_fnameToString) return nullptr;
