@@ -125,26 +125,43 @@ DWORD WINAPI DeathTestThread(LPVOID) {
             "chain to completion; the timeline + memory are OBSERVED, and the "
             "death contract is the ACCEPTANCE half");
 
-    // A pawn that can be killed: canRagdoll true, no invincibility term set, in the gameplay world.
+    // A pawn that can be killed: canRagdoll true, no invincibility term set, in the gameplay
+    // world. Inside a session the arm's readiness is a precondition too, and on a client the link
+    // as well: a death before the arm is ready measures net_pump's FLEE, not the seam this run is
+    // about. That window is death_revive's own measurement and it logs the span; here it is only
+    // waited out, because the two are different questions and a run that cannot tell them apart
+    // has answered neither.
+    const bool isClient = IsClientRole();
     DeathSnapshot s;
-    bool ready = false;
+    bool ready = false, linked = false;
+    long long armWindowMs = -1;
     for (int i = 0; i < 120 && !ready; ++i) {
         s = Probe();
+        linked = !isClient || harness::session_runtime::Session().connected();
+        armWindowMs = coop::death_revive::ArmReadyAfterPawnMs();
+        // The sessionless control has no arm to wait for, and requiring one would make the arm
+        // that proves single player untouched unrunnable.
+        const bool armReady = !s.sessionRunning || armWindowMs >= 0;
         ready = s.havePawn && s.haveState && s.haveCanRagdoll && s.health > 0.f &&
-                s.canRagdoll && !s.dead && !s.startInvinc && !s.immortal && s.inGameplay;
+                s.canRagdoll && !s.dead && !s.startInvinc && !s.immortal && s.inGameplay &&
+                linked && armReady;
         if (!ready) ::Sleep(1000);
     }
-    UE_LOGI("death_test: pre-hit state -- havePawn=%d canRagdoll=%d(read=%d) health=%.2f "
+    UE_LOGI("death_test: pre-hit state -- role=%s havePawn=%d canRagdoll=%d(read=%d) health=%.2f "
             "startInvinc=%d(read=%d) immortal=%d(read=%d) dead=%d inGameplay=%d "
-            "sessionRunning=%d grabValid=%d(read=%d) rss=%.1f MB",
+            "sessionRunning=%d connected=%d armReadyAfterPawn=%lld ms grabValid=%d(read=%d) "
+            "rss=%.1f MB",
+            isClient ? "CLIENT" : "HOST",
             s.havePawn ? 1 : 0, s.canRagdoll ? 1 : 0, s.haveCanRagdoll ? 1 : 0, s.health,
             s.startInvinc ? 1 : 0, s.haveStartInvinc ? 1 : 0,
             s.immortal ? 1 : 0, s.haveImmortal ? 1 : 0, s.dead ? 1 : 0, s.inGameplay ? 1 : 0,
-            s.sessionRunning ? 1 : 0, s.grabValid ? 1 : 0, s.haveGrab ? 1 : 0, s.rssMb);
+            s.sessionRunning ? 1 : 0, linked ? 1 : 0, armWindowMs,
+            s.grabValid ? 1 : 0, s.haveGrab ? 1 : 0, s.rssMb);
     if (!ready) {
         UE_LOGW("death_test: VERDICT INCONCLUSIVE -- preconditions never met (see the pre-hit "
-                "state line above; a held canRagdoll, a set startInvinc/immortal, or no "
-                "gameplay world would each swallow the run)");
+                "state line above; a held canRagdoll, a set startInvinc/immortal, no gameplay "
+                "world, a client that never linked, or an arm that never became ready would "
+                "each swallow the run)");
         UE_LOGI("death_test: DONE");
         return 0;
     }
@@ -472,6 +489,24 @@ DWORD WINAPI DeathTestThread(LPVOID) {
         Verdict("D12 blur-gone", last.bloodBlurInViewport <= 0, blur);
         Verdict("D9 black-screen-cleared",
                 tBlack >= 0 && tBlackGone > 0 && !last.blackScreenInViewport, bs);
+        // The field report's own claim, and the arm that sees it: the session must still be there
+        // afterwards. What that report describes -- coop state torn down, a travel to the menu,
+        // the host left serving nobody -- is net_pump's flee, which fires exactly when the arm did
+        // not. A run that revives the player but loses the session has not answered it. The role
+        // split is the pump's own (`net_pump.cpp`): a host is still hosting through every
+        // connection state, a client's link is what it has.
+        coop::net::Session& sess = harness::session_runtime::Session();
+        const bool sessionLive = isClient ? sess.connected() : sess.running();
+        char sv[256];
+        _snprintf_s(sv, sizeof(sv), _TRUNCATE,
+                    "role=%s -- the session is %s (running=%d connected=%d) and the arm was ready "
+                    "%lld ms after the pawn; the pump's local-death flee is what takes this away, "
+                    "and it fires exactly when the arm did not (its own line is NOT quoted here: "
+                    "counting that marker in a log is how the flee is detected, and a verdict "
+                    "that spells it plants a hit in every passing run)",
+                    isClient ? "CLIENT" : "HOST", sessionLive ? "KEPT" : "GONE",
+                    sess.running() ? 1 : 0, sess.connected() ? 1 : 0, armWindowMs);
+        Verdict("D14 session-kept", sessionLive, sv);
     } else {
         // Single player, no session: the contract is that nothing of ours acts.
         Verdict("D3 sp-untouched", tTravel >= 0,
