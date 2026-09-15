@@ -91,6 +91,13 @@ class IntentTarget {
     // WrongType -- the caller already answered identity.
     IntentSubject Authorize(void* actor) const;
 
+    // The REACH primitive for an aim rather than an artifact: a verb that acts somewhere along a
+    // segment the sender traced -- a broom stroke hits whatever its trace meets between the two
+    // ends. Both ends within reach puts the whole segment within reach, so the verdict is the
+    // farther end's, and `actor` stays null. Same pads, same fail-closed body read, one anchor
+    // sample per call.
+    IntentSubject AuthorizeSegment(const ue_wrap::FVector& start, const ue_wrap::FVector& end) const;
+
   private:
     coop::net::Session* session_ = nullptr;
     uint8_t             slot_    = 0;

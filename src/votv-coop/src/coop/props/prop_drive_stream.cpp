@@ -188,8 +188,9 @@ void TickApplyAndDrive(coop::net::Session& s) {
         if (!actor) { ++it; continue; }
         if (PR::IsDescendantOfProp(actor) && !coop::remote_prop::IsActorUnderAnyDrive(actor)) {
             ApplyEnd(actor, it->second.p, /*parkedHere=*/false);
-            UE_LOGI("[PROP-DRIVE] CLIENT END eid=%u applied late -> (%.1f,%.1f,%.1f) (the prop "
-                    "arrived after its stream ended)", it->first, it->second.p.x, it->second.p.y,
+            UE_LOGI("[PROP-DRIVE] CLIENT END eid=%u gen=%u -> (%.1f,%.1f,%.1f) applied late (the "
+                    "prop arrived after its stream ended)", it->first,
+                    static_cast<unsigned>(it->second.p.gen), it->second.p.x, it->second.p.y,
                     it->second.p.z);
         }
         it = g_pendingEnd.erase(it);

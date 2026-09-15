@@ -30,7 +30,7 @@ inline constexpr uint32_t kMagic = 0x564D5450u;
 // This file is past the 1500-line hard cap and stays there: it is the single-feature exception the
 // rule names. One wire format, whose enum, payload structs and static_asserts are read together;
 // splitting it would put a kind's number in one file and its bytes in another.
-inline constexpr uint16_t kProtocolVersion = 161;
+inline constexpr uint16_t kProtocolVersion = 162;
 
 // Default LAN port (overridable via multivoid.ini "net.port=").
 inline constexpr uint16_t kDefaultPort = 47621;
@@ -81,9 +81,9 @@ enum class MsgType : uint8_t {
     // EntityPoseBatchHeader plus N WorldActorPoseSnapshot.
     WorldActorPose = 33,
 
-    // Host to all, host-originated so the grabbing client sees its own clump move: carried and
-    // flying trash clumps keyed by eid, gated by the carry generation. EntityPoseBatchHeader plus
-    // N TrashClumpPoseSnapshot.
+    // Host to all, host-originated so the grabbing or sweeping client sees its own clump move:
+    // carried, thrown and swept trash clumps keyed by eid, gated by the carry generation.
+    // EntityPoseBatchHeader plus N TrashClumpPoseSnapshot.
     TrashCarryPose = 34,
 
     // The held hand item's view-relative transform; unreliable while holding. HandPosePacket.
@@ -118,7 +118,7 @@ enum class MsgType : uint8_t {
 };
 
 // Payload kinds carried inside a Reliable message. A retired value is never reused: 16, 17, 21,
-// 22 and 24 stay unassigned; 32 and 128 are reserved.
+// 22, 24 and 138 stay unassigned; 32 and 128 are reserved.
 enum class ReliableKind : uint8_t {
     // Each peer to the other, once after admission: the sender's Player element id, then the nick,
     // the skin, the display flags, the nick colour and the game target, parsed field by field. The
@@ -698,11 +698,17 @@ enum class ReliableKind : uint8_t {
     // back and drops every later-arriving pose of that generation. PropDriveEndPayload.
     PropDriveEnd = 137,
 
-    // Client to host: the client's broom stroke struck the dispenser pile with this key, and the
-    // client refused its own `broomed` body rather than run it. The host runs the game's verb on
-    // its own pile; the trash that falls out, the counter drop and the depletion death then reach
-    // every peer through the three channels that already carry them. BroomIntentPayload.
-    BroomIntent = 138,
+    // Client to host: a broom stroke the client refused at its own montage notify, as what that
+    // stroke read of its holder -- the reach segment `arm` returned, the heading and the velocity.
+    // The host runs the game's stroke on its mirror of that client's broom with the three answered
+    // in place of the host's camera and the puppet's own, so the clumps it makes, the trash it
+    // dispenses and the props it pushes reach every peer on their own channels. Trust: both ends
+    // of the segment are reach-checked against the sender's body, the heading must be a unit
+    // vector, the velocity at most terminal, and a sender's strokes run no faster than a bounded
+    // rate from a bounded queue. Late join: nothing to replay, since a stroke the host has not run
+    // changed nothing.
+    // BroomStrokePayload.
+    BroomStroke = 139,
 };
 
 #pragma pack(push, 1)
@@ -929,9 +935,9 @@ inline constexpr int kWorldActorPoseDatagramMax =
     static_cast<int>(sizeof(PacketHeader) + sizeof(EntityPoseBatchHeader)) +
     kMaxWorldActorBatchEntries * static_cast<int>(sizeof(WorldActorPoseSnapshot));
 
-// One carried or flying trash clump's pose in the TrashCarryPose batch, host-originated so every
-// client, the grabber included, sees it move. Keyed by the trash eid; ctx is the carry generation,
-// and a pose whose ctx is not the currently adopted one is dropped.
+// One carried, thrown or swept trash clump's pose in the TrashCarryPose batch, host-originated so
+// every client, the one who grabbed or swept it included, sees it move. Keyed by the trash eid; ctx
+// is the carry generation, and a pose whose ctx is not the currently adopted one is dropped.
 struct TrashClumpPoseSnapshot {
     uint32_t eid;              // 4  -- trash entity id (host-minted)
     float    x, y, z;          // 12 -- world cm
@@ -1584,18 +1590,20 @@ static_assert(sizeof(TrashPileStatePayload) == 40, "TrashPileStatePayload must b
 static_assert(sizeof(TrashPileStatePayload) <= 256 - 20 - 8,
               "TrashPileStatePayload must fit in one reliable datagram");
 
-// A broom intent (BroomIntent): which pile the stroke struck, and nothing else. `broomed` takes a
-// location, but its body never reads it -- the bytecode writes the parameter to the persistent
-// frame and no instruction loads it back, and the trash's transform is rolled from the pile's own
-// component bounds -- so the host calls the verb with a zeroed one, as the grab intent does with
-// its hit result. The key is the pile's own save key, the identity the counter mirror and the
-// depletion destroy already name it by.
-struct BroomIntentPayload {
-    WireKey key;        // 32 -- Aactor_save_C::Key of the struck pile
+// A broom stroke (BroomStroke): the three things a stroke reads of its holder, as the client's
+// stroke read them, in world units. The segment is what the trace runs along; the push adds the
+// holder's heading times the broom's force to the holder's velocity, and a puppet's heading is its
+// display body (which holds while the camera turns) and its velocity is rebuilt from a speed along
+// that heading, so the host must not read either off the puppet.
+struct BroomStrokePayload {
+    float startX, startY, startZ;   // 12 -- the camera the client's `arm` read
+    float endX, endY, endZ;         // 12 -- the reach end along its forward
+    float fwdX, fwdY, fwdZ;         // 12 -- the holder's actor forward, a unit vector
+    float velX, velY, velZ;         // 12 -- the holder's velocity, cm/s
 };
-static_assert(sizeof(BroomIntentPayload) == 32, "BroomIntentPayload must be 32 bytes");
-static_assert(sizeof(BroomIntentPayload) <= 256 - 20 - 8,
-              "BroomIntentPayload must fit in one reliable datagram");
+static_assert(sizeof(BroomStrokePayload) == 48, "BroomStrokePayload must be 48 bytes");
+static_assert(sizeof(BroomStrokePayload) <= 256 - 20 - 8,
+              "BroomStrokePayload must fit in one reliable datagram");
 
 // A keypad's input mirror (KeypadState): the typed buffer, the LED selector and a short-code
 // event. The buffer replays through inputNumber so every peer's keypad validates natively; a short

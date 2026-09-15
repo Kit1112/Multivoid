@@ -22,8 +22,10 @@
 #include "coop/props/join_membership_sweep.h"  // the sweep's candidate and claim queries
 #include "coop/save/save_transfer.h"      // RecordGrabTimePileXform, the grab-edge save-time key
 #include "coop/props/trash_channel.h"      // NoteClumpBorn, the clump's birth certificate
+#include "coop/props/trash_sweep.h"        // NoteSwept, a broom stroke's clumps
 #include "coop/props/trash_use_intercept.h"
 #include "coop/props/trash_morph_gate.h"  // the client-side refusal of the trash morph verbs
+#include "ue_wrap/actors/broom.h"         // SweptChipPile, the pile a stroke's clump is born of
 #include "ue_wrap/engine/engine.h"
 #include "ue_wrap/core/game_thread.h"     // RegisterPreObserver (the InpActEvt_use pile-grab observer)
 #include "ue_wrap/core/log.h"
@@ -33,10 +35,12 @@
 #include "ue_wrap/core/types.h"
 #include "ue_wrap/core/ufunction_hook.h"  // the BeginDeferred Func patch, the deterministic re-pile
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <cmath>
 #include <string>
+#include <vector>
 
 namespace coop::trash_collect_sync {
 namespace {
@@ -59,6 +63,39 @@ std::atomic<coop::net::Session*> g_session{nullptr};
 // destroy.
 
 bool g_repileThunkInstalled = false;          // process-lifetime Func-patch latch
+
+// The classes that made a clump of no pile this session, each logged once. The game does that
+// outside the grab and the broom -- an angry erie flesh, a kerfus possessor and an erie plush spawn
+// clumps from their own graphs -- and such a clump has no identity to move onto it, so its flight is
+// this host's alone and the pile it lands as crosses when the adoption scan finds it
+// (docs/piles.md, Known limits).
+std::vector<std::wstring> g_pilelessClumpSources;
+
+// A clump was just born of `pile` (a grab's spawn, or a broom stroke's copy of the pile's morph):
+// resolve the pile's eid, minting one for an untracked pile, freeze the pile's position as its
+// save-time key and record the clump's certificate, which moves the id onto the clump now, before
+// the pile's destroy. False when no eid could be had.
+bool NoteClumpBornOfPile(void* pile, void* clump) {
+    coop::element::ElementId E = PT::GetPropElementIdForActor(pile);
+    if (E == coop::element::kInvalidId)
+        E = coop::remote_prop::ResolveMirrorEidByActor(pile);
+    if (E == coop::element::kInvalidId) {
+        // The self-seed, one owner: an untracked pile morphed in the post-load purge gap mints
+        // its eid at the seam its clump is born (register only, no broadcast).
+        PT::MarkPropElement(pile, L"", R::ClassNameOf(pile), PT::EnrollSource::kExpressSeam);
+        E = PT::GetPropElementIdForActor(pile);
+        if (E != coop::element::kInvalidId)
+            UE_LOGI("[PILE-09] HOST self-seeded UNTRACKED grabbed pile %p -> eid=%u "
+                    "(thunk seam; eid-0-at-grab gap closed)",
+                    pile, static_cast<unsigned>(E));
+    }
+    if (E == coop::element::kInvalidId) return false;
+    // The pile's position frozen as the save-time key (it has not moved; it dies in place after
+    // this spawn).
+    coop::save_transfer::RecordGrabTimePileXform(E, ue_wrap::engine::GetActorLocation(pile));
+    coop::trash_channel::NoteClumpBorn(clump, E, ue_wrap::prop::GetChipType(pile));
+    return true;
+}
 
 // The deterministic re-pile. A host re-pile is the clump's own BeginDeferredActorSpawnFromClass
 // (self the clump, class the pile), which fires this Func patch with the re-piling clump as the
@@ -120,27 +157,27 @@ void OnBeginDeferredSpawnObserve(void* /*context*/, void* srcObj, void* newActor
     // input dispatch, which the input seam misses); the held edge consumes the certificate, and the
     // input seam keeps only diagnostics and the client routing.
     if (ue_wrap::prop::IsChipPile(srcObj) && ue_wrap::prop::IsGarbageClump(newActor)) {
-        coop::element::ElementId E = PT::GetPropElementIdForActor(srcObj);
-        if (E == coop::element::kInvalidId)
-            E = coop::remote_prop::ResolveMirrorEidByActor(srcObj);
-        if (E == coop::element::kInvalidId) {
-            // The self-seed, one owner: an untracked pile grabbed in the post-load purge gap mints
-            // its eid at the seam its clump is born (register only, no broadcast).
-            PT::MarkPropElement(srcObj, L"", R::ClassNameOf(srcObj), PT::EnrollSource::kExpressSeam);
-            E = PT::GetPropElementIdForActor(srcObj);
-            if (E != coop::element::kInvalidId)
-                UE_LOGI("[PILE-09] HOST self-seeded UNTRACKED grabbed pile %p -> eid=%u "
-                        "(thunk seam; eid-0-at-grab gap closed)",
-                        srcObj, static_cast<unsigned>(E));
-        }
-        if (E != coop::element::kInvalidId) {
-            // The pile's pre-grab position frozen as the save-time key (it has not moved; it dies
-            // in place after this spawn).
-            coop::save_transfer::RecordGrabTimePileXform(
-                E, ue_wrap::engine::GetActorLocation(srcObj));
-            coop::trash_channel::NoteClumpBorn(newActor, E, ue_wrap::prop::GetChipType(srcObj));
-        }
+        NoteClumpBornOfPile(srcObj, newActor);
         return;  // grab direction fully handled (the held-edge adopts)
+    }
+    if (ue_wrap::prop::IsGarbageClump(newActor)) {
+        // A broom stroke turns a chip pile into a clump with a copy of the pile's own morph, so the
+        // spawn's source is the broom. The pile is the one its stroke loop is on, read out of the
+        // broom's frame; the clump is opened a tick later, when nobody's hand will adopt it.
+        void* pile = ue_wrap::broom::SweptChipPile(srcObj, ue_wrap::ufunction_hook::CurrentCallerFrame());
+        if (pile && R::IsLive(pile) && ue_wrap::prop::IsChipPile(pile)) {
+            if (NoteClumpBornOfPile(pile, newActor)) coop::trash_sweep::NoteSwept(newActor);
+            return;
+        }
+        std::wstring source = R::ClassNameOf(srcObj);
+        if (std::find(g_pilelessClumpSources.begin(), g_pilelessClumpSources.end(), source) ==
+            g_pilelessClumpSources.end()) {
+            UE_LOGI("[PILE] HOST clump %p made by '%ls' of no pile -- no identity to carry, so its "
+                    "flight is this host's alone until it lands (said once per class)", newActor,
+                    source.c_str());
+            g_pilelessClumpSources.push_back(std::move(source));
+        }
+        return;
     }
     if (!ue_wrap::prop::IsGarbageClump(srcObj)) return;   // re-pile source must be a clump
     if (!ue_wrap::prop::IsChipPile(newActor)) return;     // ... spawning a chipPile
@@ -344,6 +381,7 @@ void Install(coop::net::Session* session) {
 
 void OnDisconnect() {
     g_session.store(nullptr, std::memory_order_release);
+    g_pilelessClumpSources.clear();
     coop::trash_use_intercept::OnDisconnect();  // clears its cached session + gesture-pairing latch
     coop::trash_morph_gate::OnDisconnect();     // with no session the game's trash authors itself again
 }

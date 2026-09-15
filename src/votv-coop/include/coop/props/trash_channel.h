@@ -37,6 +37,22 @@ coop::element::ElementId AdoptBornClump(coop::net::Session& s, coop::element::El
                                         void* heldClump, const ue_wrap::FVector& clumpLoc,
                                         const ue_wrap::FRotator& clumpRot, uint8_t chipType);
 
+// Host: a clump born with a pile's certificate is placed and under physics with nobody holding it --
+// a broom stroke swept the pile, or pushed a clump whose grab never reached the hand. Consume the
+// certificate and open E's carry as a grab does -- the one to-clump broadcast, tagged `why`, the
+// churn latch, the land settle and the termination pass -- so the roll ends on the same land as a
+// throw. A pile taken inside its own land settle folds as churn instead, this clump carrying the
+// lane on, and a thrower's hold on it ends there. False when there is no certificate: a hand edge
+// consumed it first, or the clump died. Game thread.
+bool OpenBornCarry(coop::net::Session& s, void* clump, const char* why);
+
+// Host: a broom stroke pushed `clump`, a tracked clump whose carry had closed at rest, un-held and
+// not re-piled. Open its latch again with no convert, since it is a clump on every peer already and
+// its context has not moved, so its roll streams and lands on the same settle and commit as any
+// carry. False when the clump has no id, is carrying or settling already, is in a client's hand, or
+// was never expressed as a clump, so no peer holds one to move. Game thread.
+bool OpenPushedCarry(void* clump);
+
 // The client-grab direction: an intent the host validates and performs on the requester's
 // puppet, then drives, since a puppet's own tick does not move its physics handle.
 
@@ -87,9 +103,10 @@ void ClearClientCarry(uint32_t eid);
 // real land, the game's churn re-piles inside it are suppressed, and a re-pile opens a settle
 // window that a re-grab cancels and a timeout commits. docs/piles.md carries the model.
 
-// Host: a churn re-grab during E's carry. Rebind E onto the new clump so the pose stream keeps
-// tracking it, and cancel E's pending settle, since a re-grab proves the re-pile was churn. No
-// broadcast, no context bump. A no-op if E is not carrying.
+// Host: the host's hand, or a broom, took E during E's carry -- a churn re-grab, or a pile a throw
+// landed as taken before its land committed. Rebind E onto the new clump so the pose stream keeps
+// tracking it, cancel E's pending settle, since the re-pile was not the land, and end a client's
+// hold on E and its puppet's drive. No broadcast, no context bump. A no-op if E is not carrying.
 void OnHostRegrab(coop::element::ElementId E, void* newClump);
 
 // Host: is E mid-carry? The local streams gate the held-edge rebind on it.

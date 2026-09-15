@@ -248,22 +248,13 @@ void OnReliable(const coop::net::TrashPileStatePayload& payload, uint8_t senderP
 
 void NoteAuthoredDeath(const std::wstring& key) {
     if (key.empty()) return;
-    // Expire stragglers here rather than on a timer: the map holds one entry per verb this peer ran
-    // and a death consumes it, so it is empty except for the instant between the two.
+    // Expire stragglers here rather than on a timer: the map holds one entry per stroke this host
+    // ran on a pile, the stroke that empties the pile has its entry consumed by the death, and the
+    // strokes that did not age out.
     const uint64_t tick = coop::net_pump::TickSerial();
     for (auto it = g_authoredDeaths.begin(); it != g_authoredDeaths.end();)
         it = (tick > it->second) ? g_authoredDeaths.erase(it) : std::next(it);
     g_authoredDeaths[key] = tick + kAuthoredDeathTicks;
-}
-
-void* ResolveByKey(const std::wstring& key) {
-    if (key.empty()) return nullptr;
-    // A stale-gen index holds another world's piles, so it answers nothing (the same test the
-    // receiver above makes before applying to a live actor).
-    if (!IndexCurrent()) return nullptr;
-    auto it = g_index.find(key);
-    if (it == g_index.end()) return nullptr;
-    return R::IsLiveByIndex(it->second.actor, it->second.idx) ? it->second.actor : nullptr;
 }
 
 void NotifyWireDestroy(const std::wstring& key) {
@@ -342,8 +333,8 @@ void Tick(bool inTransition) {
     for (auto it = g_index.begin(); it != g_index.end();) {
         Entry& e = it->second;
         if (!R::IsLiveByIndex(e.actor, e.idx)) {
-            // DEATH-WATCH: depleted (BP-internal K2_DestroyActor, invisible to the
-            // observer + the poll) vs streamed out. Two ways to answer it, and the certain one
+            // DEATH-WATCH: depleted (a BP-internal K2_DestroyActor, whose destroy the native seam
+            // sends but which no seam names a depletion) vs streamed out. Two ways to answer it, and the certain one
             // first: this peer RAN a verb on that pile a moment ago, so its death is that verb's.
             // Geometry is the fallback for the local writers nothing announces.
             const bool authored = WasAuthoredHere(it->first);

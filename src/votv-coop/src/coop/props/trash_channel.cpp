@@ -10,6 +10,7 @@
 #include "coop/net/protocol.h"
 #include "coop/net/session.h"
 #include "coop/element/registry.h"    // EidForActor (birth prune) + Get(eid) (carry termination)
+#include "coop/player/puppet_carry_drive.h"  // OnTakenOver: a taker ends a client's carry drive
 #include "coop/props/remote_prop.h"   // RegisterPropMirror (the single rebind entry point)
 #include "coop/save/save_transfer.h"  // the save-time pile transform for a land
 #include "ue_wrap/engine/engine.h"      // the per-form scale and the transform and velocity reads
@@ -173,6 +174,19 @@ void StartSettle(uint32_t eid, void* pile, const ue_wrap::FVector& loc, const ue
     g_settle[eid] = ls;
 }
 
+// Open E's carry: the one to-clump broadcast and the latch that suppresses the churn until the
+// real land. A grab's clump and a broom's swept clump both open here; `why` tags the broadcast. A
+// land still settling for E is over: its pile has just become this clump.
+void OpenCarry(coop::net::Session& s, coop::element::ElementId E, const ue_wrap::FVector& loc,
+               const ue_wrap::FRotator& rot, const ue_wrap::FVector& scale, uint8_t chipType,
+               const std::string& cls, const char* why) {
+    const uint32_t eid = static_cast<uint32_t>(E);
+    CancelSettle(eid, why);
+    g_carry[eid].lastTick = g_tick;
+    BroadcastConvert(s, E, coop::net::propconvert_kind::kToClump, loc, rot, scale, chipType, cls, why);
+    UE_LOGI("[TRASH-CH] HOST carry OPEN eid=%u -- churn re-pile/re-grab suppressed until the land", eid);
+}
+
 }  // namespace
 
 void OnHostConvert(coop::net::Session& s, coop::element::ElementId E, uint8_t kind, void* newActor,
@@ -191,10 +205,7 @@ void OnHostConvert(coop::net::Session& s, coop::element::ElementId E, uint8_t ki
             // Open: the real grab (pile to clump, through the clump adoption). Broadcast the one
             // to-clump and start the carry; the host's churn (the re-pile and auto-re-grab) is
             // suppressed until the real land.
-            CancelSettle(eid, "GRAB OPEN");   // a land still settling for E is over: its pile is this clump
-            g_carry[eid].lastTick = g_tick;
-            BroadcastConvert(s, E, kind, loc, rot, scale, chipType, cls, "GRAB OPEN");
-            UE_LOGI("[TRASH-CH] HOST carry OPEN eid=%u -- churn re-pile/re-grab suppressed until the land", eid);
+            OpenCarry(s, E, loc, rot, scale, chipType, cls, "GRAB OPEN");
         } else {
             // Defensive: a to-clump reaching here while carrying (the held edge's re-grab is the
             // normal path, and the thunk skips pile sources, so it should not). Folded as churn:
@@ -232,6 +243,11 @@ void OnHostRegrab(coop::element::ElementId E, void* newClump) {
     g_carry[eid].lastTick = g_tick;
     RebindE(E, newClump);                                 // keep E on the live held clump (the carry stream continues)
     CancelSettle(eid, "re-grab");                         // a re-grab proves the preceding re-pile was churn
+    // The host's hand or a broom took E, so a client that threw it holds it no longer: its hold and
+    // its puppet's drive end here, as the land's commit would have ended them. Kept, the hold would
+    // refuse every grab of E and the drive, finding its clump gone with no settle, would retire E.
+    ClearHeldBy(eid);
+    coop::puppet_carry_drive::OnTakenOver(E);
     UE_LOGI("[TRASH-CH] HOST carry re-grab eid=%u -- rebound onto the new held clump, settle cancelled "
             "(churn, not the land)", eid);
 }
@@ -288,6 +304,38 @@ coop::element::ElementId AdoptBornClump(coop::net::Session& s, coop::element::El
             "eid + broadcasting convert", static_cast<unsigned>(E), heldClump);
     OnHostConvert(s, E, coop::net::propconvert_kind::kToClump, heldClump, clumpLoc, clumpRot, chipType);
     return E;
+}
+
+bool OpenBornCarry(coop::net::Session& s, void* clump, const char* why) {
+    coop::element::ElementId E = coop::element::kInvalidId;
+    uint8_t chipType = 0;
+    if (!TakeClumpBorn(clump, &E, &chipType)) return false;   // a hand edge took it first, or it died
+    if (IsCarrying(E)) {
+        // The pile was taken inside its own land settle: fold the re-pile as the churn a re-grab
+        // is, and this clump carries the lane on. The land a thrower's hold waited for did happen --
+        // the pile the broom took is that land -- so the hold ends here as the commit would have.
+        OnHostRegrab(E, clump);
+        return true;
+    }
+    RebindE(E, clump);   // bound at birth already; the rebind is idempotent and keeps the row current
+    OpenCarry(s, E, ue_wrap::engine::GetActorLocation(clump), ue_wrap::engine::GetActorRotation(clump),
+              ue_wrap::engine::GetActorScale3D(clump), chipType, NarrowAscii(R::ClassNameOf(clump)), why);
+    return true;
+}
+
+bool OpenPushedCarry(void* clump) {
+    const coop::element::ElementId E = coop::element::Registry::Get().EidForActor(clump);
+    if (E == 0u || E == coop::element::kInvalidId) return false;   // a clump the game made of no pile
+    const uint32_t eid = static_cast<uint32_t>(E);
+    if (g_carry.count(eid) || g_settle.count(eid) || HeldByAny(eid)) return false;
+    const uint8_t ctx = CtxForEid(E);
+    if (ctx == 0) return false;   // never expressed as a clump, so no peer holds one to move
+    // Its last convert made it a clump everywhere and nothing has re-skinned it since, so the roll
+    // streams under that context; no convert, no bump.
+    g_carry[eid].lastTick = g_tick;
+    UE_LOGI("[TRASH-CH] HOST carry REOPEN eid=%u ctx=%u -- a push moved the clump at rest; its roll "
+            "streams until the land", eid, static_cast<unsigned>(ctx));
+    return true;
 }
 
 // The client-initiated grab and throw intent lane lives in trash_grab_intent.cpp.

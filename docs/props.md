@@ -114,20 +114,25 @@ is relayed the same way (`coop/items/inventory_pickup_sync`).
 ### Dragged by a hook
 
 A prop nobody is holding can still be in motion: a hook's constraint pulls it along behind the
-player, an anchored hook ties it to something that moves, and after the hook lets go it slides
-until it rests. The held-prop stream never sees it, since that stream is sourced from the
-player's grab slot alone, so the host keeps a set of the props the hooks on its machine are tied
-to -- its own, the anchored ones it adopted, its mirrors of the clients' hooks, and the save's and
-the level's own -- fed by the hook lane rather than by a per-frame walk, and streams each one's
-pose while it moves (`coop/props/prop_drive_host`). Every hook's constraint exists on the host and
-nowhere else (the fifth rule under Deployables), so this one set is every prop any hook can move.
-A receiver parks the prop on the first pose and follows the stream
-the way a carried trash clump is followed -- the fixed-delay interpolation, frozen at the last pose
-across a gap -- where a held prop snaps to each pose; a reliable end edge carries the final pose,
-the host's physics flags and the velocity once the prop has rested or a hand has taken it, and
-closes the stream's generation so a pose still in flight cannot park the prop again
-(`coop/props/prop_drive_stream`). A hand always wins: a claimed prop somebody grabs leaves the set
-and rides the held-prop stream.
+player, an anchored hook ties it to something that moves, and after the hook lets go it slides until
+it rests. The held-prop stream never sees it, since that stream is sourced from the player's grab
+slot alone, so the host keeps a set of the props the hooks on its machine are tied to -- its own,
+the anchored ones it adopted, its mirrors of the clients' hooks, and the save's and the level's own
+-- fed by the hook lane rather than by a per-frame walk, and streams each one's pose while it moves
+(`coop/props/prop_drive_host`). Every hook's constraint exists on the host and nowhere else (the
+fifth rule under Deployables), so this one set is every prop any hook can move. A broom's push is
+the set's second feeder: every stroke is the host's ([piles.md](piles.md)), and each prop a stroke
+pushes coasts under the stream until it rests, while a prop a verb already holds stays that verb's
+(`coop/items/broom_push`). The trash a stroke knocks out of a dispenser pile coasts too, from its
+spawn: the host catches the finish of each spawn the pile's own `broomed` body makes, and the
+streams open after the tick's spawns are named, so each has its id by then. A prop that a pushed
+prop knocks has no verb of its own and is not streamed. A receiver parks the prop on the first pose
+and follows the stream the way a carried trash clump is followed -- the fixed-delay interpolation,
+frozen at the last pose across a gap -- where a held prop snaps to each pose; a reliable end edge
+carries the final pose, the host's physics flags and the velocity once the prop has rested or a hand
+has taken it, and closes the stream's generation so a pose still in flight cannot park the prop
+again (`coop/props/prop_drive_stream`). A hand always wins: a claimed prop somebody grabs leaves the
+set and rides the held-prop stream.
 
 A mirror's physics and collision are set to what the game's own initialisation would have
 produced on this peer (`coop/props/prop_wire_parity`); a fresh mirror starts kinematic while it
@@ -235,7 +240,7 @@ lane did not have in front of it:
 | `PropPose` (stream) | the holder to all | the held prop's world transform, per frame |
 | `PropSpawn`, `PropDestroy` | the host to all; a destroy from either role | class, key, id, transform, physics flags, the birth scalar; the key and id |
 | `PropRelease` | the holder to all | the inherited linear and angular velocity |
-| `PropDrivePose` (stream) | the host to all | the poses of the props under a hook's drive that moved since their last one, with the claim generation |
+| `PropDrivePose` (stream) | the host to all | the poses of the props under a hook's drive or a broom's push that moved since their last one, with the claim generation |
 | `PropDriveEnd` | the host to all | the final pose and velocity of a driven prop that rested or that a hand took; closes its generation |
 | `PropDropIntent`, `ReelEjectIntent` | a client to the host | a place, or an unavoidable birth, for the host to author |
 | `PropStickState` | the sticking peer to all | frozen or static, and the commit pose |
@@ -266,6 +271,8 @@ edge that reaches a joiner before the prop it names is kept until the prop resol
 | The deployables other than the hook and the rope (nail gun, wall builder, explosives, fishing rod, physgun) are not synced; a nail or a wall placed by one peer reaches the others only through the save at their next join | `[V]` no lane under `coop/props` catches them |
 | A prop tied by any hook -- a player's, an anchored one, the level's own -- is parked on every client for as long as the tie holds, since the host streams it, so it cannot be grabbed there until the hook lets go | `[V]` `coop/items/hook_prop_claim` claims every tied prop on the host every pass; `coop/props/prop_drive_stream` parks it |
 | A client's hook into the ATV ties the host's ATV against the client's puppet; whether the ATV lane's corrector carries that pull back to the client's copy is not measured | `[?]` `coop/items/hook_constraint` ties any keyed actor the bite resolves; `coop/interactables/atv_sync` corrects rather than parks |
+| A prop the driven-prop channel set coasting can come to rest a few centimetres from the host's copy: the host ends a coasting stream half a second after the prop stops moving, before its body sleeps, and the end edge sets the client's copy to the host's pose and hands it back its physics, so each copy settles on its own. The broom drill measured 0 to 6.4 cm, and 12.1 cm for a prop whose support another prop knocked away on the host | `[V]` `coop/props/prop_drive_host` (`kRestMs`), `coop/props/prop_drive_stream` (the end edge restores simulation per `coop/props/prop_wire_parity`); the broom drill's push and dispense phases |
+| A prop that a pushed prop knocks moves on the host only: the driven-prop channel is fed by verbs, and a knock is none. One drill run measured a knocked prop moving 25.1 cm on the host and resting 15.9 cm from the client's copy | `[V]` the broom drill's push phases (`harness/autotest/autotest_broomstroke.cpp`); `coop/items/broom_push` streams only what a stroke itself pushed |
 | A prop parked under the host's drive cannot be grabbed on a client while the drag lasts: the park turns the body kinematic and the game's grab needs a simulating one. It is grabbable again after the end edge | `[V]` `coop/props/prop_drive_stream` parks with `DriveSimulate(mesh, false)`; `coop/props/prop_wire_parity` records why a kinematic mirror is ungrabbable |
 | A pose can arrive milliseconds before the spawn that names its prop; that is a race, not a defect, and a ledger tells the two apart instead of warning per packet | `[V]` `coop/props/unresolved_pose_ledger` |
 
@@ -277,7 +284,7 @@ edge that reaches a joiner before the prop it names is kept until the prop resol
 | the receivers | `coop/props/remote_prop` (held), `coop/props/remote_prop_spawn` (birth: adopt, converge, create), `coop/props/prop_fresh_spawn` (the materialiser), `coop/props/prop_wire_parity`, `coop/props/active_drive`, `coop/props/prop_sound` |
 | a client's intents | `coop/props/prop_drop_intent` |
 | the stick | `coop/props/prop_stick_sync` |
-| a prop under a hook's drive | `coop/props/prop_drive_host` (the host's set and stream), `coop/props/prop_drive_stream` (the receiver), `coop/items/hook_prop_claim` (the hook lane feeding it), `coop/items/hook_constraint` (the tie itself, host-only) |
+| a prop under a hook's drive or a broom's push | `coop/props/prop_drive_host` (the host's set and stream), `coop/props/prop_drive_stream` (the receiver), `coop/items/hook_prop_claim` (the hook lane feeding it), `coop/items/hook_constraint` (the tie itself, host-only), `coop/items/broom_push` (the broom's push feeding it) |
 | containers | `coop/props/container_contents_sync`, `coop/items/save_record_wire`, `coop/interactables/interactable_sync` |
 | the pocket blip | `coop/items/inventory_pickup_sync` |
 | the join | `coop/props/prop_snapshot`, `coop/props/snapshot_census`, `coop/props/join_membership_sweep`, `coop/props/unresolved_pose_ledger` |

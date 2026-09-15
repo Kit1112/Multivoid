@@ -66,6 +66,12 @@ void* LocalHandActor();
 // the same set the cheaper way, hoisting CollectHandAxisActors once per walk. Game thread only.
 bool IsHandAxisActor(void* actor);
 
+// The live display mirror of `slot`'s hand item on this peer, or nullptr when that slot holds
+// nothing, its mirror has not spawned yet, or `slot` is this peer's own. A verb of a remote
+// player's hand item that this peer performs on that player's behalf -- the host running a
+// client's broom stroke -- runs on it. Game thread only.
+void* MirrorActorForSlot(uint8_t slot);
+
 // Snapshot the current hand-axis actors (local hand + live remote mirrors)
 // into out[]; returns the count (<= 1 + kMaxPeers). For per-walk hoisting.
 size_t CollectHandAxisActors(void* out[], size_t cap);

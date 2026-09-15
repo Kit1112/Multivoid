@@ -33,7 +33,7 @@ are peer-gated. `[V]`
 |---|---|---|---|
 | keyed props | the save; a spawner; the spawn menu; a container extract | the object scan at world start; the initialisation post observer; the finish-spawning seam | the save key, plus a host id |
 | chip piles | the save; a re-pile | the object scan's keyless lane; the native seam on the re-pile spawn | a host id only, keyless |
-| the trash clump | the grab, inside the Blueprint; a broom stroke | the use input's pre observer; the native seam -- which a broom-born clump never reaches, so that clump has no identity on either peer (OPEN) | the same host id, rebound at birth |
+| the trash clump | the grab, inside the Blueprint; a broom stroke; a few creatures' graphs | the native seam on the clump's deferred spawn -- a broom's reads the swept pile out of the broom's frame, and a creature's has no pile to name (piles.md, Known limits) | the same host id, rebound at birth |
 | a held physics prop | the grab | the new-held edge of the local stream | the key it already had; a keyless one is minted a key at the edge |
 | the hotbar hand item | the hotbar switch | not a world entity: polled as player state | none; display only |
 | a pocket pickup and a place | the destroy seam; the finish-spawning seam | the drop-intent door | the parked key |
@@ -104,15 +104,17 @@ are peer-gated. `[V]`
 Two different actors are called a pile here, and only one of them is keyless. A CHIP pile -- the
 ambient trash a player carries as a clump -- is keyless; its only identity is a host id, and the
 pile-to-clump-to-pile transitions
-re-skin that id in place under a sync-time context. The grab is caught at the use input's pre
-observer; the re-pile is caught deterministically at the native seam on the re-pile spawn, which
-reads the source clump and the spawned pile in one call. The client's mirror of a resting pile is
+re-skin that id in place under a sync-time context. The grab and a broom's sweep are caught at the
+native seam on the clump's spawn, a sweep by the pile the broom's frame names; the re-pile is caught
+deterministically at the native seam on the re-pile spawn, which reads the source clump and the
+spawned pile in one call. The client's mirror of a resting pile is
 the game's own pile actor -- at a join the one the client loaded itself -- and the clump's is the
 game's own clump actor, both with the verbs that would author a transition refused.
 
 A DISPENSER pile (`trashBitsPile_C`, the "uses 6 of 7" one) is the opposite: it is a save actor and
 its save key IS its cross-peer identity, which is what its counter mirror, its depletion destroy and
-its broom intent all name it by. Every fact and every open item is on [piles.md](piles.md). `[V]`
+the host's watch on the broom verb all name it by. Every fact and every open item is on
+[piles.md](piles.md). `[V]`
 
 ## Held items
 
@@ -242,7 +244,7 @@ Every place two seams can express one actor, and what deduplicates it:
 | a re-seed and a second peer's connect snapshot | additive with no bracket; the receiver dedups; no sweep re-arm `[V]` |
 | the kerfur converge and a re-seed re-expressing the kerfur | the known-keyed mark, the kerfur skip in the incremental express and in the reaper `[V]` |
 | a client's save-loaded pile and the host's pile id | the position bind retires the client-local identity `[V]` |
-| a client grabbing shared trash and the host's authoring | the client suppresses the native grab and sends an intent; it never authors shared trash by GRABBING `[V]` -- but a client's broom stroke still morphs chip piles into clumps locally, which is an open second author (OPEN) |
+| a client grabbing or sweeping shared trash and the host's authoring | the client suppresses the native grab and sends an intent, and refuses its broom stroke whole and sends what the stroke read of its holder; the host performs both, so a client authors shared trash by neither `[V]` |
 | the character interceptor and the event-actor interceptor on one call | disjoint allowlists; the substrate supports several interceptors `[V]` |
 | a nested deferred spawn stealing a pending id in the post observer | correlation on the parameter pointer `[V]` |
 | a client's conversion ghost grabbed | the ghost is claimed and parked at once `[V]` |

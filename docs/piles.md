@@ -128,12 +128,59 @@ key and spawns the mirror on every peer (`coop/props/trash_collect_sync`).
 
 The vacuum and the broom put their items on the floor: each pop spawns a real actor at a rolled
 transform, one per vacuum call and up to three per broom stroke, and the pile is destroyed once
-both counters reach zero. A client's broom
-authors none of that: the verb is refused per call at the script-body gate, the pile's own key
-goes up as a `BroomIntent`, and the host runs the game's own `broomed`, whose trash, counter
-drop and depletion then leave the host on the three channels above
-(`coop/props/trash_broom_intent`). Before that, the two halves that had channels crossed and
-the spawn did not, so a client's stroke read to everyone else as the trash being deleted.
+both counters reach zero. A client's broom authors none of that, since the host runs every stroke
+(below), and the trash, the counter drop and the depletion leave the host on the three channels
+above. The host names a pile to the depletion watch as its `broomed` runs, which is how a pile a
+client's stroke empties far from the host's camera still reads as a depletion.
+
+### The broom
+
+One stroke acts on whatever a 50 uu sphere at its trace's hit point overlaps, in a fixed order: it
+runs `broomed` on each dispenser pile, turns each chip pile into a clump with a copy of the pile's
+own morph, and pushes each physics body along the holder's heading with the holder's velocity added.
+A held right mouse button strokes once a second. Every stroke is the host's
+(`coop/items/broom_stroke`). A client refuses its own at the swing montage's notify and sends the
+three things the stroke reads of its holder: the segment its `arm` returned, camera to reach end,
+and the holder's heading and velocity. The host checks the heading for a unit vector and the
+velocity against terminal velocity as the stroke arrives and queues it: a client's strokes run one a
+tick, no faster than three a second after three at once, so a stall's backlog of up to ten waits its
+turn instead of being refused or run in one frame. At its turn the host checks both ends against the
+client's body and runs the game's stroke on its mirror of that client's broom with the client's
+puppet as the holder and each read answered with the client's value: the segment written into
+`arm`'s results at the script-body gate, the heading and the velocity into the results of the two
+native reads, at seams armed for that call alone. The puppet would have answered with its display
+heading, which holds while the camera turns, and a velocity rebuilt from its speed. This is MTA's
+context switch, which runs the game's code for a remote ped with that ped's inputs swapped in. `[V]`
+for strokes swung through the broom's own right mouse button on a broom each peer holds, the montage
+and its notify included (`harness/autotest/autotest_broomstroke.cpp`): a held button struck three
+times in three seconds on each peer and the host ran all three of the client's, and a client
+teleported facing 40 degrees off its pile and turned onto it -- its body follows its view, while the
+host's puppet keeps the teleport's facing -- swept a clump that left along the client's heading, 0.2
+degrees off in one run and 1.6 in the next, and not the puppet's, 40 degrees away.
+
+The chip piles a stroke turns into clumps keep their ids. The spawn is issued by the broom's
+bytecode rather than the pile's, so the host's deferred-spawn seam (`coop/props/trash_collect_sync`)
+reads the pile the stroke loop is on out of the broom's own frame (`ue_wrap/actors/broom`) and moves
+that pile's id onto the clump at its birth. A tick later, once the finish has placed the clump and
+the push has launched it, the clump opens a carry nobody holds (`coop/props/trash_sweep`): one
+to-clump convert, then its pose on the host-originated clump stream, and the clump's own re-pile
+lands it through the settle a throw uses. One host stroke on a heap of ten piles showed the client
+all ten clumps 31 to 47 ms after the host over two runs; every one rolled there along the host's
+path to its end, no row more than 9.6 cm off it, and ended in the same form 0.0 cm apart. A client's
+stroke: within 78 ms, no row more than 8.6 cm off, and 0.0 cm `[V]`. A clump that comes to rest
+without re-piling closes its carry, and a later push opens it again with no convert: two clumps the
+drill kept from re-piling closed their carries at rest and lay 0.0 to 0.1 cm apart on the client, and
+one of them, pushed again, rolled 198 to 212 cm on the host and 185 to 190 cm on the client, no row
+more than 3.0 cm off the host's path, and ended 0.0 to 0.4 cm apart `[V]`.
+
+The bodies the push moves stream too (`coop/items/broom_push`): a prop coasts on the driven-prop
+channel until it rests, and a prop a verb already holds stays that verb's ([props.md](props.md)).
+The trash the stroke knocks out of a dispenser pile streams its fall the same way, caught at the
+finish of each spawn the pile's own `broomed` body makes; the streams open after the tick's spawns
+are named, so each has its id by then. Every prop a host's and a client's stroke pushed or knocked
+out ended its stream on both peers at one pose and came to rest within 0.1 cm of the host's copy,
+over two runs; a prop that something knocked on the host after its stream had ended lay up to 15.9
+cm off in an earlier run, a knock being no verb ([props.md](props.md)) `[V]`.
 
 ### Save-loaded piles at a join
 
@@ -154,16 +201,16 @@ replacement for the position key.
 | grab, throw, land | the host, by intent | a client's press is an intent, reach-checked |
 | the pile-to-clump identity | the host | one id, rebound onto each successor at its birth, guarded by the sync context |
 | a dispenser's counters | each peer, minimum wins | the host as sent at join |
-| a broom stroke | the host | a client's stroke is an intent naming the pile by key, reach-checked |
+| a broom stroke | the host | a client's stroke is what it read of its holder; the host runs the stroke with those reads, reach- and rate-checked |
 
 ## Wire messages
 
 | Kind | Direction | Carries |
 |---|---|---|
 | `GrabIntent`, `ThrowIntent` | a client to the host | the pile id; the release or a hard throw with its direction |
-| `BroomIntent` | a client to the host | the key of the dispenser pile its broom stroke struck |
+| `BroomStroke` | a client to the host | the segment, heading and velocity a broom stroke read of its holder |
 | `PropConvert` | the host to all | the atomic pile-clump convert: id, form, pose, scale, chip type, context |
-| `TrashCarryPose` (stream) | the host to all | per-id pose batches for client-grabbed clumps |
+| `TrashCarryPose` (stream) | the host to all | per-id poses for client-grabbed clumps and the clumps a broom sets rolling |
 | `PropPose` (stream) | the host to all | the host's own held clump and its flight |
 | `PropSnapPos` | the host to one joiner | a position correction for a pile moved in the window |
 | `TrashPileState` | each peer, relayed | a dispenser's counter pair |
@@ -174,7 +221,11 @@ replacement for the position key.
 The snapshot carries one spawn per pile with its id and save-time position, the client binds its
 own actors by that position, the membership sweep removes what the host never claimed, and a
 clump held by someone at the moment of the join binds without a duplicate. A pile the host moved
-during the window arrives as a position correction after the snapshot.
+during the window arrives as a position correction after the snapshot. A clump a broom has swept
+and that is still rolling is in no snapshot, having no key. A land before the joiner's world is up
+is not sent to it, and the pile reaches it in the world-ready snapshot; a land after is sent to it
+as to everyone, carrying the pile's pre-sweep position so the joiner's save-loaded copy at the old
+spot is retired `[RD]`.
 
 The client's own piles do not all exist when the snapshot arrives -- its save load is still
 draining -- so an expression that finds no actor at its save-time position is HELD rather than
@@ -190,18 +241,20 @@ save position, because the host may have moved or removed the pile since.
 | A clump has its collision off for its whole life -- carried and in flight -- so a player walks through the ball someone else is holding or has thrown. The pile it lands as has the game's own collision | `[V]` `coop/props/trash_mirror` |
 | Trash dropped into a garbage container updates the container on the host only: every client's container has its brain cancelled, so none of them -- not even the one whose player dropped the trash -- ever learns what is inside it, and the two pickup flags the game writes from those contents stay frozen | `[V]` `coop/interactables/garbage_sync`, and the cancelled Blueprint body read from the cook |
 | Dispenser piles born by an event carry per-process keys and never resolve across peers | `[V]` `coop/props/trash_pile_sync` |
-| A client's vacuum on a dispenser pile spawns its item on that client only: the broom's intent does not cover the vacuum's own spawn | `[V]` the vacuum verb's bytecode; `coop/props/trash_broom_intent` watches the broom verb alone |
-| Sweeping CHIP piles with the broom does not cross in either direction: a client's stroke leaves the host's piles untouched, and a host's stroke makes them vanish on clients until they re-pile. The broom copies the pile's morph into its own graph, so the host's birth seam never sees a clump born | `[V]` `coop/props/trash_collect_sync` (the birth seam's source test), and a hands-on |
+| A client's vacuum on a dispenser pile spawns its item on that client only: the host runs the broom's stroke, not the vacuum's suction | `[V]` the vacuum verb's bytecode; `coop/items/broom_stroke` refuses the broom's stroke alone |
+| A client's broom stroke acts a round trip late on that client: its swing animates at once, and the clumps, trash and pushes arrive with the host's messages | `[V]` code: `coop/items/broom_stroke` refuses the stroke at its notify, inside the montage the press started |
+| A clump the game makes of no pile -- an angry erie flesh, a kerfus possessor and an erie plush each spawn one from their own graphs -- has no id to move onto it: it rolls on the host alone, and the pile it lands as crosses under a new id when the adoption scan finds it | `[V]` code: the three graphs' spawns, and `coop/props/trash_collect_sync`, which names a clump only by the pile it is born of |
 | The join-window bind is by save-time position; the sidecar that replaces it is off by default | `[V]` see [join.md](join.md) |
 
 ## Code map
 
 | Concept | Files |
 |---|---|
-| identity and the transitions | `coop/props/trash_channel`, `coop/props/trash_grab_intent.cpp` |
+| identity and the transitions | `coop/props/trash_channel`, `coop/props/trash_grab_intent.cpp`, `coop/props/trash_sweep` (a broom stroke's clumps) |
 | the mirrors, in both forms | `coop/props/trash_mirror`, and `coop/props/trash_morph_gate` for the verbs a client refuses |
 | the client's grab and throw | `coop/props/trash_use_intercept`, `coop/player/puppet_carry_drive`, `coop/props/trash_clump_pose_stream`, `coop/props/active_drive` |
 | the dispenser piles | `coop/props/trash_pile_sync`, `coop/props/trash_collect_sync` |
+| the broom | `coop/items/broom_stroke` (every stroke the host's), `coop/items/broom_push` (what it pushes), `ue_wrap/actors/broom` |
 | garbage containers | `coop/interactables/garbage_sync` |
 | the join | `coop/props/pile_spawn_bind`, `coop/element/quiescence_drain`, `coop/props/save_time_retire_util.h`, `coop/props/save_identity_map`, `coop/props/save_identity_bind` |
-| tests | `harness/autotest/autotest_chippile.cpp`, `harness/autotest/autotest_clump.cpp` |
+| tests | `harness/autotest/autotest_chippile.cpp`, `harness/autotest/autotest_clump.cpp`, `harness/autotest/autotest_broomstroke.cpp` |

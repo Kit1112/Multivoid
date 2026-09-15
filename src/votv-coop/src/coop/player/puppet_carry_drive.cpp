@@ -189,6 +189,17 @@ void Tick(coop::net::Session& s) {
     }
 }
 
+void OnTakenOver(coop::element::ElementId eid) {
+    const uint32_t e = static_cast<uint32_t>(eid);
+    for (auto it = g_held.begin(); it != g_held.end(); ++it) {
+        if (it->eid != e) continue;
+        UE_LOGI("[PUPPET-DRIVE] eid=%u slot=%u -- taken over by the host's hand or a broom -> drive OFF (the "
+                "entity lives on in the taker's clump)", it->eid, it->slot);
+        g_held.erase(it);
+        return;
+    }
+}
+
 void OnPeerLeft(uint8_t slot) {
     for (auto it = g_held.begin(); it != g_held.end(); ) {
         if (it->slot == slot) {

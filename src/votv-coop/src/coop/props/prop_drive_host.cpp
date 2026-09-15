@@ -8,12 +8,14 @@
 #include "coop/player/local_streams.h"        // LastHeldActor: this player's grab slot
 #include "coop/props/active_drive.h"          // NowMs
 #include "coop/props/prop_element_tracker.h"  // GetPropElementIdForActor
+#include "coop/props/prop_lifecycle.h"        // IsWireSuppressedPropClass: a class no peer holds
 #include "coop/props/prop_wire_parity.h"      // PhysFlagsOf: the flags the end edge carries
 #include "coop/props/remote_prop.h"           // IsActorUnderAnyDrive: a peer's held-prop stream
 #include "ue_wrap/actors/prop.h"
 #include "ue_wrap/core/cached_obj_ref.h"
 #include "ue_wrap/core/hot_path_guard.h"
 #include "ue_wrap/core/log.h"
+#include "ue_wrap/core/reflection.h"
 #include "ue_wrap/core/types.h"
 #include "ue_wrap/engine/engine.h"
 
@@ -28,6 +30,7 @@ namespace {
 
 namespace E  = ue_wrap::engine;
 namespace PR = ue_wrap::prop;
+namespace R  = ue_wrap::reflection;
 
 // A pose goes out when it moved past these since the last one that went out, so a creeping body
 // still steps and a resting one costs nothing. One threshold on every axis, where MTA's
@@ -120,6 +123,44 @@ void SendEnd(coop::net::Session& s, const Driven& d, void* actor, const ue_wrap:
             static_cast<unsigned>(p.physFlags));
 }
 
+// A new row for `actor` when the channel can carry it: a keyed prop with a host element id, in no
+// hand, of a class peers hold. Null otherwise. `claimed` false opens it coasting.
+Driven* Open(void* actor, bool claimed, const char* why) {
+    if (!PR::IsDescendantOfProp(actor)) return nullptr;
+    if (HeldBySomeone(actor)) return nullptr;   // the held-prop lane owns a prop in a hand
+    const coop::element::ElementId eid = coop::prop_element_tracker::GetPropElementIdForActor(actor);
+    if (eid == coop::element::kInvalidId || eid == 0u) {
+        // A feeder asks again every pass while the tie holds, so the line is per actor, not per pass.
+        static void* sRefusedSaid = nullptr;
+        if (actor != sRefusedSaid) {
+            sRefusedSaid = actor;
+            // A class the wire never expresses has no copy on any peer to move, so its motion is
+            // parity and its refusal no news.
+            if (!coop::prop_lifecycle::IsWireSuppressedPropClass(R::ClassNameOf(actor)))
+                UE_LOGW("[PROP-DRIVE] HOST refused: actor %p has no host element id (%s)", actor, why);
+        }
+        return nullptr;
+    }
+    if (coop::prop_lifecycle::IsWireSuppressedPropClass(R::ClassNameOf(actor))) return nullptr;
+    Driven d;
+    d.ref.Set(actor);
+    d.eid = static_cast<uint32_t>(eid);
+    d.claimed = claimed;
+    const std::wstring keyW = PR::GetInteractableKeyString(actor);
+    d.key.len = 0;
+    for (size_t i = 0; i < keyW.size() && i < sizeof(d.key.data); ++i)
+        d.key.data[d.key.len++] = static_cast<char>(keyW[i]);
+    uint8_t& gen = g_genByEid[d.eid];
+    if (++gen == 0) ++gen;   // 0 is the stream's "no generation"
+    d.gen = gen;
+    d.lastMoveMs = coop::active_drive::NowMs();
+    g_driven.push_back(std::move(d));
+    UE_LOGI("[PROP-DRIVE] HOST %s eid=%u gen=%u key='%ls' (%s) -- %zu driven",
+            claimed ? "CLAIM" : "COAST", g_driven.back().eid, static_cast<unsigned>(g_driven.back().gen),
+            keyW.c_str(), why, g_driven.size());
+    return &g_driven.back();
+}
+
 }  // namespace
 
 void Claim(void* actor, const char* reason) {
@@ -134,34 +175,20 @@ void Claim(void* actor, const char* reason) {
         }
         return;
     }
-    if (!PR::IsDescendantOfProp(actor)) return;
-    if (HeldBySomeone(actor)) return;   // the held-prop lane owns a prop in a hand
-    const coop::element::ElementId eid = coop::prop_element_tracker::GetPropElementIdForActor(actor);
-    if (eid == coop::element::kInvalidId || eid == 0u) {
-        // The feeder asks again every pass while the tie holds, so the line is per actor, not
-        // per pass.
-        static void* sRefusedSaid = nullptr;
-        if (actor != sRefusedSaid) {
-            sRefusedSaid = actor;
-            UE_LOGW("[PROP-DRIVE] HOST claim refused: actor %p has no host element id (%s)", actor, why);
-        }
+    Open(actor, /*claimed=*/true, why);
+}
+
+void Coast(void* actor, const char* reason) {
+    UE_ASSERT_GAME_THREAD("prop_drive_host::Coast");
+    if (!actor) return;
+    if (Driven* d = Find(actor)) {
+        // A claimed prop stays its verb's; either way the push starts its rest clock again and it is
+        // read every tick.
+        d->nextProbeMs = 0;
+        d->lastMoveMs = coop::active_drive::NowMs();
         return;
     }
-    Driven d;
-    d.ref.Set(actor);
-    d.eid = static_cast<uint32_t>(eid);
-    const std::wstring keyW = PR::GetInteractableKeyString(actor);
-    d.key.len = 0;
-    for (size_t i = 0; i < keyW.size() && i < sizeof(d.key.data); ++i)
-        d.key.data[d.key.len++] = static_cast<char>(keyW[i]);
-    uint8_t& gen = g_genByEid[d.eid];
-    if (++gen == 0) ++gen;   // 0 is the stream's "no generation"
-    d.gen = gen;
-    d.lastMoveMs = coop::active_drive::NowMs();
-    g_driven.push_back(std::move(d));
-    UE_LOGI("[PROP-DRIVE] HOST CLAIM eid=%u gen=%u key='%ls' (%s) -- %zu driven",
-            g_driven.back().eid, static_cast<unsigned>(g_driven.back().gen), keyW.c_str(), why,
-            g_driven.size());
+    Open(actor, /*claimed=*/false, reason ? reason : "");
 }
 
 void Release(void* actor) {

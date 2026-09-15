@@ -48,6 +48,11 @@ ue_wrap::FVector HandVelocityForEid(coop::element::ElementId eid);
 // entry when the clump dies, the puppet leaves, or the carry latch closes (the re-pile land). Game thread.
 void Tick(coop::net::Session& s);
 
+// HOST: the host's own hand or a broom stroke took entity `eid` from a client's carry -- a pile the
+// throw landed as, re-grabbed or swept before its land committed. End the drive without a release:
+// the entity lives on in the taker's clump, and a release would retire it everywhere. Game thread.
+void OnTakenOver(coop::element::ElementId eid);
+
 // HOST: peer `slot` disconnected -- drop all its held-clump drive entries. Game thread.
 void OnPeerLeft(uint8_t slot);
 

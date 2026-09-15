@@ -218,6 +218,32 @@ IntentSubject IntentTarget::Authorize(void* actor) const {
     return s;
 }
 
+IntentSubject IntentTarget::AuthorizeSegment(const ue_wrap::FVector& start,
+                                             const ue_wrap::FVector& end) const {
+    IntentSubject s;
+    s.slot    = slot_;
+    s.reachUU = reachUU_;
+    if (slot_ == 0) { s.outcome = IntentOutcome::NoBody; return s; }   // as in Authorize
+
+    UE_ASSERT_GAME_THREAD("intent_authority::AuthorizeSegment");
+    coop::RemotePlayer* rp = coop::players::Registry::Get().Puppet(slot_);
+    void* puppet = (rp && rp->valid()) ? rp->GetActor() : nullptr;
+    ue_wrap::FVector body{};
+    if (!puppet || !E::TryGetActorLocation(puppet, body)) {
+        s.outcome = IntentOutcome::NoBody;   // fail closed, as Authorize does
+        return s;
+    }
+    // A ball is convex, so the segment lies within reach exactly when both ends do: judge the
+    // farther one. A non-finite end fails inside ReachVerdict.
+    const ue_wrap::FVector& far =
+        (Finite3(start) && Finite3(end) && Dist3(start, body) >= Dist3(end, body)) ? start : end;
+    const bool okFar = internal::ReachVerdict(body, far, 0.f, reachUU_, s.distUU, s.reachUU);
+    const bool okBoth = okFar && Finite3(start) && Finite3(end);
+    s.outcome = okBoth ? IntentOutcome::Ok : IntentOutcome::OutOfReach;
+    LogAnchors(session_, s, nullptr, body, far);
+    return s;
+}
+
 namespace internal {
 
 // UN-GATED, runs once per session start. Same reasoning as `movement_ledger`: a wrong verdict here

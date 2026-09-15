@@ -440,6 +440,12 @@ void* LocalHandActor() {
     return ha;
 }
 
+void* MirrorActorForSlot(uint8_t slot) {
+    if (slot >= coop::players::kMaxPeers) return nullptr;
+    const Mirror& m = g_mirrors[slot];
+    return (m.actor && R::IsLiveByIndex(m.actor, m.idx)) ? m.actor : nullptr;
+}
+
 size_t CollectHandAxisActors(void* out[], size_t cap) {
     size_t n = 0;
     if (void* lh = LocalHandActor(); lh && n < cap) out[n++] = lh;

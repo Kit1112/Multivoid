@@ -48,7 +48,7 @@
 #include "ue_wrap/core/sdk_profile.h"
 #include "coop/player/death_revive.h"
 #include "coop/player/run_end_travel.h"
-#include "coop/props/trash_broom_intent.h"
+#include "coop/items/broom_stroke.h"
 #include "coop/props/trash_morph_gate.h"
 #include "coop/session/teleport_client.h"  // the checkpoint join spawn (the client pawn-Set edge)
 #include "ue_wrap/engine/world_identity.h"
@@ -195,7 +195,7 @@ void OnSessionStart() {
     coop::death_revive::OnSessionStart();          // the arm + per-death latches
     coop::player::run_end_travel::OnSessionStart();  // the run-ending seam's counters + one-shots
     coop::trash_morph_gate::OnSessionStart();        // the trash morph gate's per-verb tallies
-    coop::trash_broom_intent::OnSessionStart();      // the broom lane's per-session stroke tally
+    coop::broom_stroke::OnSessionStart();            // the broom lane's per-session stroke tally
     coop::registry_reaper::OnSessionStart();  // the been-in-gameplay latch (menu guard)
     coop::local_streams::OnSessionStart();  // held-prop + ragdoll edge detectors
 }

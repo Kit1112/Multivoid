@@ -44,6 +44,8 @@ set(VOTVCOOP_SOURCES
     src/coop/items/hook_anchor.cpp
     src/coop/items/hook_prop_claim.cpp
     src/coop/items/hook_constraint.cpp
+    src/coop/items/broom_stroke.cpp
+    src/coop/items/broom_push.cpp
     src/ue_wrap/engine/save_capture.cpp
     src/ue_wrap/engine/engine_audio.cpp
     src/ue_wrap/engine/engine_bones.cpp
@@ -238,7 +240,6 @@ set(VOTVCOOP_SOURCES
     src/coop/session/world_load_episode.cpp
     src/coop/interactables/garbage_sync.cpp
     src/coop/props/host_spawn_watcher.cpp
-    src/coop/props/trash_broom_intent.cpp
     src/coop/props/trash_channel.cpp
     src/coop/props/trash_grab_intent.cpp
     src/coop/props/trash_collect_sync.cpp
@@ -248,6 +249,7 @@ set(VOTVCOOP_SOURCES
     src/coop/props/trash_mirror.cpp
     src/coop/player/puppet_carry_drive.cpp
     src/coop/props/trash_clump_pose_stream.cpp
+    src/coop/props/trash_sweep.cpp
     src/coop/props/prop_drive_host.cpp
     src/coop/props/prop_drive_stream.cpp
     src/coop/world/weather_sync.cpp
