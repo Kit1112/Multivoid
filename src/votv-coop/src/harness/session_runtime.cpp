@@ -114,23 +114,29 @@ void TickPumpWatchdogs() {
 
 void Post(GT::Task t) { GT::Post(std::move(t)); }
 
-// Pump-composite coalescing: the TimelineThread posts the composite at 60 Hz, and when the game
-// thread drains slower (a blocking world load) the queue grew without bound (a measured 35 s
-// connect-to-request lag). Posting is skipped while the previous composite has not run; a
-// timestamp rather than a latch, so a composite dropped by a stalled pump self-heals after
-// kPumpRepostMs. Composites are idempotent per-tick logic, so a skipped post is not lost work.
-std::atomic<unsigned long long> g_pumpPostedAtMs{0};  // 0 = none in flight
-constexpr unsigned long long kPumpRepostMs = 500;
+// Pump-composite coalescing: the TimelineThread posts the composite at 60 Hz, and the game thread
+// runs posted tasks only at an outermost dispatch, so one script body -- a blocking world load's --
+// holds every task for its whole length. A composite is posted only while none is queued, and runs
+// its body at most once in a drain: a drain runs every task posted while it runs, so a composite
+// posted as a long tick returned would otherwise run a second tick straight after the first. A stall
+// of any length therefore ends in one session tick, never a run of ticks back to back with no
+// engine frame between them, each advancing every tick-counted window. The flag clears as the
+// composite returns, a faulting body included (the image unwinds destructors on a structured
+// exception), so one faulted composite cannot stop the next. Composites are idempotent per-tick
+// logic, so a skipped post or body is not lost work.
+std::atomic<bool> g_pumpQueued{false};
+uint64_t g_lastCompositeDrain = 0;   // game thread
 
 template <typename Body>
 void PostPumpComposite(Body&& body) {
-    const unsigned long long now = ::GetTickCount64();
-    const unsigned long long inFlight = g_pumpPostedAtMs.load(std::memory_order_relaxed);
-    if (inFlight != 0 && now - inFlight < kPumpRepostMs) return;  // previous still queued
-    g_pumpPostedAtMs.store(now, std::memory_order_relaxed);
+    bool idle = false;
+    if (!g_pumpQueued.compare_exchange_strong(idle, true, std::memory_order_acq_rel)) return;
     Post([body = std::forward<Body>(body)] {
+        struct Clear { ~Clear() { g_pumpQueued.store(false, std::memory_order_release); } } clear;
+        const uint64_t drain = GT::DrainSerial();
+        if (drain == g_lastCompositeDrain) return;
+        g_lastCompositeDrain = drain;
         body();
-        g_pumpPostedAtMs.store(0, std::memory_order_relaxed);
     });
 }
 

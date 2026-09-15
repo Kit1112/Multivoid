@@ -52,6 +52,10 @@ bool IsDefinitelyOffGameThread();
 // The number of tasks the dispatcher has run (diagnostics and the self-test).
 unsigned long long TasksRun();
 
+// The number of drains the dispatcher has begun. A task reads it to tell whether it runs in the same
+// drain as an earlier one: every task posted while a drain runs is run by that drain. Game thread.
+uint64_t DrainSerial();
+
 // The pre-dispatch interceptor: when ProcessEvent fires for `targetUFunction` the detour calls
 // `cb(self, params)`, and a true return skips the original for this dispatch, replacing the
 // UFunction's body; false runs it normally. A fixed-size table keyed on the (target, cb) pair,

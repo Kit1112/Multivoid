@@ -59,6 +59,7 @@ namespace {
 namespace D = detail;
 
 std::atomic<unsigned long long> g_tasksRun{0};
+uint64_t g_drainSerial = 0;   // game thread only
 
 inline void BloomAdd(std::atomic<uint64_t>* bloom, void* fn) {
     if (!fn) return;
@@ -336,6 +337,7 @@ bool DrainPostedTasksAtTopLevel() {
     // and was read as an engine-side stall. An unattributed hitch is an unknown, never a verdict
     // about the engine.
     const auto drainT0 = std::chrono::steady_clock::now();
+    ++g_drainSerial;
     Pump();
     const long long drainMs = std::chrono::duration_cast<std::chrono::milliseconds>(
         std::chrono::steady_clock::now() - drainT0).count();
@@ -380,6 +382,8 @@ bool IsDefinitelyOffGameThread() {
 }
 
 unsigned long long TasksRun() { return g_tasksRun.load(std::memory_order_relaxed); }
+
+uint64_t DrainSerial() { return g_drainSerial; }
 
 bool RegisterInterceptor(void* targetUFunction, UFunctionInterceptor cb) {
     return SetInterceptorSlot(targetUFunction, cb);
