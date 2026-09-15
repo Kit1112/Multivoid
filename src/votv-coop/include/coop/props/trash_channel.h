@@ -97,7 +97,8 @@ bool IsCarrying(coop::element::ElementId E);
 
 // Host: is a settle pending for E -- a re-pile seen, not yet committed or cancelled? The release
 // edge uses it to tell a churn flicker from a real drop or throw, and suppresses itself only
-// while carrying and this is true.
+// while carrying and this is true. An uncarried re-pile settles too, only so that its broadcast
+// reads the pile once the pile is placed, and is dropped if the pile is gone by then.
 bool HasPendingSettle(coop::element::ElementId E);
 
 // Host, per gameplay tick: expire birth certificates, count down the land settles and commit a

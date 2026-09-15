@@ -98,9 +98,18 @@ by a few frames. Neither strands the id.
 
 Every open carry must eventually close, so the host's tick also terminates lanes the normal path
 would leave open: a clump destroyed mid-carry (consumed, or its holder gone) closes the lane and
-broadcasts a destroy, so no client is stuck holding a dead mirror; a clump left lying un-held,
-because the game's own re-pile gate aborted while the thrower's hand was busy, closes the lane
-silently and leaves the clump world-tracked and re-grabbable, which is what single-player does.
+broadcasts a destroy, so no client is stuck holding a dead mirror; a clump left lying un-held closes
+the lane silently and leaves the clump world-tracked and re-grabbable, which is what single-player
+does. A clump re-piles only on a hit its own gate passes: its re-pile has armed, a random 0.5 to 1 s
+after its birth (1 to 2 s for a clump a pile kicks into being); its last holder's hand is empty; the
+surface is within about 41 degrees of level (about 104 degrees, short of a ceiling, for one chip
+type); and what it hits is not
+a simulating body. So a throw whose thrower's hand is busy at the land leaves one, and so does a
+roll that ends before the clump arms, or with no such hit after. When such a clump re-piles later,
+its convert waits for the same settle, so every peer sets the pile down where it was placed and not
+where the clump was, a radius above; a settle whose pile is gone before it commits is dropped, since
+whatever took the pile reports itself. `[V]` a clump whose carry had closed at rest, knocked up by
+the broom drill, landed as a pile 0.0 cm from the host's on the client.
 
 ### Trash-bits piles
 
