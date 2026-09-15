@@ -9,6 +9,7 @@
 #include "coop/net/wire_key_util.h"
 #include "coop/player/players_registry.h"
 #include "coop/props/prop_sound.h"
+#include "coop/session/net_pump.h"  // TickSerial: the aim memo's freshness clock
 
 #include "ue_wrap/desk/device_screen.h"
 #include "ue_wrap/devices/atv.h"          // EnsureResolved / IsAtv
@@ -67,11 +68,12 @@ constexpr auto kDenyDebounce = std::chrono::milliseconds(300);  // press+release
 // instance, so widget to owning unit is underivable at the force-exit surfaces), so capture
 // the native name and key at every device aim, unconditionally, so the rising-edge and
 // lost-race denies can name the unit the player just entered. A freshness bound limits
-// staleness; a miss falls back to the claim-key text (cosmetic only).
+// staleness, in session ticks (five seconds of play), since the deny that reads it runs on a tick; a
+// miss falls back to the claim-key text (cosmetic only).
 std::wstring g_memoName;
 std::wstring g_memoKey;
-std::chrono::steady_clock::time_point g_memoTime{};
-constexpr auto kMemoFresh = std::chrono::seconds(5);
+uint64_t g_memoLastTick = 0;
+constexpr uint64_t kMemoFreshTicks = 300;
 
 // The per-key busy-line cooldown: a masher keeps the deny click cadence but must not flood
 // the chat feed (one line per device per few seconds).
@@ -196,7 +198,7 @@ void ForceExitLocal(void* local, const std::wstring& key, uint8_t holder) {
     // lost-race verdict). The unit name comes from the aim memo: the loser's own press wrote it
     // moments ago; a miss degrades to the claim-key text.
     const bool fresh = !g_memoKey.empty() && g_memoKey == key &&
-                       (std::chrono::steady_clock::now() - g_memoTime) < kMemoFresh;
+                       coop::net_pump::TickSerial() <= g_memoLastTick;
     PushBusyLine(key, fresh ? g_memoName : std::wstring(), holder);
 }
 
@@ -222,7 +224,7 @@ void OnUseInputPre(void* self, void*, void*) {
         if (coop::atv_sync::IsOccupiedByOther(aimed, &holder)) {
             g_memoName = L"the ATV";
             g_memoKey = L"atv";
-            g_memoTime = std::chrono::steady_clock::now();
+            g_memoLastTick = coop::net_pump::TickSerial() + kMemoFreshTicks;
             if (DS::ClearAimForDispatch(self)) {
                 g_denyPending = true;
                 g_denyKey = L"atv";
@@ -241,7 +243,7 @@ void OnUseInputPre(void* self, void*, void*) {
     // exactly those surfaces nameless.
     g_memoName = R::ToString(R::NameOf(aimed));
     g_memoKey = key;
-    g_memoTime = std::chrono::steady_clock::now();
+    g_memoLastTick = coop::net_pump::TickSerial() + kMemoFreshTicks;
     uint8_t holder = 0xFF;
     if (!BusyByOther(key, LocalSlot(), &holder)) return;  // free or our own
     if (DS::ClearAimForDispatch(self)) {
@@ -553,7 +555,7 @@ void OnDisconnect() {
     g_denyName.clear();
     g_memoName.clear();      // busy-notice aim memo (session-end full teardown)
     g_memoKey.clear();
-    g_memoTime = {};
+    g_memoLastTick = 0;
     g_lastLineKey.clear();
     g_lastLineTime = {};
     g_deskFsmHold = false;

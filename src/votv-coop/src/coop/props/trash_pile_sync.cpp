@@ -9,6 +9,7 @@
 #include "coop/net/session.h"
 #include "coop/player/players_registry.h"
 #include "coop/props/prop_element_tracker.h"
+#include "coop/session/net_pump.h"             // TickSerial: the authored-death window's clock
 
 #include "ue_wrap/engine/engine.h"
 #include "ue_wrap/core/log.h"
@@ -56,8 +57,10 @@ std::unordered_set<std::wstring> g_depletedKeys;       // depleted THIS session 
 // stroke on a pile that may be anywhere in the world, and no proximity rule can be widened to cover
 // that without also calling a sublevel stream-out beside a remote puppet a depletion, which would
 // have this peer broadcast a destroy for a pile that is alive.
-std::unordered_map<std::wstring, Clock::time_point> g_authoredDeaths;
-constexpr auto kAuthoredDeathTtl = std::chrono::seconds(3);
+// Each record's last tick, in session ticks: three seconds of play, whatever script body runs
+// between the verb and the watch's next look.
+std::unordered_map<std::wstring, uint64_t> g_authoredDeaths;
+constexpr uint64_t kAuthoredDeathTicks = 180;
 bool g_installed = false;
 Clock::time_point g_nextPoll{};
 Clock::time_point g_nextRebuild{};
@@ -73,10 +76,10 @@ constexpr float kDeathNearCm = 800.f;
 
 // Did this peer run a destroying verb on `key` recently enough for its death to be that verb's?
 // Consumes the record: one verb, one death.
-bool WasAuthoredHere(const std::wstring& key, Clock::time_point now) {
+bool WasAuthoredHere(const std::wstring& key) {
     auto it = g_authoredDeaths.find(key);
     if (it == g_authoredDeaths.end()) return false;
-    const bool fresh = now < it->second;
+    const bool fresh = coop::net_pump::TickSerial() <= it->second;
     g_authoredDeaths.erase(it);
     return fresh;
 }
@@ -247,10 +250,10 @@ void NoteAuthoredDeath(const std::wstring& key) {
     if (key.empty()) return;
     // Expire stragglers here rather than on a timer: the map holds one entry per verb this peer ran
     // and a death consumes it, so it is empty except for the instant between the two.
-    const auto now = Clock::now();
+    const uint64_t tick = coop::net_pump::TickSerial();
     for (auto it = g_authoredDeaths.begin(); it != g_authoredDeaths.end();)
-        it = (now >= it->second) ? g_authoredDeaths.erase(it) : std::next(it);
-    g_authoredDeaths[key] = now + kAuthoredDeathTtl;
+        it = (tick > it->second) ? g_authoredDeaths.erase(it) : std::next(it);
+    g_authoredDeaths[key] = tick + kAuthoredDeathTicks;
 }
 
 void* ResolveByKey(const std::wstring& key) {
@@ -343,7 +346,7 @@ void Tick(bool inTransition) {
             // observer + the poll) vs streamed out. Two ways to answer it, and the certain one
             // first: this peer RAN a verb on that pile a moment ago, so its death is that verb's.
             // Geometry is the fallback for the local writers nothing announces.
-            const bool authored = WasAuthoredHere(it->first, now);
+            const bool authored = WasAuthoredHere(it->first);
             const float dx = e.x - cam.X, dy = e.y - cam.Y, dz = e.z - cam.Z;
             const bool nearCam = local &&
                 (dx * dx + dy * dy + dz * dz) <= (kDeathNearCm * kDeathNearCm);

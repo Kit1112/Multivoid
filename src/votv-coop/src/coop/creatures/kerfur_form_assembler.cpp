@@ -18,6 +18,7 @@
 #include "coop/element/element.h"    // ElementId, kInvalidId (gate 1 per-eid read)
 #include "coop/element/registry.h"   // Registry::EidForActor (gate 1 per-eid read)
 #include "coop/net/session.h"
+#include "coop/session/net_pump.h"  // TickSerial: the capture's freshness clock
 
 #include "ue_wrap/core/game_thread.h"
 #include "ue_wrap/core/log.h"
@@ -117,10 +118,12 @@ thread_local E::ElementId tls_bracketEntryEid = E::kInvalidId; // A's eid captur
 // paired destroy edge. Thread-local: the verb and both seams run synchronously on the game
 // thread. Cleared at each outermost verb entry and at the request entry (ClearCapturedForm),
 // plus a freshness backstop, so a capture never outlives its bracket.
+// Two seconds of play in session ticks, however long a script body runs before the consumer looks.
+constexpr uint64_t kCaptureFreshTicks = 120;
 thread_local void*   tls_capturedForm    = nullptr;   // B's actor pointer (nullptr = slot empty)
 thread_local int32_t tls_capturedFormIdx = -1;        // B's GUObjectArray internal index (for liveness)
 thread_local bool    tls_capturedIsNpc   = false;     // true = kerfurOmega_C (turn-ON B); false = prop (turn-OFF B)
-thread_local std::chrono::steady_clock::time_point tls_capturedAt{};  // capture instant (freshness backstop)
+thread_local uint64_t tls_capturedLastTick = 0;      // the last session tick the capture is fresh on
 
 // The verbose per-catch log cap; the counters are uncapped and always on.
 constexpr int kLogCap = 128;
@@ -157,7 +160,7 @@ void StoreCapturedForm(void* b, int32_t idx, void* cls) {
     tls_capturedForm    = b;
     tls_capturedFormIdx = idx;
     tls_capturedIsNpc   = IsKerfurNpcClass(cls);
-    tls_capturedAt      = std::chrono::steady_clock::now();
+    tls_capturedLastTick = coop::net_pump::TickSerial() + kCaptureFreshTicks;
 }
 // Is the host executing a client's convert request through CallFunction?
 // The gate's pre callback, observe-only: every verb runs.
@@ -377,8 +380,8 @@ CapturedForm ConsumeCapturedForm(bool wantNpc) {
     if (!tls_capturedForm) return out;                       // slot empty
     // The freshness backstop: the store is one-shot and cleared at each bracket entry, but a
     // conversion that spawned no matching successor and then consumes could otherwise pull a
-    // prior bracket's; a capture is valid only within its own sub-second verb window.
-    if (std::chrono::steady_clock::now() - tls_capturedAt > std::chrono::seconds(2)) {
+    // prior bracket's; a capture is valid only within its own verb window.
+    if (coop::net_pump::TickSerial() > tls_capturedLastTick) {
         tls_capturedForm = nullptr; tls_capturedFormIdx = -1;
         return out;
     }
@@ -399,7 +402,7 @@ bool IsCapturedForm(void* actor) {
     // successor, whose express KerfurConvert owns, and skips the generic spawn. It must not
     // consume: the deferred converge still needs the slot.
     if (!actor || actor != tls_capturedForm) return false;
-    if (std::chrono::steady_clock::now() - tls_capturedAt > std::chrono::seconds(2)) return false;
+    if (coop::net_pump::TickSerial() > tls_capturedLastTick) return false;
     return R::IsLiveByIndex(tls_capturedForm, tls_capturedFormIdx);
 }
 

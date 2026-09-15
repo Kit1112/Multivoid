@@ -85,6 +85,8 @@ std::array<bool, coop::players::kMaxPeers> g_wasConnectedBySlot{};
 // carries only rows, and every site that can fire a transition runs inside a tick; a transition
 // fired elsewhere finds no session and does nothing.
 coop::net::Session* g_tickSession = nullptr;
+// The session ticks run, which TickSerial reports.
+uint64_t g_tickSerial = 0;
 
 // The death-policy one-shot. On a local death the death arc has not armed, the pump tears every
 // coop game-side state down synchronously, stops the session and flees to the menu with the detour
@@ -261,10 +263,13 @@ void MaybeRequestReAnnounce(coop::net::Session& session, void* reapWorld) {
     }
 }
 
+uint64_t TickSerial() { return g_tickSerial; }
+
 void Tick(coop::net::Session& session) {
     // Game thread only: the puppet array and ElementDeleter::Flush are game-thread side tables; one
     // guard at the top covers everything below.
     UE_ASSERT_GAME_THREAD("net_pump::Tick (puppet drive + ElementDeleter::Flush)");
+    ++g_tickSerial;
     // Scope the Session for the ledger's teardown subscriber (g_tickSession); RAII, so an early
     // return leaves no stale pointer.
     struct TickSessionScope {

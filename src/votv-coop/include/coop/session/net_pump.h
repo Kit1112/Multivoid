@@ -15,6 +15,8 @@
 
 #pragma once
 
+#include <cstdint>
+
 namespace coop::net { class Session; }
 
 namespace coop::net_pump {
@@ -24,6 +26,13 @@ namespace coop::net_pump {
 // drains every subsystem's TickConnect / DrainChunk / Tick + the
 // event_feed.
 void Tick(coop::net::Session& session);
+
+// The session ticks this process has run, about sixty a second in play. A window a callback opens
+// and a tick judges is counted in these rather than in wall time: posted work runs only at an
+// outermost dispatch, so one script body -- a world load's tail, a save -- holds every tick for its
+// whole length and then costs one, while a wall-clock window stamped in the callback can lapse
+// before its judge first looks. Game thread.
+uint64_t TickSerial();
 
 // Called from the harness Start site (play) BEFORE
 // session.Start. Resets edge-detector flags so a session stop/restart
