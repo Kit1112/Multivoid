@@ -48,7 +48,6 @@ inline bool BloomMaybe(const std::atomic<uint64_t>* bloom, void* fn) {
 
 // ---- pump state (defined in game_thread.cpp) ----------------------------------
 extern std::atomic<int> g_queueDepth;                // lock-free emptiness probe
-extern thread_local bool t_inPump;                   // re-entrancy guard
 extern std::atomic<unsigned long> g_gameThreadId;    // first-dispatch CAS records it
 
 // ---- cold halves in game_thread.cpp (called only past the inline rejects) ----
@@ -58,8 +57,9 @@ extern std::atomic<unsigned long> g_gameThreadId;    // first-dispatch CAS recor
 bool FireInterceptorsMatched(void* self, void* function, void* params);
 void FireObserversMatched(bool post, void* self, void* function, void* params);
 // The queue drain at TOP-LEVEL game-thread context: checks the spawn-refusal gate, deferring and
-// episode-logging while the world refuses spawns, and otherwise pumps under the t_inPump guard.
-// Returns true iff Pump() ran, which is when the detour drops its self-time sample.
+// episode-logging while the world refuses spawns, and otherwise pumps. Reached only from the
+// outermost dispatch, so every dispatch a task makes is nested and cannot re-enter it. Returns
+// true iff Pump() ran, which is when the detour drops its self-time sample.
 bool DrainPostedTasksAtTopLevel();
 // Registry teardown for Uninstall() (ClearAllObservers is public API already).
 void ClearAllInterceptors();
@@ -67,8 +67,8 @@ void ClearAllInterceptors();
 // ---- inline hot-path fast rejects (the same loads a single TU would pay) --------
 // A registry probe is an active-count acquire load plus, on a count hit, one Bloom word, and only a
 // MATCHED dispatch -- under 1% of them -- crosses the TU boundary into *Matched(). The pump probe
-// is the t_inPump TLS plus a queue-depth acquire load and a thread-id compare, and only a non-empty
-// queue crosses into DrainPostedTasksAtTopLevel().
+// is a queue-depth acquire load, the dispatch depth and a thread-id compare, and only a non-empty
+// queue at the outermost dispatch crosses into DrainPostedTasksAtTopLevel().
 inline bool FireInterceptors(void* self, void* function, void* params) {
     const int active = g_interceptorActive.load(std::memory_order_acquire);
     if (active <= 0) return false;

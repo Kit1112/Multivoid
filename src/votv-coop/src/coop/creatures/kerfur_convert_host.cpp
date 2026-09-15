@@ -264,9 +264,9 @@ void OnConvertRequest(const coop::net::KerfurConvertPayload& payload,
                       uint8_t senderPeerSlot) {
     // Host-only (gated by the event_dispatch_intent router). Game thread (the
     // event_feed drain) -- ProcessEvent calls are legal here, and because the
-    // drain runs INSIDE the pump task (t_inPump set), the verb's nested
-    // dispatches cannot re-enter the pump: the converge below always runs
-    // strictly after the verb returns.
+    // drain runs INSIDE the pump task, the verb's dispatches are nested in the
+    // one that drains it and cannot re-enter the pump: the converge below
+    // always runs strictly after the verb returns.
     if (!g_ready.load(std::memory_order_acquire)) {
         UE_LOGW("kerfur_convert: request before install resolved -- dropped");
         return;

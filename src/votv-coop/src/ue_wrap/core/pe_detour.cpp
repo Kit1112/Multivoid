@@ -281,10 +281,16 @@ void __fastcall ProcessEventDetourImpl(void* self, void* function, void* params)
 
     // ProcessEvent is also called from task-graph worker threads (parallel animation), and a posted
     // task calls game-thread-only UFunctions, so the queue drains only on the recorded game thread;
-    // other threads forward. The lock-free emptiness probe first: the depth load and the in-pump
-    // check reject the empty common case without the mutex or the TEB read, and only queued work
+    // other threads forward. The lock-free emptiness probe first: the queue-depth load and the
+    // dispatch depth reject the common case without the mutex or the TEB read, and only queued work
     // confirms the game thread and drains (which also holds the spawn-refusal deferral gate).
-    if (!D::t_inPump && D::g_queueDepth.load(std::memory_order_acquire) != 0 &&
+    // It drains only at the outermost dispatch, before any Blueprint body runs: a task drained at a
+    // dispatch nested inside a body ran in the middle of that body -- the session tick inside the
+    // host's own broom stroke, applying a client's stroke to the piles the outer loop still holds --
+    // and inside a native-hook callback, whose seam skips every other callback while it runs. Every
+    // callback runs inside a dispatch, so no callback is ever the outermost one; and every dispatch a
+    // task makes is nested in the one that drains it, so the pump never re-enters itself.
+    if (D::g_queueDepth.load(std::memory_order_acquire) != 0 && t_peDepth == 1 &&
         ::GetCurrentThreadId() == D::g_gameThreadId.load(std::memory_order_relaxed)) {
         if (D::DrainPostedTasksAtTopLevel())
             sampleSelf = false;  // pump drain time is not per-dispatch detour overhead
@@ -357,6 +363,9 @@ void __fastcall ProcessEventDetour(void* self, void* function, void* params) {
                     "(menu world up) -- detour normal again");
             // Then the normal detour.
         } else if (NowMs() < until) {
+            // Counted, though nothing else of ours runs: a bypass that ends while a body it let
+            // through is still running must not read that body's next dispatch as the outermost.
+            const PeDepthScope depthScope;
             if (g_peTrampoline) g_peTrampoline(self, function, params);
             return;
         } else {

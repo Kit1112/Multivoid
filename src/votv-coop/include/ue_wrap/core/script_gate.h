@@ -40,6 +40,9 @@ struct Call {
 // initialised them to, and the post callbacks do not fire. Run executes it.
 enum class Verdict : uint8_t { Run, Cancel };
 
+// A callback may call into the engine, a pre callback before its verdict included: it is a plain
+// call on the game thread, nothing of the gate is locked around it, and a watched body the call
+// reaches fires that body's own callbacks.
 using PreFn  = Verdict (*)(const Call&);
 using PostFn = void (*)(const Call&);
 

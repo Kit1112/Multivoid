@@ -3,10 +3,10 @@
 // UWorld::SpawnActor silently returns null (a Shipping build strips the LogSpawn warning) while
 // either bit is set on the world:
 //   * bIsRunningConstructionScript -- set by AActor::ExecuteConstruction around every blueprint
-//     actor's construction. A save-load's mass construction covers most of a frame, and the nested
-//     ProcessEvent dispatches from inside those scripts are where the posted-task pump used to
-//     drain, so every spawn a task issued there failed: one join window nulled 871 trash proxies
-//     and 92 keyed-prop mirrors in 2.5 s, and the keyed ones stayed missing all session.
+//     actor's construction. A task run inside it gets null from every spawn: when the pump drained
+//     at nested dispatches, one join window nulled 871 trash proxies and 92 keyed-prop mirrors in
+//     2.5 s, and the keyed ones stayed missing all session. The pump now drains only at an
+//     outermost dispatch, and a construction the engine runs outside any script body is one.
 //   * bIsTearingDown -- the world is being destroyed; spawns are meaningless.
 //
 // WorldRefusesSpawns() reads those bits through the SAME world-resolution path the engine's own K2

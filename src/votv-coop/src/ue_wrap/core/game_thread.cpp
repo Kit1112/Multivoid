@@ -41,15 +41,11 @@ std::atomic<int> g_preObserverActive{0};
 // almost always (a post runs about a hundred times per second). The depth mirrors the queue
 // size, maintained under the mutex by the writers; the detour reads it without the lock and
 // drains only when it is non-zero. A just-posted task whose increment is not yet visible to
-// the detour's relaxed read is drained on the next dispatch, microseconds later; tasks are not
-// latency-critical at that scale. Writers stay under the mutex, so the depth and the deque
+// the detour's read waits for the next outermost dispatch instead, which the task could not
+// have counted on anyway: one script body running when a task is posted holds it until the body
+// ends, seconds during a world load. Writers stay under the mutex, so the depth and the deque
 // never diverge.
 std::atomic<int> g_queueDepth{0};
-// The re-entrancy guard: set while inside the pump, so a task that calls a UFunction
-// (re-entering ProcessEvent and the detour) skips draining and just forwards. Thread-local
-// because only the game thread ever sets it, and correct even if ProcessEvent were ever called
-// cross-thread.
-thread_local bool t_inPump = false;
 // The game thread id, recorded by the detour on its first dispatch.
 std::atomic<unsigned long> g_gameThreadId{0};
 }  // namespace detail
@@ -188,14 +184,12 @@ void ClearObserverSlot(ObserverSlot table[], std::atomic<int>& activeCounter,
 std::mutex g_queueMutex;
 std::deque<Task> g_queue;
 
-// The spawn-refusal deferral episode. Tasks assume top-level game-thread context, but the
-// detour fires on every ProcessEvent, including dispatches nested inside another actor's
-// construction script, where a spawn silently returns null (see spawn_gate.h). During a
-// save-load's mass actor construction nearly every dispatch is such a nested one, so draining
-// there made every spawn a task issued fail for the whole load tail. The drain is deferred
-// while the world refuses spawns; the queue keeps its order and drains on the first dispatch
-// outside the window: sub-millisecond in steady state, end-of-load during a mass construction,
-// exactly when spawns start succeeding. Game thread only, so plain ints.
+// The spawn-refusal deferral episode. Tasks assume a world that spawns, but an outermost dispatch
+// can still run where every spawn silently returns null (see spawn_gate.h): an actor's
+// construction the engine runs outside any script body, or the world's teardown. The drain is
+// deferred while the world refuses spawns; the queue keeps its order and drains at the first
+// outermost dispatch outside the window, exactly when spawns start succeeding. Game thread only,
+// so plain ints.
 int g_gateDeferrals = 0;
 std::chrono::steady_clock::time_point g_gateEpisodeStart{};
 std::chrono::steady_clock::time_point g_gateNextHoldWarn{};
@@ -246,8 +240,8 @@ void Pump() {
         // unwinds C++ destructors on the way out, so any lock guard the task held is released.
         // Load-bearing: posted tasks run gameplay and reflection work that can fault on a stale
         // engine pointer (a connect-edge snapshot reading a collected actor), and a fault that
-        // propagated without destructors leaked the element Registry mutex locked with the in-pump
-        // flag set, a permanent game-thread freeze. The SEH wrapper's filter captures the faulting
+        // propagated without destructors leaked the element Registry mutex locked, a permanent
+        // game-thread freeze. The SEH wrapper's filter captures the faulting
         // IP and the access address before the unwind, so an absorbed fault names its own site. The
         // pump loop continues either way, so one faulting task never stops the others or wedges the
         // tick.
@@ -316,19 +310,12 @@ void FireObserversMatched(bool post, void* self, void* function, void* params) {
 
 bool DrainPostedTasksAtTopLevel() {
     if (ue_wrap::spawn_gate::WorldRefusesSpawns()) {
-        // Nested inside a construction script, or the world is tearing down: a task run here gets
-        // null from every spawn. Defer; the queue drains on the first dispatch outside the window.
+        // Inside an actor's construction, or the world is tearing down: a task run here gets null
+        // from every spawn. Defer; the queue drains at the first outermost dispatch past the window.
         NoteGateDeferral();
         return false;
     }
     NoteGateEpisodeEnd();  // no-op unless a deferral episode just ended
-    // RAII, so the in-pump flag is cleared on every exit from the pump, including an exception
-    // path: under asynchronous exceptions the destructor runs during a structured-exception
-    // unwind too, so even if a fault escaped the pump's own SEH (faulting in the queue lock
-    // itself, say) the flag cannot stick and silently kill all future draining. A raw reset was
-    // skipped on exactly that path, a permanent host freeze.
-    struct InPumpGuard { ~InPumpGuard() { t_inPump = false; } } pumpGuard;
-    t_inPump = true;
     // The drain's own duration, on the same marker and threshold the session's tick uses. The
     // session tick is ITSELF one of these tasks, so this is the OUTER bracket and encloses it:
     // read the pair as total-and-part, never as two costs to add. It exists because the tick was

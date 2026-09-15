@@ -30,7 +30,8 @@ it on itself.
 the engine lifecycle of dispatched actors (`ReceiveBeginPlay`, `ReceiveTick`), RPC-style and
 native-event entry points, the `GameplayStatics` calls when a native, engine or spawner caller
 issues them, multicast delegate broadcasts (a component hit, a widget click), an engine-initiated
-destroy, and the mod's own reflected calls, which re-enter the detour behind a pump guard. `[V]`
+destroy, and the mod's own reflected calls, which re-enter the detour nested in the dispatch that
+made them, where the pump does not drain. `[V]`
 
 **Invisible**, routed through the Blueprint VM below the hook: the `EX_LocalVirtualFunction`,
 `EX_VirtualFunction`, `EX_FinalFunction`, `EX_LocalFinalFunction` and `EX_CallMath` opcodes, so
@@ -62,11 +63,17 @@ the post observers (`ue_wrap/core/game_thread.h` declares them). `[V]`
 callback that dereferences an actor or calls an engine function either posts itself to the game
 thread and re-validates liveness there, or reads only its parameters. `[V]`
 
-**The pump rule.** A posted task runs at top-level game-thread context, and the pump defers while
-the world refuses `SpawnActor`: the detour also fires on dispatches nested inside another actor's
-construction script, where `SpawnActor` silently returns null in a shipping build, so a task may
-legally spawn but may run milliseconds after it was posted. Never spawn from an observer directly;
-post it. `[V]`
+**The pump rule.** A posted task runs at the next outermost dispatch on the game thread -- one
+nested in no other, so never in the middle of a Blueprint body or inside an observer, seam or gate
+callback -- and the pump defers while the world refuses `SpawnActor`, which silently returns null
+in a shipping build: an actor's construction, which can itself be an outermost dispatch, and the
+world's teardown. So a task may legally spawn, but it runs only once the body that was running when
+it was posted has returned: a frame later in play, seconds later in a world load, whose tail is one
+body (5.6 to 6.8 s with no drain on a joining client). A queue that a callback fills and
+a tick judges must hold everything such a body produces, and a window a callback opens for a tick to
+close counts session ticks (`TickSerial` in `coop/session/net_pump`), not wall time, since such a
+body costs one tick. Every task posted while a drain runs, from any thread, runs in that drain.
+Never spawn from an observer directly; post it. `[V]`
 
 ## The function table
 

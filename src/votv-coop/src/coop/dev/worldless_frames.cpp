@@ -44,7 +44,7 @@ constexpr unsigned long long kReportMs      = 5000;  // periodic report while th
 // Every UFunction this mod calls, `SpawnObject` included, reaches the game thread through
 // `GT::Post`, which drains inside our ProcessEvent detour, so in a frozen window we cannot
 // create or drive a UMG widget at all, whatever the engine is doing with Slate. The pump needs
-// both the detour installed AND ProcessEvent traffic: the detour installs early, but blueprint
+// both the detour installed AND an outermost ProcessEvent dispatch: the detour installs early, but blueprint
 // dispatch traffic is near zero during the boot load, which is why the game can present at
 // ~42 fps while our pump does not advance at all.
 

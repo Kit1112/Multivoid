@@ -33,7 +33,7 @@ bool g_hooksInstalled = false;
 
 // ---- detour -> Tick handoff ring (GT-only: the Func-patch callback runs on
 // the game thread, deep inside dispatch -- it must not lock or call the
-// engine; Tick drains it the same frame). ----
+// engine; the next session tick drains it). ----
 struct RingEntry {
     uint8_t op;    // DeskSndOp
     uint8_t comp;  // DeskSndComp index

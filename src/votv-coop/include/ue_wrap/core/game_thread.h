@@ -1,8 +1,8 @@
 // ue_wrap/core/game_thread.h -- work on the engine's game thread. UObject::ProcessEvent, and so
 // reflection::CallFunction, must run there; a UFunction called from our own thread races the
 // engine. The engine calls ProcessEvent constantly during play, always on the game thread, so a
-// detour on it is a free per-call game-thread callback: it drains a posted-task queue
-// (reentrancy-guarded, so a task that calls CallFunction does not recurse the pump), fires the
+// detour on it is a free per-call game-thread callback: it drains a posted-task queue (at an
+// outermost dispatch only, so a task that calls CallFunction does not recurse the pump), fires the
 // interceptors and observers, then forwards to the real ProcessEvent through the trampoline.
 // Requires reflection::Resolve to have found ProcessEvent.
 
@@ -37,8 +37,11 @@ void SetTransparentBypass(int ms);
 // function behaves as SetTransparentBypass(maxMs). Lock-free.
 void SetTransparentBypassUntil(void* resumeOnFunction, int maxMs);
 
-// Queue `task` to run on the game thread inside the next ProcessEvent call. Thread-safe,
-// returns at once, FIFO; a task may post further tasks, which run on a later pump.
+// Queue `task` to run on the game thread at the next outermost ProcessEvent call -- one nested in no
+// other, so before any Blueprint body runs -- outside a window where the world refuses spawns (an
+// actor's construction, the world's teardown). A task posted while a body runs waits for that body
+// to end, which during a world load is seconds. Thread-safe, returns at once, FIFO; a task may post
+// further tasks, which run in the same drain.
 void Post(Task task);
 
 // True if the caller is on the game thread (known once the detour has run at least once).
@@ -63,8 +66,8 @@ uint64_t DrainSerial();
 // substitute a body for specific objects (filtered on `self` inside cb): suppressing client-side
 // NPC spawns, cancelling the client's weather schedulers. Per dispatch the cost is a Bloom
 // rejection for a non-intercepted function and a count-bounded walk on a hit. Registration is
-// an atomic store. An interceptor must not post tasks or call CallFunction without re-entrancy
-// care: the pump's reentrancy guard does not cover it.
+// an atomic store. An interceptor may post tasks, which run at the next outermost dispatch; a
+// UFunction it calls dispatches nested in the one it intercepts, and fires the interceptors again.
 using UFunctionInterceptor = bool(*)(void* self, void* params);
 // Capacity is registration-time only; the per-dispatch walk is count-bounded behind the Bloom
 // reject, so headroom costs memory (16 bytes a slot), not hot-path time. A static census cannot
