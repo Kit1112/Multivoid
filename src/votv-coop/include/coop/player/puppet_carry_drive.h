@@ -44,7 +44,7 @@ ue_wrap::FVector HandVelocityForEid(coop::element::ElementId eid);
 // HOST: per-gameplay-tick pump (called from subsystems::TickGameplay AFTER trash_channel::TickCarry, so
 // the carry latch is current before the drive guards on IsCarrying). For each registered held clump:
 // guard (latch open, clump live, puppet live); if NOT flying, SetActorLocation(clump, head + aim*grabLen);
-// then STREAM its pose into `s`'s host-authoritative TrashCarryPose batch (carry + flight). Drops the
+// then PUBLISH its pose on `s`'s host-originated TrashCarryPose queue (carry + flight). Drops the
 // entry when the clump dies, the puppet leaves, or the carry latch closes (the re-pile land). Game thread.
 void Tick(coop::net::Session& s);
 

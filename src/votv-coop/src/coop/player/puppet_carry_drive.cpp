@@ -4,7 +4,7 @@
 
 #include "coop/props/active_drive.h"       // NowMs -- timestamp the hand-velocity samples
 #include "coop/net/protocol.h"       // TrashClumpPoseSnapshot (the carry pose batch entry)
-#include "coop/net/session.h"        // SetLocalTrashCarryBatch (host publish)
+#include "coop/net/session.h"        // PublishTrashCarryPose (host publish)
 #include "coop/player/players_registry.h"
 #include "coop/player/remote_player.h"
 #include "coop/props/trash_channel.h"     // IsCarrying / HasPendingSettle / CtxForEid (carry latch + stamp)
@@ -53,11 +53,6 @@ struct PuppetHeld {
 
 std::vector<PuppetHeld> g_held;  // GT-only; at most one per peer (carry AND flight, distinguished by `flying`)
 
-// True while we published a NON-empty batch last tick. Lets Tick skip the SetLocalTrashCarryBatch call
-// (a session-mutex lock) entirely at idle (the common case: nobody carrying), publishing one empty batch
-// to CLEAR the stream when a carry ends, then staying quiet. Avoids a per-host-tick lock for no reason.
-bool g_wasStreaming = false;
-
 }  // namespace
 
 void NotePuppetHeld(coop::element::ElementId eid, uint8_t slot, void* clump) {
@@ -95,7 +90,6 @@ ue_wrap::FVector HandVelocityForEid(coop::element::ElementId eid) {
 }
 
 void Tick(coop::net::Session& s) {
-    std::vector<coop::net::TrashClumpPoseSnapshot> batch;  // host->all carry/flight pose batch (empty = stop sending)
     static thread_local int sTick = 0;
     ++sTick;
     for (auto it = g_held.begin(); it != g_held.end(); ) {
@@ -173,29 +167,25 @@ void Tick(coop::net::Session& s) {
         // STREAM the clump's CURRENT pose (hand pos when carrying, physics pos when flying) to ALL peers so
         // every client renders the carry + the throw arc. Host-authoritative + host-originated (the relay
         // can't echo to the grabber; a client drives only slot 0). eid+ctx keyed -> the receiver's per-eid
-        // ActiveDrive interp; ctx is the carry generation (stale-pose guard on the client).
-        const ue_wrap::FVector  loc = E::GetActorLocation(it->clump);
-        const ue_wrap::FRotator rot = E::GetActorRotation(it->clump);
-        coop::net::TrashClumpPoseSnapshot snap{};
-        snap.eid   = it->eid;
-        snap.x = loc.X; snap.y = loc.Y; snap.z = loc.Z;
-        snap.pitch = ue_wrap::NormalizeAxis(rot.Pitch);
-        snap.yaw   = ue_wrap::NormalizeAxis(rot.Yaw);
-        snap.roll  = ue_wrap::NormalizeAxis(rot.Roll);
-        snap.ctx   = coop::trash_channel::CtxForEid(E);
-        if (batch.size() < static_cast<size_t>(coop::net::kMaxTrashCarryBatchEntries))
-            batch.push_back(snap);
-        if ((sTick % 60) == 0)
-            UE_LOGI("[TRASH-CARRY] HOST PUBLISH eid=%u slot=%u %s -> (%.1f,%.1f,%.1f) ctx=%u maxDriftCm=%.2f",
-                    it->eid, it->slot, it->flying ? "FLIGHT" : "carry", loc.X, loc.Y, loc.Z,
-                    static_cast<unsigned>(snap.ctx), it->maxDriftCm);
+        // ActiveDrive interp; ctx is the carry generation (stale-pose guard on the client). A clump a
+        // player moved, carried or thrown, goes ahead of the ones a broom set rolling.
+        if (s.TrashCarryPoseTurn(it->eid, /*ahead=*/true) != coop::net::PoseTurn::Wait) {
+            const ue_wrap::FVector  loc = E::GetActorLocation(it->clump);
+            const ue_wrap::FRotator rot = E::GetActorRotation(it->clump);
+            coop::net::TrashClumpPoseSnapshot snap{};
+            snap.eid   = it->eid;
+            snap.x = loc.X; snap.y = loc.Y; snap.z = loc.Z;
+            snap.pitch = ue_wrap::NormalizeAxis(rot.Pitch);
+            snap.yaw   = ue_wrap::NormalizeAxis(rot.Yaw);
+            snap.roll  = ue_wrap::NormalizeAxis(rot.Roll);
+            snap.ctx   = coop::trash_channel::CtxForEid(E);
+            s.PublishTrashCarryPose(snap, /*ahead=*/true);
+            if ((sTick % 60) == 0)
+                UE_LOGI("[TRASH-CARRY] HOST PUBLISH eid=%u slot=%u %s -> (%.1f,%.1f,%.1f) ctx=%u maxDriftCm=%.2f",
+                        it->eid, it->slot, it->flying ? "FLIGHT" : "carry", loc.X, loc.Y, loc.Z,
+                        static_cast<unsigned>(snap.ctx), it->maxDriftCm);
+        }
         ++it;
-    }
-    // Publish only when streaming, or ONCE to clear when a carry just ended (empty batch + g_wasStreaming).
-    // At idle (no carry, was not streaming) skip the call entirely -> no per-tick session-mutex lock.
-    if (!batch.empty() || g_wasStreaming) {
-        s.SetLocalTrashCarryBatch(batch);   // empty -> the session stops fanning TrashCarryPose
-        g_wasStreaming = !batch.empty();
     }
 }
 
@@ -210,7 +200,6 @@ void OnPeerLeft(uint8_t slot) {
 
 void OnDisconnect() {
     g_held.clear();
-    g_wasStreaming = false;
 }
 
 }  // namespace coop::puppet_carry_drive

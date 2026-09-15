@@ -941,9 +941,9 @@ struct TrashClumpPoseSnapshot {
 };
 static_assert(sizeof(TrashClumpPoseSnapshot) == 32, "TrashClumpPoseSnapshot must be 32 bytes");
 
-// Max carried clumps per TrashCarryPose datagram. A player carries at most one trash clump, so the
-// realistic simultaneous count is (kMaxPeers - 1) client grabs; 8 is ample headroom. Datagram
-// 20 + 4 + 8*32 = 280 B, far under MTU. Reuses EntityPoseBatchHeader (generic count+pad; RULE 2).
+// Max clump poses per TrashCarryPose datagram: 20 + 4 + 8*32 = 280 B, far under MTU. The host's
+// pending queue is merged by eid and drained a datagram's worth per send, so more clumps than fit
+// go out over the following sends. Reuses EntityPoseBatchHeader (generic count+pad; RULE 2).
 inline constexpr int kMaxTrashCarryBatchEntries = 8;
 inline constexpr int kTrashCarryPoseDatagramMax =
     static_cast<int>(sizeof(PacketHeader) + sizeof(EntityPoseBatchHeader)) +

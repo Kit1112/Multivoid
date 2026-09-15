@@ -59,6 +59,7 @@ struct Driven {
 };
 
 std::vector<Driven> g_driven;   // game thread only
+size_t              g_turn = 0; // where the next tick's publishing starts, so no prop waits forever
 // The claim generation is PER PROP: the receiver's closed-generation gate is keyed by eid and
 // compares in a signed 8-bit window, so a counter shared by every prop would read a re-claim as
 // older than the closed one after enough claims of other props in between. Outlives the row.
@@ -194,7 +195,12 @@ void Tick(coop::net::Session& s) {
     if (g_driven.empty()) return;
     const uint64_t now = coop::active_drive::NowMs();
     static uint32_t sPublished = 0;
-    for (Driven& d : g_driven) {
+    // Publishing starts where the last tick's joins left off, so with more driven props than one send
+    // carries, none waits forever for its turn.
+    const size_t n = g_driven.size();
+    size_t joined = 0;
+    for (size_t k = 0; k < n; ++k) {
+        Driven& d = g_driven[(g_turn + k) % n];
         void* actor = d.ref.Get();
         if (!actor) {
             // The destroy crossed on its own seam; a receiver drops a drive whose actor died.
@@ -202,16 +208,20 @@ void Tick(coop::net::Session& s) {
             d.dead = true;
             continue;
         }
-        if (now < d.nextProbeMs) continue;   // resting: read at the slow cadence
-        const ue_wrap::FVector  loc = E::GetActorLocation(actor);
-        const ue_wrap::FRotator rot = E::GetActorRotation(actor);
         if (HeldBySomeone(actor)) {
             // A hand took it: the held-prop lane streams it from here and its release hands the
-            // velocity back. The end edge closes this stream's generation first.
-            SendEnd(s, d, actor, loc, rot, "taken by a hand");
+            // velocity back. The end edge closes this stream's generation first, whatever the
+            // prop's turn in the queue.
+            SendEnd(s, d, actor, E::GetActorLocation(actor), E::GetActorRotation(actor), "taken by a hand");
             d.dead = true;
             continue;
         }
+        if (now < d.nextProbeMs) continue;   // resting: read at the slow cadence
+        // A pose read before its turn would be overwritten before any send.
+        const coop::net::PoseTurn turn = s.PropDrivePoseTurn(d.eid);
+        if (turn == coop::net::PoseTurn::Wait) continue;
+        const ue_wrap::FVector  loc = E::GetActorLocation(actor);
+        const ue_wrap::FRotator rot = E::GetActorRotation(actor);
         if (Moved(d, loc, rot)) {
             coop::net::PropPoseSnapshot pp{};
             pp.key       = d.key;
@@ -221,7 +231,8 @@ void Tick(coop::net::Session& s) {
             pp.pitch = ue_wrap::NormalizeAxis(rot.Pitch);
             pp.yaw   = ue_wrap::NormalizeAxis(rot.Yaw);
             pp.roll  = ue_wrap::NormalizeAxis(rot.Roll);
-            s.PublishPropDrivePose(pp);   // queued: the newest pose goes out on the next send
+            s.PublishPropDrivePose(pp);   // queued: it goes out in its turn, refreshed until then
+            if (turn == coop::net::PoseTurn::Join) ++joined;
             d.everSent    = true;
             d.sentLoc     = loc;
             d.sentRot     = rot;
@@ -242,6 +253,7 @@ void Tick(coop::net::Session& s) {
             d.nextProbeMs = now + kRestProbeMs;   // claimed and resting: the slow cadence
         }
     }
+    g_turn = n ? (g_turn + joined) % n : 0;
     g_driven.erase(std::remove_if(g_driven.begin(), g_driven.end(),
                                   [](const Driven& d) { return d.dead; }),
                    g_driven.end());
@@ -249,6 +261,7 @@ void Tick(coop::net::Session& s) {
 
 void OnDisconnect() {
     g_driven.clear();
+    g_turn = 0;
     g_genByEid.clear();
 }
 

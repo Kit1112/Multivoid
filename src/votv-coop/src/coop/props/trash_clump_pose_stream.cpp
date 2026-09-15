@@ -28,18 +28,21 @@ std::unordered_map<uint32_t, AD::ActiveDrive> g_carryDrives;
 // Throttled apply log: the first few, then every 60th.
 uint32_t g_applyCount = 0;
 
+// The drained poses, swapped with the session's buffer each take so neither side allocates in the
+// steady state.
+std::vector<coop::net::TrashClumpPoseSnapshot> g_batch;
+
 }  // namespace
 
 void TickApplyAndDrive(coop::net::Session& s) {
     UE_ASSERT_GAME_THREAD("trash_clump_pose_stream::TickApplyAndDrive");
     const uint64_t nowMs = AD::NowMs();
 
-    // 1. Drain the latest host batch (consume-once; an empty/absent batch leaves the existing drives to
-    //    AdvanceLerp between packets / freeze on a stop). Only the HOST populates it -> on a host this
-    //    returns false and we just advance nothing.
-    std::vector<coop::net::TrashClumpPoseSnapshot> batch;
-    if (s.TakeRemoteTrashCarryBatch(batch)) {
-        for (const auto& snap : batch) {
+    // 1. Drain every pose received since the last tick, the newest per clump (consume-once; nothing
+    //    new leaves the existing drives to AdvanceLerp between packets / freeze on a stop). Only the
+    //    HOST populates it -> on a host this returns false and we just advance nothing.
+    if (s.TakeRemoteTrashCarryBatch(g_batch)) {
+        for (const auto& snap : g_batch) {
             const coop::element::ElementId E = static_cast<coop::element::ElementId>(snap.eid);
             // ctx-gate (requireCurrentGen, like remote_prop's PropPose gate): a carry pose for a generation
             // whose ToClump convert we have NOT adopted yet (ctx != known) is HELD -- applying it would drive
@@ -65,6 +68,7 @@ void TickApplyAndDrive(coop::net::Session& s) {
                 UE_LOGI("[TRASH-CARRY] CLIENT APPLY eid=%u ctx=%u -> target(%.1f,%.1f,%.1f) (per-eid carry drive)",
                         snap.eid, static_cast<unsigned>(snap.ctx), snap.x, snap.y, snap.z);
         }
+        g_batch.clear();   // capacity kept; the session's buffer must come back empty on the next take
     }
 
     // 2. Advance EVERY drive one tick (whether or not a new pose arrived): smooth follow between sendHz
@@ -86,6 +90,7 @@ void ClearDriveForEid(coop::element::ElementId eid) {
 
 void OnDisconnect() {
     g_carryDrives.clear();
+    g_batch.clear();
 }
 
 }  // namespace coop::trash_clump_pose_stream
