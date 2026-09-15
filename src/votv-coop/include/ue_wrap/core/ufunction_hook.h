@@ -15,6 +15,8 @@
 
 #pragma once
 
+#include <cstdint>
+
 namespace ue_wrap::ufunction_hook {
 
 // Post-native observer. `context` is the dispatch Context -- for a member call the object the
@@ -31,13 +33,33 @@ namespace ue_wrap::ufunction_hook {
 // observers have.
 using PostNativeCallback = void(*)(void* context, void* sourceObject, void* spawnedResult);
 
-// Patch `ufunction`'s native Func with a transparent forwarder that reads FFrame::Object, forwards
-// to the original Func (which steps the params off the bytecode stream, runs the implementation and
-// writes *Result), then reads *Result and invokes `cb` with both. No engine layout leaks upward.
+// The frame the call a post callback is reporting executed in: for a call from bytecode that is
+// the calling Blueprint function (`function`) and its storage (`locals`), where each of its locals
+// and parameters sits at its Offset_Internal (reflection::FindPropertyOffset on the function); for
+// a call through ProcessEvent it is the called function and its parameters, so check `function`
+// before reading. An ubergraph's locals are the actor's persistent frame, which is how a spawn
+// issued inside a Blueprint loop names the loop's current element. Both null outside any callback;
+// code a callback runs sees that callback's frame. Game thread.
+struct CallerFrame {
+    void*    function;
+    uint8_t* locals;
+};
+CallerFrame CurrentCallerFrame();
+
+// The result storage of the call a post callback is reporting, the native function's RESULT_PARAM.
+// The caller reads it once the callback returns, so a callback that writes a value of the
+// function's return type there answers the call with that value: how a seam gives a read a
+// Blueprint makes of an object the answer that object stands in for. Null outside any callback
+// and for a function with no return value. Game thread.
+void* CurrentResult();
+
+// Patch `ufunction`'s native Func with a transparent forwarder that forwards to the original Func
+// (which steps the params off the bytecode stream, runs the implementation and writes *Result),
+// then reads FFrame::Object and *Result and invokes `cb` with both. No engine layout leaks upward.
 // Idempotent per (ufunction, cb). Returns false if the arguments are null, the table is full, or
 // the Func slot reads null -- a wrong offset for this build, where refusing beats corrupting the
 // UFunction. There is no unpatch: a Func patch replaces an observation scheme wholesale once
-// proven. Game thread.
+// proven. `armed` false installs the patch disarmed (SetArmed). Game thread.
 //
 // The scope rule above is about the DISPATCH ROUTE, not the callee list. Script overrides ARE
 // patched here and DO fire -- puppet_spawn's BlueprintUpdateAnimation, save_indicator_suppress's
@@ -46,6 +68,12 @@ using PostNativeCallback = void(*)(void* context, void* sourceObject, void* spaw
 // ProcessInternal and non-null and passes the guard, it LOGS "patched", and it NEVER FIRES. That
 // class belongs to the script-body gate (ue_wrap/core/script_gate.h), which sees every script body
 // with its arguments and can refuse it.
-bool InstallPostHook(void* ufunction, PostNativeCallback cb);
+bool InstallPostHook(void* ufunction, PostNativeCallback cb, bool armed = true);
+
+// Arm or disarm an installed hook. Disarmed, the forwarder pays one load and a branch after the
+// original and never calls back: the shape for a seam that matters only while a call of the
+// consumer's own runs, on a native every Blueprint calls all the time. False when (ufunction, cb)
+// is not installed. Game thread.
+bool SetArmed(void* ufunction, PostNativeCallback cb, bool armed);
 
 }  // namespace ue_wrap::ufunction_hook

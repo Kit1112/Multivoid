@@ -54,7 +54,7 @@ the post observers (`ue_wrap/core/game_thread.h` declares them). `[V]`
 | an interceptor | before the original; `true` cancels | a dispatch to suppress or replace | a Blueprint-internal call |
 | the detour itself | the anchor of the three above | a transparent bypass darkens the whole layer | |
 | a native detour (`ue_wrap/core/hook`) | on a raw native address | non-function natives: the save write, the swap chain's present, the level open | anything a function observer would want |
-| the native function seam (`ue_wrap/core/ufunction_hook`) | after a call whose target is native, on every route | `EX_CallMath` and final calls into natives, and dispatched events; the caller's object and the result | a script function called locally |
+| the native function seam (`ue_wrap/core/ufunction_hook`) | after a call whose target is native, on every route | `EX_CallMath`, final and virtual calls into natives, and dispatched events; the caller's object, the calling frame's function and locals, and the result, which the callback may overwrite | a script function called locally |
 | the script-body gate (`ue_wrap/core/script_gate`) | at the entry of a Blueprint function's body, on every route; a pre callback answers run or cancel, a post callback reads the result | the instance, the evaluated parameters, the caller's frame; a `ProcessEvent` call, an `EX_Local*` call, a call through `EX_Context` and an ubergraph entry alike | a native function; a watched body on a worker thread is counted and passed through |
 | polling | a throttled tick | the observable result of anything | the moment of the verb |
 

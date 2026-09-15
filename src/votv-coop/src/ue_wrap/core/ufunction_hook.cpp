@@ -8,6 +8,7 @@
 #include <windows.h>
 
 #include <array>
+#include <atomic>
 #include <cstdint>
 #include <utility>
 
@@ -25,6 +26,7 @@ struct Slot {
     void*              ufunction = nullptr;
     NativeFuncPtr      original  = nullptr;
     PostNativeCallback cb        = nullptr;
+    std::atomic<bool>  armed{false};
 };
 
 // This facility is the STANDARD seam for every dispatch our ProcessEvent detour cannot see
@@ -70,23 +72,40 @@ int RunCbSEH(PostNativeCallback cb, void* context, void* src, void* result) {
 // step runs. Preserve that when adding a callback, or make the guard per-slot.
 thread_local bool t_inCb = false;
 
+// The frame and the result storage of the call the running callback reports, published for
+// exactly as long as the callback runs (CurrentCallerFrame, CurrentResult).
+thread_local CallerFrame t_frame{nullptr, nullptr};
+thread_local void*       t_result = nullptr;
+
+inline void* ReadPtr(void* base, size_t off) {
+    return *reinterpret_cast<void**>(reinterpret_cast<uint8_t*>(base) + off);
+}
+
 template <int N>
 void __fastcall NativeThunk(void* context, void* stack, void* result) {
     Slot& s = g_slots[N];
-    // FFrame::Object is the actor whose bytecode is executing -- the SOURCE entity for a spawn
-    // issued from its ubergraph. Read BEFORE forwarding: the original steps parameters off the
-    // bytecode stream, but never touches Object.
-    void* srcObj = stack
-        ? *reinterpret_cast<void**>(reinterpret_cast<uint8_t*>(stack) + P::off::FFrame_Object)
-        : nullptr;
     // Transparent forward: steps the params, runs the impl, writes *result.
     s.original(context, stack, result);
-    if (!s.cb || t_inCb) return;   // re-entrant cb -> skip (no double-convert from a nested spawn)
+    // Disarmed, or a re-entrant cb -> skip (no double-convert from a nested spawn).
+    if (!s.armed.load(std::memory_order_relaxed) || !s.cb || t_inCb) return;
+    // FFrame::Object is the actor whose bytecode is executing -- the SOURCE entity for a spawn
+    // issued from its ubergraph -- and Node and Locals are the function and storage of that
+    // frame. Read after the forward: stepping the parameters moves the frame's code pointer and
+    // never writes those three.
+    void* srcObj = stack ? ReadPtr(stack, P::off::FFrame_Object) : nullptr;
+    const CallerFrame frame = stack
+        ? CallerFrame{ReadPtr(stack, P::off::FFrame_Node),
+                      static_cast<uint8_t*>(ReadPtr(stack, P::off::FFrame_Locals))}
+        : CallerFrame{nullptr, nullptr};
     // *Result = the native fn's RESULT_PARAM (the spawned actor for BeginDeferred). NULL-safe:
     // a failed spawn leaves it null -> the cb gets null + logs it (never derefs blind).
     void* spawned = result ? *reinterpret_cast<void**>(result) : nullptr;
     t_inCb = true;
+    t_frame = frame;
+    t_result = result;
     const int rc = RunCbSEH(s.cb, context, srcObj, spawned);
+    t_result = nullptr;
+    t_frame = CallerFrame{nullptr, nullptr};
     t_inCb = false;
     if (rc != 0) {
         UE_LOGE("ufunction_hook: post-native cb AV absorbed (slot %d, ufn=%p src=%p result=%p) -- "
@@ -110,7 +129,21 @@ NativeFuncPtr ThunkFor(int n) {
 
 }  // namespace
 
-bool InstallPostHook(void* ufunction, PostNativeCallback cb) {
+CallerFrame CurrentCallerFrame() { return t_frame; }
+
+void* CurrentResult() { return t_result; }
+
+bool SetArmed(void* ufunction, PostNativeCallback cb, bool armed) {
+    for (int i = 0; i < g_slotCount; ++i) {
+        if (g_slots[i].ufunction == ufunction && g_slots[i].cb == cb) {
+            g_slots[i].armed.store(armed, std::memory_order_relaxed);
+            return true;
+        }
+    }
+    return false;
+}
+
+bool InstallPostHook(void* ufunction, PostNativeCallback cb, bool armed) {
     if (!ufunction || !cb) return false;
     // Idempotent: the same (ufunction, cb) re-install is a no-op (the caller's Install
     // retries each world-gated pass until the class resolves).
@@ -137,6 +170,7 @@ bool InstallPostHook(void* ufunction, PostNativeCallback cb) {
     g_slots[n].ufunction = ufunction;
     g_slots[n].original  = original;
     g_slots[n].cb        = cb;
+    g_slots[n].armed.store(armed, std::memory_order_relaxed);
     g_slotCount = n + 1;     // slot fully populated before the thunk can be reached
     // An 8-byte aligned pointer swap: the Func slot is 8-aligned and the UFunction lives in the
     // writable UE4 object pool. Atomic on x64, and game-thread-only dispatch means no torn read
