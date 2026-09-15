@@ -1,17 +1,14 @@
 // harness/autotest/broomstroke.h -- the broom-stroke drill's own declaration.
 //
-// Beside its implementation rather than in harness/autotest.h: that catalogue carries a paragraph
-// per drill and had reached the line at which a documented declaration file counts as an essay, so
-// the next drill added to it fails the prose gate whatever its comment says. A drill is one
-// feature; this is where its interface belongs.
+// Beside its implementation rather than in harness/autotest.h, whose catalogue carries a paragraph
+// per drill and has reached the length at which a declaration file counts as an essay. A drill is
+// one feature; this is where its interface belongs.
 //
-// What it measures is a broom stroke counted as TRASH on both peers, in both directions. Phase 1:
-// the client strikes a dispenser pile until it empties; phase 2: the host strikes the second pile.
-// Both peers must GAIN trash around the pile in both phases. The peer that is not striking is left
-// where the game put it and its distance is MEASURED, not arranged -- placing it was what dropped
-// the host onto a sub-level travel trigger -- and phase 1 only proves its point while that distance
-// is outside the radius a depletion is judged by, which the verdict carries.
-// Env VOTVCOOP_RUN_BROOM_STROKE=1, on both peers.
+// It measures a whole broom stroke, swung through the broom's own right mouse button on a broom each
+// peer really holds, followed on both peers by element id: each peer holding the button, the host
+// sweeping a heap and the client a lone pile, the client emptying a dispenser, each peer pushing the
+// trash, and on the heap's floor two clumps held back from re-piling, one knocked up and one pushed
+// again. A two-peer driver joins the two logs. Env VOTVCOOP_RUN_BROOM_STROKE=1, on both peers.
 
 #pragma once
 
