@@ -176,4 +176,19 @@ void WarmupHurtFlashCache();
 // A loaded UMaterialInterface by object name; nullptr if not loaded. Game thread.
 void* ResolveMaterialByName(const wchar_t* name);
 
+// ---- The reach segment ----
+// AmainPlayer_C::arm, the segment a held tool traces along: from the camera of player index 0 --
+// the local machine's, whichever pawn it is called on -- along that camera's forward by the
+// player's reach. The function is looked up on the player's own class at each call, never held:
+// the class is a Blueprint's and dies with the world that loaded it.
+
+// Call `player`'s own `arm` with no custom length and read the segment it returned. False when
+// unresolved, dead or not dispatched. Game thread.
+bool ReadMainPlayerArm(void* player, FVector& start, FVector& end);
+
+// The offsets of `arm`'s two out parameters within the frame of `armFunction` (the function a
+// call of it runs, which a script-body gate reports), for writing a segment through them. False
+// when either does not resolve. Game thread.
+bool MainPlayerArmOutOffsets(void* armFunction, int32_t& startOff, int32_t& endOff);
+
 }  // namespace ue_wrap::engine

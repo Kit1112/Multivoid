@@ -530,6 +530,25 @@ bool ReadMainPlayerCanRagdoll(void* mainPlayer, bool& allowed) {
 }
 
 
+bool ReadMainPlayerArm(void* player, FVector& start, FVector& end) {
+    if (!player || !R::IsLive(player)) return false;
+    // Revalidated on every hit, so a world unload cannot hand back a freed function.
+    void* fn = R::FindDispatchFunctionCached(R::ClassOf(player), P::name::MainPlayerArmFn);
+    if (!fn) return false;
+    ParamFrame f(fn);   // customLength stays zero: the player's own reach
+    if (!Call(player, f)) return false;
+    start = f.Get<FVector>(P::name::MainPlayerArmStartParam);
+    end = f.Get<FVector>(P::name::MainPlayerArmEndParam);
+    return true;
+}
+
+bool MainPlayerArmOutOffsets(void* armFunction, int32_t& startOff, int32_t& endOff) {
+    if (!armFunction) return false;
+    startOff = R::FindParamOffset(armFunction, P::name::MainPlayerArmStartParam);
+    endOff = R::FindParamOffset(armFunction, P::name::MainPlayerArmEndParam);
+    return startOff >= 0 && endOff >= 0;
+}
+
 bool InvokeAddPlayerDamage(void* mainPlayer, float damage, bool blood) {
     if (!mainPlayer || !R::IsLive(mainPlayer)) return false;
     ResolveAddPlayerDamageFn();

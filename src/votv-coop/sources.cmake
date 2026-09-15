@@ -89,6 +89,7 @@ set(VOTVCOOP_SOURCES
     src/ue_wrap/core/trace.cpp
     src/ue_wrap/actors/wisp.cpp
     src/ue_wrap/actors/swinger.cpp
+    src/ue_wrap/actors/broom.cpp
     src/ue_wrap/engine/engine_pawn.cpp
     src/ue_wrap/engine/world_identity.cpp
     src/ue_wrap/engine/engine_nav.cpp

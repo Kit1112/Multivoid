@@ -237,6 +237,31 @@ inline constexpr const wchar_t* ClumpContactFn =
 // reads it back, and the spawn transform is rolled from the pile's own component bounds.
 inline constexpr const wchar_t* PileBroomedFn = L"broomed";
 
+// The broom (ue_wrap/actors/broom). Its stroke's chip-pile loop keeps the pile it is turning into a
+// clump in an ubergraph local, the one both the clump's spawn and the pile's destroy read. The
+// stroke is entered by the notify of the swing montage the right mouse button plays; the notify
+// function's name carries its graph node's GUID, so a recook of the broom renames it. `player` is
+// the holder the broom's graph writes on the button's press.
+inline constexpr const wchar_t* BroomClass = L"prop_broom_C";
+inline constexpr const wchar_t* BroomUbergraphFn = L"ExecuteUbergraph_prop_broom";
+inline constexpr const wchar_t* BroomSweptPileLocal = L"K2Node_DynamicCast_AsActor_Chip_Pile";
+inline constexpr const wchar_t* BroomStrokeNotifyFn = L"OnNotifyBegin_6E812E554132A6D770F1F3A21FF9EAC0";
+inline constexpr const wchar_t* BroomNotifyNameParam = L"NotifyName";
+inline constexpr const wchar_t* BroomStrokeNotifyName = L"clean";
+inline constexpr const wchar_t* BroomHolderProp = L"player";
+
+// The held item's right mouse button, int_objects_C's playerHandUse_RMB / playerHandRelease_RMB:
+// the player's input reaches the item in its hand through these, with itself as the argument.
+inline constexpr const wchar_t* HandUseRmbFn = L"playerHandUse_RMB";
+inline constexpr const wchar_t* HandReleaseRmbFn = L"playerHandRelease_RMB";
+inline constexpr const wchar_t* HandUsePlayerParam = L"player";
+
+// AmainPlayer_C::arm(customLength, out start, out end, out rotation): the reach segment every
+// held-tool trace aims along, from the camera of player index 0.
+inline constexpr const wchar_t* MainPlayerArmFn = L"arm";
+inline constexpr const wchar_t* MainPlayerArmStartParam = L"start";
+inline constexpr const wchar_t* MainPlayerArmEndParam = L"end";
+
 // The kerfur AnimBP generated class (the asset AnimBlueprint_kerfurOmega_regular plus the '_C'
 // suffix of BP-generated classes).
 inline constexpr const wchar_t* AnimBPKerfurRegularClass = L"AnimBlueprint_kerfurOmega_regular_C";
