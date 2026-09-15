@@ -10,7 +10,7 @@
 // broadcasting it made the host destroy most of its authoritative copies by key on a bare
 // join. The probe counts the load-tail population (keyless props, allowlisted NPCs, the
 // chipPile field) at 5 Hz; a stable count for the required scans means the async load pass
-// has drained, and a two-tier deadline bounds a pathological load, the announce firing
+// has drained, and an absolute ceiling bounds a pathological load, the announce firing
 // anyway, loudly. The latch is a serially reused session (the join load, a travel re-seed,
 // the post-snapshot sweep gate); sessions never overlap.
 
@@ -31,12 +31,12 @@ void Arm();
 void ArmQuiesceProbe(const char* reason);
 
 // Drive the probe. Cheap when latched or with no session open (one bool read); while a session
-// is open, the 5 Hz throttled population walk, the stability counter and the two-tier
-// deadline. On the latch edge it closes the episode (if armed) and logs the reason, stable or
-// deadline. Returns the latch state; safe to call from several per-tick sites. Game thread.
+// is open, the 5 Hz throttled population walk, the stability counter and the ceiling. On the
+// latch edge it closes the episode (if armed) and logs the reason, stable or ceiling. Returns the
+// latch state; safe to call from several per-tick sites. Game thread.
 bool TickQuiesceProbe();
 
-// True once the most recent probe session latched, stable or by deadline. Reset by the arms
+// True once the most recent probe session latched, stable or by the ceiling. Reset by the arms
 // and by Reset. Game thread.
 bool HasQuiesced();
 

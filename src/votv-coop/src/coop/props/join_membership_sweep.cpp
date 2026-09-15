@@ -447,7 +447,7 @@ void ArmDivergenceSweep() {
     // A fresh probe session: with the join barrier the world was settled at the announce, so this
     // normally latches after the minimum stability window (about 2 s); it exists for a load tail
     // resuming between the announce and SnapshotComplete (a late straggler wave, a purge under the
-    // bracket). The probe owns stability, purge awareness and the deadlines.
+    // bracket). The probe owns stability, purge awareness and the ceiling.
     coop::world_load_episode::ArmQuiesceProbe("post-snapshot sweep gate");
     UE_LOGI("join_membership_sweep: divergence sweep ARMED -- deferring to the load-tail "
             "quiescence latch (world_load_episode probe session)");
@@ -477,7 +477,7 @@ void TickClientReconcile() {
         return;  // zero cost when disarmed (the steady state)
     }
     UE_ASSERT_GAME_THREAD("join_membership_sweep::TickClientReconcile");  // no-mutex: all sweep state is GT-only
-    // A deadline latch arrives here like a stable one (degraded, and logged loud by the probe).
+    // A ceiling latch arrives here like a stable one (degraded, and logged loud by the probe).
     if (!quiesced) return;
 
     // The local player is re-resolved here (a pointer stashed at arm time could go stale); the

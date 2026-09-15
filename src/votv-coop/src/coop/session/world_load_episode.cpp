@@ -42,24 +42,25 @@ bool g_everOpened = false;     // any session opened since Reset. While false,
                                // saw a world load has nothing to wait for
 bool g_quiesced   = false;     // the latch of the most recent session
 std::chrono::steady_clock::time_point g_probeArmedAt{};      // absolute-ceiling base
-std::chrono::steady_clock::time_point g_lastProgressAt{};    // no-progress deadline base (reset on purge drain / moving population)
 std::chrono::steady_clock::time_point g_lastScanAt{};        // {} => not yet scanned this session
 std::chrono::steady_clock::time_point g_quiescedAt{};        // valid while g_quiesced
 int  g_lastUnsettledCount = -1;
 int  g_stableScans        = 0;
 std::string g_probeReason;     // logged at arm + latch
 
-// The probe cadence, stability window and two-tier deadline: the same constants the divergence
-// sweep has trusted for its destructive adjudication gate. The announce may not use a looser gate
-// than that sweep does.
+// The probe cadence, stability window and ceiling: the same constants the divergence sweep has
+// trusted for its destructive adjudication gate. The announce may not use a looser gate than that
+// sweep does.
 constexpr int kScanIntervalMs   = 200;    // 5 Hz while a session is open
 constexpr int kQuiesceScans     = 10;     // a stable population across this many scans means
                                           // the async load pass has drained. The NPCs load
                                           // well after the props, so a shorter window
                                           // false-signals mid-load
-constexpr int kNoProgressMs     = 45000;  // since the last progress, not since the arm:
-                                          // fires only after this long with nothing
-                                          // happening, never during a draining purge
+// No deadline measures time without progress. Every scan finds a registry mid-purge or unseeded, a
+// population that moved, or one that held still and latches as stable within kQuiesceScans scans,
+// so the only stretch such a deadline could ever see is one the probe did not scan at all -- one
+// script body holding every tick, a world load's tail -- and it would call the load stalled on the
+// first scan after that body, the population having moved throughout it.
 constexpr int kAbsoluteCeilingMs = 120000;  // since the arm, the stuck-purge backstop; the announce then goes degraded
 
 // ---- The reconcile window; see the header block ----
@@ -131,15 +132,13 @@ void OpenProbeSession_(const char* reason) {
     g_everOpened = true;
     g_quiesced = false;
     g_probeArmedAt = std::chrono::steady_clock::now();
-    g_lastProgressAt = g_probeArmedAt;
     g_lastScanAt = {};
     g_lastUnsettledCount = -1;
     g_stableScans = 0;
     g_probeReason = reason ? reason : "?";
     UE_LOGI("world_load_episode: quiescence probe ARMED (%s) -- population stable x%d scans @%dms, "
-            "no-progress %ds, absolute ceiling %ds",
-            g_probeReason.c_str(), kQuiesceScans, kScanIntervalMs, kNoProgressMs / 1000,
-            kAbsoluteCeilingMs / 1000);
+            "absolute ceiling %ds",
+            g_probeReason.c_str(), kQuiesceScans, kScanIntervalMs, kAbsoluteCeilingMs / 1000);
 }
 
 void Latch_(const char* how) {
@@ -213,9 +212,7 @@ bool TickQuiesceProbe() {
         msSince(g_lastScanAt) < kScanIntervalMs) return false;
     g_lastScanAt = now;
 
-    // The two-tier deadline: the no-progress timer or the absolute ceiling. The ceiling fires even
-    // through a stuck purge, so the announce can never defer forever; the no-progress timer never
-    // pre-empts a legitimately draining purge, which keeps resetting the progress stamp below.
+    // The absolute ceiling fires even through a stuck purge, so the announce can never defer forever.
     if (msSince(g_probeArmedAt) >= kAbsoluteCeilingMs) {
         UE_LOGW("world_load_episode: probe ABSOLUTE ceiling (%d s) -- latching DEGRADED (stuck "
                 "purge / pathological load; the settled-world guarantee does NOT hold for this join)",
@@ -223,27 +220,17 @@ bool TickQuiesceProbe() {
         Latch_("ABSOLUTE ceiling -- DEGRADED");
         return true;
     }
-    if (msSince(g_lastProgressAt) >= kNoProgressMs) {
-        UE_LOGW("world_load_episode: probe NO-PROGRESS deadline (%d s) -- latching DEGRADED (the "
-                "load stalled; the settled-world guarantee does NOT hold for this join)",
-                kNoProgressMs / 1000);
-        Latch_("no-progress deadline -- DEGRADED");
-        return true;
-    }
-    // A registry mid-purge, or one never seeded, means the loading world is incomplete. A draining
-    // purge IS progress, so reset the no-progress base; the stability run restarts once the world
-    // re-seeds.
+    // A registry mid-purge, or one never seeded, means the loading world is incomplete; the
+    // stability run restarts once the world re-seeds.
     if (!coop::prop_element_tracker::HasSeededOnce() ||
         coop::prop_element_tracker::InPurgeEpisode()) {
-        g_lastProgressAt = now;
         g_lastUnsettledCount = -1;
         g_stableScans = 0;
         return false;
     }
     const int unsettled = CountLoadTailUnsettled_();
     if (unsettled != g_lastUnsettledCount) {
-        g_lastUnsettledCount = unsettled;
-        g_lastProgressAt = now;  // population still moving = progress
+        g_lastUnsettledCount = unsettled;  // the population is still moving
         g_stableScans = 0;
         return false;
     }
