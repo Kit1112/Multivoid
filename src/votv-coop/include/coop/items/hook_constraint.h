@@ -8,7 +8,8 @@
 // prop is the same defect twice over. One authority per force, the doctrine's rule, applied to
 // the tie itself: a CLIENT breaks every constraint a hook builds on it, at the native seam that
 // builds it, and the HOST builds a client's hook its real constraint on the mirror it holds of
-// that hook. Game thread throughout, except the seam callback, which only posts.
+// that hook. Game thread throughout, except the seam callback, which only judges the builder's
+// class and posts.
 
 #pragma once
 
@@ -44,9 +45,9 @@ namespace coop::hook_constraint {
 // retried from Tick until the engine class resolves. Game thread.
 void Install(coop::net::Session* session);
 
-// Drain the breaks the seam queued: classify each (a hook of this lane's classes, its own tie and
-// not the flight tether), break it, and retry the ones the class table could not judge yet for a
-// bounded window. A no-op on the host, whose seam queues nothing. Game thread, from the lane's
+// Drain the ties the seam queued, each built by a hook of this lane's classes: break the ones that are
+// the hook's own tie and not the flight tether, and hold the ones the member table cannot judge yet
+// for a bounded window. A no-op on the host, whose seam queues nothing. Game thread, from the lane's
 // tick.
 void Tick();
 

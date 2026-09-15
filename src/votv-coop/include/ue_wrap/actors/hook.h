@@ -37,8 +37,15 @@ enum class Kind : uint8_t {
 // written against and a guessed offset would write into whatever now lives there.
 bool EnsureResolved();
 
+// Mint the Kinds' class names, once per process. EnsureResolved mints them too; a seam that must judge
+// a hook before any hook class has loaded mints them where it installs. Game thread: the mint
+// dispatches.
+bool ResolveNames();
+
 // `actor`'s Kind, or Count when it is not a deployable hook. An EXACT class compare, not a descent
-// test: hook_Child_C descends from hook_C and must never match.
+// test: hook_Child_C descends from hook_C and must never match. By the class's name against the
+// minted names, with no allocation and no engine call, so a native seam may ask it, and it answers
+// before any hook class has loaded. Count until ResolveNames has succeeded.
 Kind KindOf(void* actor);
 
 // The UClass* for a Kind, or null when unresolved / out of range.

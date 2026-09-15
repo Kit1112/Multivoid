@@ -4,7 +4,7 @@
 
 #include "ue_wrap/actors/prop.h"        // GetStaticMesh: the O(1) answer to a component name
 #include "ue_wrap/core/call.h"
-#include "ue_wrap/core/fname_utils.h"    // StringToFName: the game's component lookup takes a name
+#include "ue_wrap/core/fname_utils.h"    // StringToFName: the Kinds' names, and the component lookup's
 #include "ue_wrap/core/log.h"
 #include "ue_wrap/core/reflection.h"
 #include "ue_wrap/core/sdk_profile.h"
@@ -32,6 +32,17 @@ constexpr const wchar_t* kClassNames[static_cast<size_t>(Kind::Count)] = {
 };
 
 void* g_classes[static_cast<size_t>(Kind::Count)] = {};
+
+// The same classes by name, minted once per process. KindOf compares a class's name against these:
+// a name is in the pool before the class loads and outlives every world, so the compare answers
+// from the first hook a loading world builds and never matches a freed class by its address.
+R::FName g_classNames[static_cast<size_t>(Kind::Count)] = {};
+bool     g_namesResolved   = false;
+bool     g_namesLatchedOff = false;
+int      g_nameAttempts    = 0;
+// The conversion a mint dispatches is the engine's own, loaded before any session, so a mint still
+// failing after this many passes is a build where it is broken, not a wait.
+constexpr int kMaxNameAttempts = 600;
 
 // A bool UPROPERTY's storage is a byte offset plus a bit mask: several flags pack into one byte, so
 // a raw byte read cannot attribute a value to one flag.
@@ -81,6 +92,7 @@ bool     g_resolved   = false;
 bool     g_latchedOff = false;
 int      g_attempts   = 0;
 uint64_t g_nextTryMs  = 0;
+uint64_t g_nextClassTryMs[static_cast<size_t>(Kind::Count)] = {};   // ClassForKind's retry clock
 
 // Five passes with a class in hand is a version mismatch, not a load-order wait: the members are
 // declared on the class we just found.
@@ -111,7 +123,7 @@ void* ReadObj(const void* obj, int32_t off) {
 
 // Everything the wrapper needs, in one predicate, so the resolve log can name what is missing.
 bool AllResolved() {
-    return g_classes[0] && g_attachedA.resolved() && g_attachedB.resolved() &&
+    return g_namesResolved && g_classes[0] && g_attachedA.resolved() && g_attachedB.resolved() &&
            g_isThrown.resolved() && g_playerHooked.resolved() && g_skipSave.resolved() &&
            g_offDist >= 0 && g_offCompA >= 0 && g_offCompB >= 0 && g_offActiveHk >= 0 &&
            g_fnReceiveTick && g_fnGetData && g_fnLoadData && g_fnProcessKeys && g_fnSetLength &&
@@ -149,6 +161,25 @@ void ResolveCodeLib() {
 
 }  // namespace
 
+bool ResolveNames() {
+    if (g_namesResolved) return true;
+    if (g_namesLatchedOff) return false;
+    R::FName minted[static_cast<size_t>(Kind::Count)] = {};
+    for (size_t i = 0; i < static_cast<size_t>(Kind::Count); ++i) {
+        minted[i] = ue_wrap::fname_utils::StringToFName(kClassNames[i]);
+        if (minted[i].ComparisonIndex != 0) continue;   // None: the mint did not dispatch
+        if (++g_nameAttempts >= kMaxNameAttempts) {
+            g_namesLatchedOff = true;
+            UE_LOGE("hook: the class name '%ls' did not mint in %d passes -- no hook is judged, mirrored "
+                    "or tied for the rest of this process", kClassNames[i], g_nameAttempts);
+        }
+        return false;
+    }
+    for (size_t i = 0; i < static_cast<size_t>(Kind::Count); ++i) g_classNames[i] = minted[i];
+    g_namesResolved = true;
+    return true;
+}
+
 bool EnsureResolved() {
     if (g_resolved) return true;
     if (g_latchedOff) return false;
@@ -156,6 +187,7 @@ bool EnsureResolved() {
     if (now < g_nextTryMs) return false;
     g_nextTryMs = now + 1000;
 
+    ResolveNames();
     for (size_t i = 0; i < static_cast<size_t>(Kind::Count); ++i)
         if (!g_classes[i]) g_classes[i] = R::FindClass(kClassNames[i]);
     // Only hook_C gates: the two variants load with the assets that use them and a session may
@@ -218,13 +250,13 @@ bool EnsureResolved() {
     if (++g_attempts >= kMaxPostClassAttempts) {
         g_latchedOff = true;
         UE_LOGW("hook: resolution INCOMPLETE after %d passes with hook_C in hand "
-                "(attached_a=%d attached_b=%d isThrown=%d playerHooked=%d skipSave=%d dist=%d "
+                "(names=%d attached_a=%d attached_b=%d isThrown=%d playerHooked=%d skipSave=%d dist=%d "
                 "A=%d B=%d activeHook=%d tick=%d getData=%d loadData=%d processKeys=%d "
                 "setLength=%d setWorldLocRot=%d attach=%d detach=%d root=%d actor_a=%d actor_b=%d "
                 "attach_a=%d component_A=%d attachLoc_A=%d phys=%d PhysicsConstraint=%d "
                 "BreakConstraint=%d) -- the hook lane stays OFF and writes nothing; game version "
                 "mismatch?",
-                g_attempts, g_attachedA.resolved(), g_attachedB.resolved(), g_isThrown.resolved(),
+                g_attempts, g_namesResolved, g_attachedA.resolved(), g_attachedB.resolved(), g_isThrown.resolved(),
                 g_playerHooked.resolved(), g_skipSave.resolved(), g_offDist >= 0, g_offCompA >= 0,
                 g_offCompB >= 0, g_offActiveHk >= 0, g_fnReceiveTick != nullptr,
                 g_fnGetData != nullptr, g_fnLoadData != nullptr, g_fnProcessKeys != nullptr,
@@ -238,18 +270,31 @@ bool EnsureResolved() {
 }
 
 Kind KindOf(void* actor) {
-    if (!actor || !g_resolved) return Kind::Count;
+    if (!actor || !g_namesResolved) return Kind::Count;
     // An EXACT class compare, never a descent test: hook_Child_C descends from hook_C, is placed by
     // the level and attaches itself on every peer, so a descent test would mirror and double it.
     void* cls = R::ClassOf(actor);
+    if (!cls) return Kind::Count;
+    const R::FName& n = R::NameOf(cls);
     for (size_t i = 0; i < static_cast<size_t>(Kind::Count); ++i)
-        if (cls && cls == g_classes[i]) return static_cast<Kind>(i);
+        if (n.ComparisonIndex == g_classNames[i].ComparisonIndex && n.Number == g_classNames[i].Number)
+            return static_cast<Kind>(i);
     return Kind::Count;
 }
 
 void* ClassForKind(Kind k) {
     const size_t i = static_cast<size_t>(k);
     if (i >= static_cast<size_t>(Kind::Count)) return nullptr;
+    // A variant loads with the assets that use it, which can be after the resolve that found hook_C,
+    // while KindOf already names its instances; a class still missing is asked for again, at most once
+    // a second, since a lookup that misses walks every object.
+    if (!g_classes[i] && g_resolved) {
+        const uint64_t now = NowMs();
+        if (now >= g_nextClassTryMs[i]) {
+            g_nextClassTryMs[i] = now + 1000;
+            g_classes[i] = R::FindClass(kClassNames[i]);
+        }
+    }
     return g_classes[i];
 }
 
@@ -537,6 +582,7 @@ void ResetCache() {
     g_latchedOff = false;
     g_attempts = 0;
     g_nextTryMs = 0;
+    for (auto& t : g_nextClassTryMs) t = 0;
 }
 
 }  // namespace ue_wrap::hook

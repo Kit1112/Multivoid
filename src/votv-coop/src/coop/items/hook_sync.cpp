@@ -432,10 +432,9 @@ void Tick() {
     g_lastDriverMs = now;
 
     if (!g_parkInstalled && !g_parkRefused) Install(s);
-    // Before this lane's own resolve gate: the queue holds every constraint build the seam saw,
-    // most of them not a hook's (the ATV's rig, the heavy grab), and it judges and drops those
-    // with or without the hook classes in hand. Behind the gate it would sit full on a world
-    // that never loads a hook.
+    // Before this lane's own resolve gate: a tie a hook built before the members resolved waits a
+    // bounded time and is then let go with a warning, which behind a gate that never opens -- a
+    // build whose hook members differ -- it would never be.
     coop::hook_constraint::Tick();
     if (!H::EnsureResolved()) return;
 
