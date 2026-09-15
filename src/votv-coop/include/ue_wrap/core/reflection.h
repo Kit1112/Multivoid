@@ -176,9 +176,10 @@ void* FindFunction(void* owningClass, const wchar_t* funcName);
 void* FindDispatchFunction(void* cls, const wchar_t* funcName, void** outDeclaringClass);
 
 // The same answer, memoised per (class, name), for a path that asks more than once per class --
-// a verb driven on every interaction rather than resolved once at install. The cached pair is
-// revalidated before it is returned, so a world unload cannot serve a freed UFunction. It does
-// not report the declaring class: a caller that has to know already had to ask once, uncached.
+// a verb driven on every interaction rather than resolved once at install. The class and the
+// function are held by slot and serial, so neither a freed UFunction nor a stranger recycled at its
+// address is served after a world unload, and a miss is served as a miss while its class lives. It
+// does not report the declaring class: a caller that has to know already had to ask once, uncached.
 // Game thread only.
 void* FindDispatchFunctionCached(void* cls, const wchar_t* funcName);
 

@@ -8,6 +8,7 @@
 
 #include "ue_wrap/core/reflection.h"
 
+#include "ue_wrap/core/cached_obj_ref.h"
 #include "ue_wrap/core/log.h"
 
 #include <string>
@@ -47,10 +48,16 @@ namespace {
 // on the UClass and the name text -- not the literal's address, which would give two callers
 // passing the same words two entries and one caller passing a built string a new entry per call.
 //
-// A cached pair is revalidated before use rather than stamped with a world generation: a package
-// unloaded between worlds takes its UClass and its UFunctions with it, and both slot checks are
-// O(1) and safe on a freed pointer. Game thread only, like every caller of it.
-std::unordered_map<void*, std::unordered_map<std::wstring, void*>> g_cache;
+// A cached answer holds the class and the function as slot-validated references (slot and serial),
+// never as bare pointers: a package unloaded between worlds takes its UClass and its UFunctions with
+// it, and a live stranger can come to sit at either address, which a liveness check read off the
+// object itself would take for the original. A miss is an answer too, kept while its class lives.
+// Game thread only, like every caller of it.
+struct CachedDispatch {
+    ue_wrap::CachedObjRef cls;
+    ue_wrap::CachedObjRef fn;   // unset for a miss
+};
+std::unordered_map<void*, std::unordered_map<std::wstring, CachedDispatch>> g_cache;
 
 }  // namespace
 
@@ -59,11 +66,18 @@ void* FindDispatchFunctionCached(void* cls, const wchar_t* funcName) {
     auto& byName = g_cache[cls];
     const auto it = byName.find(funcName);
     if (it != byName.end()) {
-        if (it->second && IsLive(cls) && IsLive(it->second)) return it->second;
-        byName.erase(it);  // the package went away with its world; resolve against the new one
+        const CachedDispatch& c = it->second;
+        if (c.cls.Alive()) {
+            if (!c.fn.Raw()) return nullptr;       // the class this address holds declares no such body
+            if (c.fn.Alive()) return c.fn.Raw();
+        }
+        byName.erase(it);  // the package went away with its world; resolve against what is here now
     }
     void* fn = FindDispatchFunction(cls, funcName, nullptr);
-    byName[funcName] = fn;  // a miss is cached too: it costs a full walk to re-learn
+    CachedDispatch c;
+    c.cls.Set(cls);
+    if (fn) c.fn.Set(fn);
+    byName[funcName] = c;
     return fn;
 }
 
