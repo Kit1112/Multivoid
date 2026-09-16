@@ -15,6 +15,7 @@
 #include "coop/props/trash_channel.h"   // CtxForEid, the trash sync-time context
 #include "coop/props/prop_element_tracker.h"
 #include "coop/props/prop_stick_sync.h"
+#include "coop/props/prop_drive_host.h"          // Coast on release
 #include "coop/props/remote_prop.h"     // ResolveMirrorEidByActor (the bound-clump held-pose eid fallback)
 #include "coop/props/trash_collect_sync.h"
 
@@ -509,6 +510,11 @@ void Tick(coop::net::Session& session, void* local, void* controller) {
             session.SendPropRelease(g_lastHeldKey,
                                     vel.linearCmS.X, vel.linearCmS.Y, vel.linearCmS.Z,
                                     vel.angularDegS.X, vel.angularDegS.Y, vel.angularDegS.Z, relEid, /*relCtx=*/0u);
+            if (session.role() == coop::net::Role::Host && linMagSq > (coop::net::kThrownLinVelThreshold * coop::net::kThrownLinVelThreshold)) {
+                if (void* heldObj = g_lastHeldProp.Raw()) {
+                    coop::prop_drive_host::Coast(heldObj, "host thrown release");
+                }
+            }
         }
         g_lastHeldProp.Reset();
         g_lastHeldKey = {};
