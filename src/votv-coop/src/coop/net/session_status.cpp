@@ -333,6 +333,7 @@ void Session::ResetPeerRemoteState(int peerSlot) {
     lastReadStamp_[peerSlot] = 0;
     hasRemoteProp_[peerSlot] = false;
     lastRemotePropSeq_[peerSlot] = 0;
+    remotePropReceiptAt_[peerSlot] = {};
     remotePropStamp_[peerSlot] = 0;
     lastReadPropStamp_[peerSlot] = 0;
     // The ragdoll slot too, so a reconnecting peer inherits no stale stream.

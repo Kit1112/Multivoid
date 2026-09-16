@@ -657,6 +657,10 @@ private:
     std::array<PropPoseSnapshot, kMaxPeers> remotePropPoses_{};
     std::array<bool, kMaxPeers> hasRemoteProp_{};
     std::array<uint32_t, kMaxPeers> lastRemotePropSeq_{};
+    // Arrival instants make held-prop arbitration a lease rather than a permanent record: an
+    // unreliable stream that disappears without PropRelease stops claiming its prop after the
+    // same gap the game-thread receiver treats as an implicit release.
+    std::array<std::chrono::steady_clock::time_point, kMaxPeers> remotePropReceiptAt_{};
     std::array<uint64_t, kMaxPeers> remotePropStamp_{};
     std::array<uint64_t, kMaxPeers> lastReadPropStamp_{};
     // Per-peer ragdoll pelvis physics (the prop's per-slot stamp/seq shape).

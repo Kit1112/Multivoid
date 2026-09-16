@@ -240,21 +240,12 @@ void Session::StoreStreamPacket(MsgType type, int routeSlot, int peerSlot,
             std::fabs(pkt.pose.yaw)   > 180.f ||
             std::fabs(pkt.pose.roll)  > 180.f) return;
         if (pkt.pose.key.len > 31) return;
-        {
-            std::lock_guard<std::mutex> lk(remoteMutex_);
-            if (hasRemoteProp_[routeSlot] &&
-                static_cast<int32_t>(seq - lastRemotePropSeq_[routeSlot]) <= 0) {
-                break;
-            }
-            remotePropPoses_[routeSlot] = pkt.pose;
-            lastRemotePropSeq_[routeSlot] = seq;
-            hasRemoteProp_[routeSlot] = true;
-            ++remotePropStamp_[routeSlot];
-        }
-        // Host relay: forward this client's held-prop pose to every OTHER client,
-        // unless local host or another peer slot already has an active claim on this prop.
+        const auto receivedAt = std::chrono::steady_clock::now();
+        bool conflict = false;
+        // Host arbitration happens before this packet becomes the sender's cached pose. Keeping
+        // a rejected pose made a competing claimant look live forever and later blocked the real
+        // holder even though that packet was never relayed.
         if (cfg_.role == Role::Host) {
-            bool conflict = false;
             {
                 std::lock_guard<std::mutex> lk(localMutex_);
                 if (hasLocalProp_ &&
@@ -264,23 +255,36 @@ void Session::StoreStreamPacket(MsgType type, int routeSlot, int peerSlot,
                     conflict = true;
                 }
             }
-            if (!conflict) {
-                std::lock_guard<std::mutex> lk(remoteMutex_);
+        }
+        {
+            std::lock_guard<std::mutex> lk(remoteMutex_);
+            if (hasRemoteProp_[routeSlot] &&
+                static_cast<int32_t>(seq - lastRemotePropSeq_[routeSlot]) <= 0) {
+                break;
+            }
+            if (!conflict && cfg_.role == Role::Host) {
                 for (int s = 0; s < kMaxPeers; ++s) {
-                    if (s != routeSlot && hasRemoteProp_[s]) {
-                        const auto& other = remotePropPoses_[s];
-                        if ((pkt.pose.elementId != 0 && other.elementId == pkt.pose.elementId) ||
-                            (pkt.pose.key.len > 0 && other.key.len == pkt.pose.key.len &&
-                             std::memcmp(other.key.data, pkt.pose.key.data, pkt.pose.key.len) == 0)) {
-                            conflict = true;
-                            break;
-                        }
+                    if (s == routeSlot || !hasRemoteProp_[s]) continue;
+                    const auto age = receivedAt - remotePropReceiptAt_[s];
+                    if (age > std::chrono::milliseconds(500)) continue;
+                    const auto& other = remotePropPoses_[s];
+                    if ((pkt.pose.elementId != 0 && other.elementId == pkt.pose.elementId) ||
+                        (pkt.pose.key.len > 0 && other.key.len == pkt.pose.key.len &&
+                         std::memcmp(other.key.data, pkt.pose.key.data, pkt.pose.key.len) == 0)) {
+                        conflict = true;
+                        break;
                     }
                 }
             }
-            if (!conflict) {
-                RelayUnreliableToOtherClients(peerSlot, data, len);
-            }
+            if (conflict) break;
+            remotePropPoses_[routeSlot] = pkt.pose;
+            lastRemotePropSeq_[routeSlot] = seq;
+            remotePropReceiptAt_[routeSlot] = receivedAt;
+            hasRemoteProp_[routeSlot] = true;
+            ++remotePropStamp_[routeSlot];
+        }
+        if (cfg_.role == Role::Host) {
+            RelayUnreliableToOtherClients(peerSlot, data, len);
         }
         break;
     }
