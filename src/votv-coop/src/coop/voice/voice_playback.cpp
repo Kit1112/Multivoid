@@ -396,7 +396,12 @@ void Playback::MixOutput(float* out, uint32_t frameCount) {
                                               Channel::kReflectionSamples];  // 105 ms
             const float late = ch.reflection[(w + Channel::kReflectionSamples - 11040) %
                                              Channel::kReflectionSamples];  // 230 ms
-            const float wet = early * 0.16f + late * 0.07f;
+            // A clear line gets only a small room tone. Behind a wall the dry signal is strongly
+            // reduced, while these early reflections stay audible enough to avoid an abrupt,
+            // radio-like mute.
+            const float reflectionMix =
+                ch.occlusionGain.load(std::memory_order_relaxed) < 0.99f ? 1.0f : 0.25f;
+            const float wet = (early * 0.16f + late * 0.07f) * reflectionMix;
             ch.reflection[w] = s + early * 0.18f;
             ch.reflectionWrite = (w + 1) % Channel::kReflectionSamples;
             out[2 * i + 0] += (s + wet) * gainL;
