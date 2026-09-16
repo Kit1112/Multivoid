@@ -15,6 +15,7 @@
 #include "coop/element/registry.h"
 #include "coop/net/session.h"
 #include "coop/player/players_registry.h"
+#include "coop/player/local_streams.h"        // LastHeldActor
 #include "coop/props/prop_echo_suppress.h"
 #include "coop/props/prop_element_tracker.h"
 #include "coop/props/prop_stick_sync.h"  // the stuck wall-attachable gates
@@ -172,6 +173,19 @@ void ResolveAndStartDrive(int slot, const coop::net::PropPoseSnapshot& pose) {
         return;
     }
     coop::unresolved_pose_ledger::Clear(slot, keyW, pose.elementId);
+
+    // Multiple-holder conflict gate: if this machine holds the prop or another peer slot
+    // is already driving it, refuse to attach a second competing drive.
+    if (prop == coop::local_streams::LastHeldActor()) {
+        UE_LOGI("remote_prop: slot %d PropPose rejected (locally held by host/player)", slot);
+        return;
+    }
+    for (int s = 0; s < static_cast<int>(coop::players::kMaxPeers); ++s) {
+        if (s != slot && g_drives[s].actor == prop) {
+            UE_LOGI("remote_prop: slot %d PropPose rejected (actor %p already driven by slot %d)", slot, prop, s);
+            return;
+        }
+    }
     // A stuck wall-attachable unsticks for an incoming drive only on a sustained stream: the stale
     // poses in flight after the sender's stick commit land here with the drive cache just cleared
     // by OnStickState, and without the streak they would unstick it right back. A static
