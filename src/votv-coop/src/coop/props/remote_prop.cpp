@@ -16,6 +16,7 @@
 #include "coop/net/session.h"
 #include "coop/player/players_registry.h"
 #include "coop/player/local_streams.h"        // LastHeldActor
+#include "coop/props/prop_drive_host.h"          // Coast
 #include "coop/props/prop_echo_suppress.h"
 #include "coop/props/prop_element_tracker.h"
 #include "coop/props/prop_stick_sync.h"  // the stuck wall-attachable gates
@@ -410,6 +411,8 @@ void OnRelease(int senderSlot, const coop::net::PropReleasePayload& payload, voi
         if (propActor && linSpeed > coop::net::kThrownLinVelThreshold) {
             DrivePropThrown(propActor, localPlayer);
             coop::prop_sound::PlayThrowWhoosh(propActor);
+            // On host, hand off flying/coasting prop to prop_drive_host so clients observe the flight trajectory
+            coop::prop_drive_host::Coast(propActor, "thrown release");
             UE_LOGI("remote_prop: fired Aprop_C.thrown(player=%p) + swing whoosh -- launch speed %.1f cm/s > threshold %.1f",
                     localPlayer, linSpeed, coop::net::kThrownLinVelThreshold);
         }
