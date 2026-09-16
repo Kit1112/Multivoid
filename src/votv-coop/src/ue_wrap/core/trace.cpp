@@ -27,7 +27,8 @@ struct TArrayControl { void* data; int32_t num; int32_t max; };
 
 }  // namespace
 
-int LineBlockedStatDyn(void* worldCtx, const FVector& start, const FVector& end) {
+int LineBlockedStatDyn(void* worldCtx, const FVector& start, const FVector& end,
+                       void* actorToIgnore) {
     if (!worldCtx) return -1;
     if (!g_traceFn || !g_kslCdo) {
         if (!g_kslCdo) g_kslCdo = R::FindClassDefaultObject(L"KismetSystemLibrary");
@@ -43,9 +44,12 @@ int LineBlockedStatDyn(void* worldCtx, const FVector& start, const FVector& end)
     f.Set<ue_wrap::FVector>(L"Start", start);
     f.Set<ue_wrap::FVector>(L"End", end);
     TArrayControl objTypes{g_traceObjTypes, 2, 2};
+    void* ignoredActor[1] = {actorToIgnore};
+    TArrayControl actorsToIgnore{actorToIgnore ? ignoredActor : nullptr,
+                                 actorToIgnore ? 1 : 0, actorToIgnore ? 1 : 0};
     f.SetRaw(L"ObjectTypes", &objTypes, sizeof(objTypes));
+    f.SetRaw(L"ActorsToIgnore", &actorsToIgnore, sizeof(actorsToIgnore));
     f.Set<bool>(L"bTraceComplex", false);
-    // ActorsToIgnore stays the zero-initialized empty TArray (frame is zeroed);
     // DrawDebugType 0 = None; OutHit is an in-frame zeroed FHitResult (POD members
     // only -- FName/floats/weak ptrs -- so no destructor concerns on our frame).
     f.Set<bool>(L"bIgnoreSelf", true);

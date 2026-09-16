@@ -265,7 +265,7 @@ void Tick() {
                 // The trace runs on the game thread at this position-snapshot cadence. A failed
                 // trace is treated as clear so a temporary reflection miss never mutes voice.
                 const bool occluded =
-                    ue_wrap::trace::LineBlockedStatDyn(local, listenerPos, hp) == 1;
+                    ue_wrap::trace::LineBlockedStatDyn(local, listenerPos, hp, rp->GetActor()) == 1;
                 g_playback.SetSpeaker(slot, hp.X, hp.Y, hp.Z, true, occluded);
             } else {
                 g_playback.SetSpeaker(slot, 0, 0, 0, false);

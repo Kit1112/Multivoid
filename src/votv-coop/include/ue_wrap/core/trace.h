@@ -21,7 +21,10 @@ namespace ue_wrap::trace {
 //          0 = clear line,
 //         -1 = unresolvable (KSL CDO/UFunction not ready, null ctx, call failed)
 //              -- the caller picks its own safe default.
-// Game thread only (dispatches a UFunction).
-int LineBlockedStatDyn(void* worldCtx, const FVector& start, const FVector& end);
+// Game thread only (dispatches a UFunction). `actorToIgnore` supplements the context actor the
+// engine ignores through bIgnoreSelf; callers tracing to another pawn should pass that endpoint
+// actor so its own collision does not masquerade as an obstruction at the end of the ray.
+int LineBlockedStatDyn(void* worldCtx, const FVector& start, const FVector& end,
+                       void* actorToIgnore = nullptr);
 
 }  // namespace ue_wrap::trace
