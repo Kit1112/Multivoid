@@ -28,6 +28,8 @@
 #include "ui/net_stats_panel.h"
 #include "ui/scale.h"
 #include "ui/skins_panel.h"
+#include "ue_wrap/core/game_thread.h"
+#include "coop/props/prop_drive_host.h"
 
 #include <cctype>
 #include <cstdio>
@@ -339,6 +341,22 @@ void RenderSkins() { ui::skins_panel::Render(); }
 // Network stats overlay pref + live readout (its own panel file -- ui/net_stats_panel.cpp;
 // this is just the tree hook). Non-dev: every player gets the toggle, like Cosmetics.
 void RenderNetStats() { ui::net_stats_panel::RenderMenuPref(); }
+void RenderResync() {
+    ImGui::TextUnformatted("Manual World & Props Resynchronization:");
+    ImGui::Spacing();
+    if (ImGui::Button("Resync Driven Props (Host -> Clients)")) {
+        ue_wrap::game_thread::Post([]() {
+            coop::prop_drive_host::OnPeerWorldReady();
+        });
+    }
+    if (ImGui::IsItemHovered()) {
+        ImGui::SetTooltip("Broadcasts the host-authoritative positions of all driven and
+"
+                          "resting props to all connected clients to resolve desync.");
+    }
+    ImGui::TextDisabled("Use this if props or items appear desynchronized or frozen across peers.");
+}
+
 
 // Peer action notifications: show a chat/feed line when another player does a shared
 // action everyone should see (first: deleting an email). A LOCAL view preference
@@ -510,6 +528,7 @@ const std::vector<Cat>& Tree() {
             // Stats is for EVERYONE (the overlay toggle + live session readout);
             // Session stays a dev placeholder, hidden for regular players.
             { "Stats",    { { &RenderNetStats, false } }, false },
+            { "Sync",     { { &RenderResync, false } }, false },
             { "Session",  {}, true },
         }, false },
         { "Administration", {
