@@ -251,9 +251,36 @@ void Session::StoreStreamPacket(MsgType type, int routeSlot, int peerSlot,
             hasRemoteProp_[routeSlot] = true;
             ++remotePropStamp_[routeSlot];
         }
-        // Host relay: forward this client's held-prop pose to every OTHER client.
+        // Host relay: forward this client's held-prop pose to every OTHER client,
+        // unless local host or another peer slot already has an active claim on this prop.
         if (cfg_.role == Role::Host) {
-            RelayUnreliableToOtherClients(peerSlot, data, len);
+            bool conflict = false;
+            {
+                std::lock_guard<std::mutex> lk(localMutex_);
+                if (hasLocalProp_ &&
+                    ((pkt.pose.elementId != 0 && localPropPose_.elementId == pkt.pose.elementId) ||
+                     (pkt.pose.key.len > 0 && localPropPose_.key.len == pkt.pose.key.len &&
+                      std::memcmp(localPropPose_.key.data, pkt.pose.key.data, pkt.pose.key.len) == 0))) {
+                    conflict = true;
+                }
+            }
+            if (!conflict) {
+                std::lock_guard<std::mutex> lk(remoteMutex_);
+                for (int s = 0; s < kMaxPeers; ++s) {
+                    if (s != routeSlot && hasRemoteProp_[s]) {
+                        const auto& other = remotePropPoses_[s];
+                        if ((pkt.pose.elementId != 0 && other.elementId == pkt.pose.elementId) ||
+                            (pkt.pose.key.len > 0 && other.key.len == pkt.pose.key.len &&
+                             std::memcmp(other.key.data, pkt.pose.key.data, pkt.pose.key.len) == 0)) {
+                            conflict = true;
+                            break;
+                        }
+                    }
+                }
+            }
+            if (!conflict) {
+                RelayUnreliableToOtherClients(peerSlot, data, len);
+            }
         }
         break;
     }
