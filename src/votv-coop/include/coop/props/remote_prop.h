@@ -34,7 +34,8 @@ void Tick(coop::net::Session& session);
 // held a prop with the same key). `localPlayer` gives the thrown event a non-null player; the
 // game's throw statistics credit the local player, a minor inaccuracy for the natural
 // effects.
-void OnRelease(int senderSlot, const coop::net::PropReleasePayload& payload, void* localPlayer);
+void OnRelease(int senderSlot, const coop::net::PropReleasePayload& payload, void* localPlayer,
+               bool hostAuthoritative);
 
 // An incoming spawn (a peer dropped an inventory item into the world) is handled in
 // remote_prop_spawn; this header keeps the accessors the spawn receiver calls back into for

@@ -484,6 +484,8 @@ void Tick(coop::net::Session& session, void* local, void* controller) {
                                     ? 0u : static_cast<uint32_t>(g_lastHeldEid);
         const bool isTrashEid = (g_lastHeldEid != coop::element::kInvalidId &&
                                  coop::trash_channel::CtxForEid(g_lastHeldEid) != 0);
+        void* releasedActor = nullptr;
+        bool hostThrown = false;
         if (isTrashEid) {
             UE_LOGI("[PILE] HOST trash release eid=%u -- PropRelease SUPPRESSED (host-auth flight-stream + "
                     "ToPile convert own the throw end; client drives no clump physics, ToPile clears the drive)",
@@ -510,15 +512,18 @@ void Tick(coop::net::Session& session, void* local, void* controller) {
             session.SendPropRelease(g_lastHeldKey,
                                     vel.linearCmS.X, vel.linearCmS.Y, vel.linearCmS.Z,
                                     vel.angularDegS.X, vel.angularDegS.Y, vel.angularDegS.Z, relEid, /*relCtx=*/0u);
-            if (session.role() == coop::net::Role::Host && linMagSq > (coop::net::kThrownLinVelThreshold * coop::net::kThrownLinVelThreshold)) {
-                if (void* heldObj = g_lastHeldProp.Raw()) {
-                    coop::prop_drive_host::Coast(heldObj, "host thrown release");
-                }
-            }
+            releasedActor = g_lastHeldProp.Get();
+            hostThrown = session.role() == coop::net::Role::Host &&
+                linMagSq > (coop::net::kThrownLinVelThreshold * coop::net::kThrownLinVelThreshold);
         }
+        // Coast must observe the post-release state. Keep the guarded actor reference until the
+        // held lane's local state has been cleared, then let the host drive own its flight.
         g_lastHeldProp.Reset();
         g_lastHeldKey = {};
         g_lastHeldEid = coop::element::kInvalidId;  // the cached held eid goes with the release
+        if (hostThrown && releasedActor) {
+            coop::prop_drive_host::Coast(releasedActor, "host thrown release");
+        }
         }
     }
 

@@ -329,7 +329,8 @@ void Tick(coop::net::Session& session) {
     }
 }
 
-void OnRelease(int senderSlot, const coop::net::PropReleasePayload& payload, void* localPlayer) {
+void OnRelease(int senderSlot, const coop::net::PropReleasePayload& payload, void* localPlayer,
+               bool hostAuthoritative) {
     // Reads and clears the sender's drive; dispatched from event_feed on the game thread.
     UE_ASSERT_GAME_THREAD("g_drives (remote_prop::OnRelease)");
     const std::wstring keyW = KeyToWString(payload.key);
@@ -411,8 +412,6 @@ void OnRelease(int senderSlot, const coop::net::PropReleasePayload& payload, voi
         if (propActor && linSpeed > coop::net::kThrownLinVelThreshold) {
             DrivePropThrown(propActor, localPlayer);
             coop::prop_sound::PlayThrowWhoosh(propActor);
-            // On host, hand off flying/coasting prop to prop_drive_host so clients observe the flight trajectory
-            coop::prop_drive_host::Coast(propActor, "thrown release");
             UE_LOGI("remote_prop: fired Aprop_C.thrown(player=%p) + swing whoosh -- launch speed %.1f cm/s > threshold %.1f",
                     localPlayer, linSpeed, coop::net::kThrownLinVelThreshold);
         }
@@ -440,6 +439,12 @@ void OnRelease(int senderSlot, const coop::net::PropReleasePayload& payload, voi
     // Only the released slot clears.
     if (releasedSlot >= 0) {
         ResetDriveState(g_drives[releasedSlot]);
+    }
+    // The host's drive set must take over only after the held-prop lane has released the actor.
+    // Before ResetDriveState, Coast sees this exact actor through IsActorUnderAnyDrive and correctly
+    // refuses it as held. Clients do not own a prop-drive stream, so they never open one here.
+    if (hostAuthoritative && propActor && linSpeed > coop::net::kThrownLinVelThreshold) {
+        coop::prop_drive_host::Coast(propActor, "remote thrown release");
     }
 }
 

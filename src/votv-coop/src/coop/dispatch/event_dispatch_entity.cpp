@@ -116,7 +116,8 @@ bool HandleEntityEvent(net::Session& session,
                     p.angVelX, p.angVelY, p.angVelZ);
             break;
         }
-        remote_prop::OnRelease(msg.senderPeerSlot, p, localPlayer);
+        remote_prop::OnRelease(msg.senderPeerSlot, p, localPlayer,
+                               session.role() == net::Role::Host);
         break;
     }
     case net::ReliableKind::PropSpawn: {
