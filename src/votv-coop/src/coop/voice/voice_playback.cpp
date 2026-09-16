@@ -142,6 +142,14 @@ void Playback::ResetSlot(int slot) {
     ch.lastFrameMs.store(0);
     ch.whispering.store(false);
     ch.posValid.store(false);
+    ch.occlusionGain.store(1.0f);
+    // ResetSlot normally runs after Stop (the audio callback has joined). During a live peer
+    // disconnect the existing PCM ring also remains callback-owned, so leave the reflection ring
+    // untouched there; it is overwritten and decays before the slot can speak again.
+    if (!running_) {
+        std::memset(ch.reflection, 0, sizeof(ch.reflection));
+        ch.reflectionWrite = 0;
+    }
 }
 
 void Playback::SetListener(float x, float y, float z, float yawDeg) {
@@ -151,12 +159,13 @@ void Playback::SetListener(float x, float y, float z, float yawDeg) {
     listenerYaw_.store(yawDeg, std::memory_order_relaxed);
 }
 
-void Playback::SetSpeaker(int slot, float x, float y, float z, bool valid) {
+void Playback::SetSpeaker(int slot, float x, float y, float z, bool valid, bool occluded) {
     if (slot < 0 || slot >= coop::players::kMaxPeers) return;
     Channel& ch = channels_[slot];
     ch.posX.store(x, std::memory_order_relaxed);
     ch.posY.store(y, std::memory_order_relaxed);
     ch.posZ.store(z, std::memory_order_relaxed);
+    ch.occlusionGain.store(occluded ? 0.22f : 1.0f, std::memory_order_relaxed);
     ch.posValid.store(valid, std::memory_order_relaxed);
 }
 
@@ -336,7 +345,9 @@ void Playback::MixOutput(float* out, uint32_t frameCount) {
         }
 
         // Spatial params once per callback block (~10 ms).
-        float gainL = 1.0f, gainR = 1.0f;
+        // A voice whose puppet has not resolved has no trustworthy position. Playing it at unity
+        // gain was effectively infinite range, especially during a join or puppet respawn.
+        float gainL = 0.0f, gainR = 0.0f;
         if (ch.posValid.load(std::memory_order_relaxed)) {
             const float dx = ch.posX.load(std::memory_order_relaxed) - lx;
             const float dy = ch.posY.load(std::memory_order_relaxed) - ly;
@@ -367,7 +378,7 @@ void Playback::MixOutput(float* out, uint32_t frameCount) {
             if (volL < 0.3f) volL = 0.3f;
             if (volR > 1) volR = 1;
             if (volR < 0.3f) volR = 0.3f;
-            const float g = att * vfade;
+            const float g = att * vfade * ch.occlusionGain.load(std::memory_order_relaxed);
             gainL = g * volL;
             gainR = g * volR;
         }
@@ -380,8 +391,16 @@ void Playback::MixOutput(float* out, uint32_t frameCount) {
         for (uint32_t i = 0; i < take; ++i) {
             const float s =
                 static_cast<float>(ch.ring[(read + i) % Channel::kRingSamples]) / 32768.0f;
-            out[2 * i + 0] += s * gainL;
-            out[2 * i + 1] += s * gainR;
+            const uint32_t w = ch.reflectionWrite;
+            const float early = ch.reflection[(w + Channel::kReflectionSamples - 5040) %
+                                              Channel::kReflectionSamples];  // 105 ms
+            const float late = ch.reflection[(w + Channel::kReflectionSamples - 11040) %
+                                             Channel::kReflectionSamples];  // 230 ms
+            const float wet = early * 0.16f + late * 0.07f;
+            ch.reflection[w] = s + early * 0.18f;
+            ch.reflectionWrite = (w + 1) % Channel::kReflectionSamples;
+            out[2 * i + 0] += (s + wet) * gainL;
+            out[2 * i + 1] += (s + wet) * gainR;
         }
         ch.ringRead.store(read + take, std::memory_order_release);
         // (take < frameCount leaves silence for the tail -- the underrun

@@ -12,6 +12,7 @@
 #include "coop/config/config.h"
 
 #include "ue_wrap/engine/engine.h"
+#include "ue_wrap/core/trace.h"
 #include "ue_wrap/core/log.h"
 
 #include <Windows.h>
@@ -245,20 +246,27 @@ void Tick() {
         // Listener = the local player (actor pos ~ head at voice ranges; yaw =
         // actor yaw -- VOTV is first-person, the body follows the camera).
         void* local = reg.Local();
+        ue_wrap::FVector listenerPos{};
+        bool listenerValid = false;
         if (local) {
-            const ue_wrap::FVector p = ue_wrap::engine::GetActorLocation(local);
+            listenerPos = ue_wrap::engine::GetActorLocation(local);
+            listenerValid = true;
             const ue_wrap::FRotator r = ue_wrap::engine::GetActorRotation(local);
-            g_playback.SetListener(p.X, p.Y, p.Z, r.Yaw);
+            g_playback.SetListener(listenerPos.X, listenerPos.Y, listenerPos.Z, r.Yaw);
             if (g_loopback && localSlot != coop::players::kPeerIdUnknown)
-                g_playback.SetSpeaker(localSlot, p.X, p.Y, p.Z, true);
+                g_playback.SetSpeaker(localSlot, listenerPos.X, listenerPos.Y, listenerPos.Z, true);
         }
         // Speakers = the peer puppets' heads.
         for (int slot = 0; slot < coop::net::kMaxPeers; ++slot) {
             if (slot == localSlot) continue;
             coop::RemotePlayer* rp = reg.Puppet(static_cast<uint8_t>(slot));
-            if (rp && rp->GetActor()) {
+            if (listenerValid && rp && rp->GetActor()) {
                 const ue_wrap::FVector hp = rp->GetHeadPosition();
-                g_playback.SetSpeaker(slot, hp.X, hp.Y, hp.Z, true);
+                // The trace runs on the game thread at this position-snapshot cadence. A failed
+                // trace is treated as clear so a temporary reflection miss never mutes voice.
+                const bool occluded =
+                    ue_wrap::trace::LineBlockedStatDyn(local, listenerPos, hp) == 1;
+                g_playback.SetSpeaker(slot, hp.X, hp.Y, hp.Z, true, occluded);
             } else {
                 g_playback.SetSpeaker(slot, 0, 0, 0, false);
             }

@@ -29,7 +29,7 @@ namespace coop::voice {
 struct PlaybackConfig {
     std::string device;          // output device name substring ("" = system default)
     float volume = 1.0f;         // master voice volume 0..3 (SVC range)
-    float distanceCm = 4800.0f;  // proximity radius (whisper = half)
+    float distanceCm = 3000.0f;  // proximity radius (whisper = half)
     int   jitterThreshold = 3;   // 0 disables buffering
     int   prebufferFrames = 5;   // ~100 ms latency floor
 };
@@ -48,7 +48,9 @@ public:
 
     // Game thread: position snapshots for the mixer (atomics).
     void SetListener(float x, float y, float z, float yawDeg);
-    void SetSpeaker(int slot, float x, float y, float z, bool valid);
+    // `occluded` is sampled on the game thread by an UE line trace. The callback reads only the
+    // published gain, never engine geometry.
+    void SetSpeaker(int slot, float x, float y, float z, bool valid, bool occluded = false);
 
     // Game thread: a peer left -- drop its channel state.
     void ResetSlot(int slot);
@@ -90,6 +92,13 @@ private:
         // a torn read across components misplaces one 10 ms block, inaudible).
         std::atomic<float> posX{0}, posY{0}, posZ{0};
         std::atomic<bool> posValid{false};
+        std::atomic<float> occlusionGain{1.0f};
+
+        // Callback-thread-only short reflections. They give occluded voice a quiet room return
+        // without allocating or calling the engine from the audio callback.
+        static constexpr uint32_t kReflectionSamples = 12000;  // 250 ms at 48 kHz
+        float reflection[kReflectionSamples]{};
+        uint32_t reflectionWrite = 0;
 
         std::atomic<float> volume{1.0f};
     };
@@ -102,7 +111,7 @@ private:
 
     std::atomic<float> listenerX_{0}, listenerY_{0}, listenerZ_{0}, listenerYaw_{0};
     std::atomic<float> masterVolume_{1.0f};
-    float distanceCm_ = 4800.0f;
+    float distanceCm_ = 3000.0f;
     int jitterThreshold_ = 3;
     int prebufferFrames_ = 5;
 
