@@ -315,8 +315,14 @@ void Tick(coop::net::Session& session) {
             UE_LOGI("remote_prop: slot %d implicit release (%llu ms since last PropPose)",
                     slot, static_cast<unsigned long long>(nowMs - drive.lastApplyMs));
             void* liveA = drive.LiveActor();
-            if (!StickHoldsPhysicsOff(liveA))
-                DriveTogglePhysics(liveA, drive.mesh, true);
+            if (liveA) {
+                if (!StickHoldsPhysicsOff(liveA)) {
+                    DriveTogglePhysics(liveA, drive.mesh, true);
+                }
+            } else if (drive.actor && !drive.mesh) {
+                // A keyless entity without mesh (clump) whose actor died or became invalid
+                ConsumeLocalActor(drive.actor);
+            }
             ResetDriveState(drive);
         }
     }
