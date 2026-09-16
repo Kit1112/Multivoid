@@ -182,6 +182,7 @@ inline constexpr const wchar_t* MainGamemodeSaveObjectsFn  = L"saveObjects";   /
 inline constexpr const wchar_t* MainGamemodeSaveTriggersFn = L"saveTriggers";  // saveTriggers()
 inline constexpr const wchar_t* SaveGameToSlotFn           = L"SaveGameToSlot";  // (USaveGame*, FString slot, int32 idx) -> bool
 inline constexpr const wchar_t* ActorClassName = L"Actor";  // owns K2_Get/SetActorLocation
+inline constexpr const wchar_t* ActorReceiveHitFn = L"ReceiveHit";  // post-physics AActor hit event
 inline constexpr const wchar_t* GetActorLocationFn = L"K2_GetActorLocation";
 inline constexpr const wchar_t* GetActorRotationFn = L"K2_GetActorRotation";
 inline constexpr const wchar_t* GetActorVelocityFn = L"GetVelocity";  // AActor::GetVelocity -> FVector (cm/s)

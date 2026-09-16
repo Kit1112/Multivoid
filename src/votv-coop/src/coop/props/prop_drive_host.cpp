@@ -13,6 +13,7 @@
 #include "coop/props/remote_prop.h"           // IsActorUnderAnyDrive: a peer's held-prop stream
 #include "ue_wrap/actors/prop.h"
 #include "ue_wrap/core/cached_obj_ref.h"
+#include "ue_wrap/core/game_thread.h"
 #include "ue_wrap/core/hot_path_guard.h"
 #include "ue_wrap/core/log.h"
 #include "ue_wrap/core/reflection.h"
@@ -20,6 +21,7 @@
 #include "ue_wrap/engine/engine.h"
 
 #include <algorithm>
+#include <atomic>
 #include <cmath>
 #include <cstdint>
 #include <unordered_map>
@@ -63,6 +65,8 @@ struct Driven {
 
 std::vector<Driven> g_driven;   // game thread only
 size_t              g_turn = 0; // where the next tick's publishing starts, so no prop waits forever
+std::atomic<coop::net::Session*> g_session{nullptr};
+bool g_impactObserverInstalled = false;
 // The claim generation is PER PROP: the receiver's closed-generation gate is keyed by eid and
 // compares in a signed 8-bit window, so a counter shared by every prop would read a re-claim as
 // older than the closed one after enough claims of other props in between. Outlives the row.
@@ -72,6 +76,30 @@ Driven* Find(void* actor) {
     for (Driven& d : g_driven)
         if (!d.dead && d.ref.Raw() == actor) return &d;
     return nullptr;
+}
+
+// ReceiveHit is emitted after UE has resolved a blocking physics contact. This is the missing
+// verb for a prop a moving prop knocks: the impacted prop has already received its impulse when
+// this observer runs, so coast streams its actual host trajectory. The same observer also sees
+// wall contacts; Coast is idempotent and merely refreshes an existing rest clock in that case.
+void OnActorReceiveHitPost(void* actor, void* /*function*/, void* /*params*/) {
+    auto* session = g_session.load(std::memory_order_acquire);
+    if (!session || !session->connected() || session->role() != coop::net::Role::Host) return;
+    if (!ue_wrap::game_thread::IsGameThread() || !PR::IsDescendantOfProp(actor)) return;
+    Coast(actor, "physics impact");
+}
+
+void InstallImpactObserver() {
+    if (g_impactObserverInstalled) return;
+    void* actorClass = R::FindClass(P::name::ActorClass);
+    void* receiveHit = actorClass ? R::FindFunction(actorClass, P::name::ActorReceiveHitFn) : nullptr;
+    if (!receiveHit) return;  // classes can still be loading; retry on a later host tick
+    if (!ue_wrap::game_thread::RegisterPostObserver(receiveHit, &OnActorReceiveHitPost)) {
+        UE_LOGE("[PROP-DRIVE] HOST ReceiveHit observer registration failed -- chain impacts remain unstreamed");
+        return;
+    }
+    g_impactObserverInstalled = true;
+    UE_LOGI("[PROP-DRIVE] HOST observing AActor.ReceiveHit for chain-impact coast handoff");
 }
 
 // A prop in a hand: this player's grab slot, a peer's held-prop stream, or the hotbar hand axis
@@ -219,6 +247,8 @@ void OnPeerWorldReady() {
 
 void Tick(coop::net::Session& s) {
     UE_ASSERT_GAME_THREAD("prop_drive_host::Tick");
+    g_session.store(&s, std::memory_order_release);
+    InstallImpactObserver();
     if (g_driven.empty()) return;
     const uint64_t now = coop::active_drive::NowMs();
     static uint32_t sPublished = 0;
@@ -287,6 +317,7 @@ void Tick(coop::net::Session& s) {
 }
 
 void OnDisconnect() {
+    g_session.store(nullptr, std::memory_order_release);
     g_driven.clear();
     g_turn = 0;
     g_genByEid.clear();
