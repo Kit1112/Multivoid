@@ -41,11 +41,16 @@ namespace R  = ue_wrap::reflection;
 // waves -- because z is where a parked vehicle is noisy; a prop on a floor has no such axis.
 constexpr float kSendEpsCm  = 0.5f;
 constexpr float kSendEpsDeg = 0.5f;
-// A released prop that has not moved past the epsilons for this long has rested: the end edge.
+// A released prop that has not moved past the epsilons for this long is eligible to settle. Its
+// velocity still decides the end edge: a body can creep below the pose epsilon while PhysX keeps
+// simulating it, and handing that body back early lets peers settle it independently.
 constexpr uint64_t kRestMs = 500;
 // A prop that has rested that long is read at 4 Hz, the hook lane's own resting cadence, instead
 // of two dispatches per tick: an anchored tie holds a resting prop for as long as the hook stands.
 constexpr uint64_t kRestProbeMs = 250;
+// A body below the pose epsilon but still moving is checked at this cadence until its actual
+// velocity falls below kRestVelCmS. This avoids two reflected velocity reads every game tick.
+constexpr uint64_t kSettleProbeMs = 50;
 // A velocity below this at the end goes out as zero: assigning a velocity wakes a body at rest.
 constexpr float kRestVelCmS = 1.0f;
 
@@ -302,6 +307,16 @@ void Tick(coop::net::Session& s) {
             continue;
         }
         if (now - d.lastMoveMs >= kRestMs) {
+            const PR::VelocityState v = PR::GetPhysicsVelocity(actor);
+            const float speed = std::sqrt(v.linearCmS.X * v.linearCmS.X +
+                                          v.linearCmS.Y * v.linearCmS.Y +
+                                          v.linearCmS.Z * v.linearCmS.Z);
+            if (v.ok && speed >= kRestVelCmS) {
+                // The actor is still physically live even though its pose has moved less than one
+                // outbound delta. Keep it host-driven until the real body settles.
+                d.nextProbeMs = now + kSettleProbeMs;
+                continue;
+            }
             if (!d.claimed) {
                 SendEnd(s, d, actor, loc, rot, "rested");
                 d.dead = true;
