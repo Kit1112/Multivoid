@@ -85,7 +85,9 @@ void ApplyEnd(void* actor, const coop::net::PropDriveEndPayload& p, bool parkedH
     if (PhysicsStaysOff(actor)) return;
     coop::prop_wire_parity::RestoreSpParityPhysicsAfterConverge(actor, p.physFlags);
     const float lin2 = p.linVelX * p.linVelX + p.linVelY * p.linVelY + p.linVelZ * p.linVelZ;
-    if (parkedHere && coop::prop_wire_parity::SpParitySimulate(p.physFlags) && lin2 > 0.f) {
+    const float ang2 = p.angVelX * p.angVelX + p.angVelY * p.angVelY + p.angVelZ * p.angVelZ;
+    if (parkedHere && coop::prop_wire_parity::SpParitySimulate(p.physFlags) &&
+        (lin2 > 0.f || ang2 > 0.f)) {
         void* mesh = PR::GetStaticMesh(actor);
         coop::remote_prop::DriveSetLinearVelocity(mesh, p.linVelX, p.linVelY, p.linVelZ);
         coop::remote_prop::DriveSetAngularVelocity(mesh, p.angVelX, p.angVelY, p.angVelZ);
