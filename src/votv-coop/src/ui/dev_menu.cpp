@@ -30,6 +30,7 @@
 #include "ui/skins_panel.h"
 #include "ue_wrap/core/game_thread.h"
 #include "coop/props/prop_drive_host.h"
+#include "coop/player/puppet_drive.h"
 
 #include <cctype>
 #include <cstdio>
@@ -355,6 +356,23 @@ void RenderResync() {
                           "resting props to all connected clients to resolve desync.");
     }
     ImGui::TextDisabled("Use this if props or items appear desynchronized or frozen across peers.");
+    ImGui::Spacing();
+    ImGui::Separator();
+    ImGui::Spacing();
+    ImGui::TextUnformatted("Player Puppets (Avatars):");
+    ImGui::Spacing();
+    if (ImGui::Button("Respawn Remote Puppets (Fix Invisible Peers)")) {
+        ue_wrap::game_thread::Post([]() {
+            for (int s = 0; s < static_cast<int>(coop::players::kMaxPeers); ++s) {
+                coop::puppet_drive::DestroySlot(s);
+            }
+        });
+    }
+    if (ImGui::IsItemHovered()) {
+        ImGui::SetTooltip("Destroys existing 3D puppets so the next incoming network pose\n"
+                          "immediately re-spawns a fresh 3D mannequin and restores visibility.");
+    }
+    ImGui::TextDisabled("Use this if your friend or peer is invisible or stuck in T-pose.");
 }
 
 
