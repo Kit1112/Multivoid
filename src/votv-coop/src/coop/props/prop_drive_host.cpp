@@ -53,6 +53,7 @@ constexpr uint64_t kRestProbeMs = 250;
 constexpr uint64_t kSettleProbeMs = 50;
 // A velocity below this at the end goes out as zero: assigning a velocity wakes a body at rest.
 constexpr float kRestVelCmS = 1.0f;
+constexpr float kRestAngVelDegS = 1.0f;
 
 struct Driven {
     ue_wrap::CachedObjRef ref;
@@ -146,7 +147,9 @@ void SendEnd(coop::net::Session& s, const Driven& d, void* actor, const ue_wrap:
     const PR::VelocityState v = PR::GetPhysicsVelocity(actor);
     const float lin = std::sqrt(v.linearCmS.X * v.linearCmS.X + v.linearCmS.Y * v.linearCmS.Y +
                                 v.linearCmS.Z * v.linearCmS.Z);
-    if (v.ok && lin >= kRestVelCmS) {
+    const float ang = std::sqrt(v.angularDegS.X * v.angularDegS.X + v.angularDegS.Y * v.angularDegS.Y +
+                                v.angularDegS.Z * v.angularDegS.Z);
+    if (v.ok && (lin >= kRestVelCmS || ang >= kRestAngVelDegS)) {
         p.linVelX = v.linearCmS.X;   p.linVelY = v.linearCmS.Y;   p.linVelZ = v.linearCmS.Z;
         p.angVelX = v.angularDegS.X; p.angVelY = v.angularDegS.Y; p.angVelZ = v.angularDegS.Z;
     }
@@ -311,7 +314,10 @@ void Tick(coop::net::Session& s) {
             const float speed = std::sqrt(v.linearCmS.X * v.linearCmS.X +
                                           v.linearCmS.Y * v.linearCmS.Y +
                                           v.linearCmS.Z * v.linearCmS.Z);
-            if (v.ok && speed >= kRestVelCmS) {
+            const float angularSpeed = std::sqrt(v.angularDegS.X * v.angularDegS.X +
+                                                 v.angularDegS.Y * v.angularDegS.Y +
+                                                 v.angularDegS.Z * v.angularDegS.Z);
+            if (v.ok && (speed >= kRestVelCmS || angularSpeed >= kRestAngVelDegS)) {
                 // The actor is still physically live even though its pose has moved less than one
                 // outbound delta. Keep it host-driven until the real body settles.
                 d.nextProbeMs = now + kSettleProbeMs;
