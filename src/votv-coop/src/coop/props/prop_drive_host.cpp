@@ -17,6 +17,7 @@
 #include "ue_wrap/core/hot_path_guard.h"
 #include "ue_wrap/core/log.h"
 #include "ue_wrap/core/reflection.h"
+#include "ue_wrap/core/sdk_profile.h"
 #include "ue_wrap/core/types.h"
 #include "ue_wrap/engine/engine.h"
 
@@ -31,6 +32,7 @@ namespace coop::prop_drive_host {
 namespace {
 
 namespace E  = ue_wrap::engine;
+namespace P  = ue_wrap::profile;
 namespace PR = ue_wrap::prop;
 namespace R  = ue_wrap::reflection;
 

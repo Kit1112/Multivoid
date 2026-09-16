@@ -351,8 +351,7 @@ void RenderResync() {
         });
     }
     if (ImGui::IsItemHovered()) {
-        ImGui::SetTooltip("Broadcasts the host-authoritative positions of all driven and
-"
+        ImGui::SetTooltip("Broadcasts the host-authoritative positions of all driven and\n"
                           "resting props to all connected clients to resolve desync.");
     }
     ImGui::TextDisabled("Use this if props or items appear desynchronized or frozen across peers.");
