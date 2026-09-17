@@ -40,6 +40,10 @@ void ConnectReplayForSlot(int slot);
 // Safe to call from any thread (posts to game thread).
 void TriggerFullWorldResync();
 
+// Re-publish the host's active prop-drive set, or ask the host for its replay when called by a
+// client. Safe from UI and other non-game-thread callers.
+void TriggerDrivenPropResync();
+
 // CLIENT -> HOST (slot 0) connect edge: announce LOCAL flashlight state so
 // the host can show it on our puppet; send the save-transfer request if this
 // join armed one (menu-mode browser join); open OUR world-ready send gate

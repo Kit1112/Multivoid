@@ -170,6 +170,18 @@ void TriggerFullWorldResync() {
     });
 }
 
+void TriggerDrivenPropResync() {
+    ue_wrap::game_thread::Post([] {
+        auto* s = g_subsystemsSession.load(std::memory_order_acquire);
+        if (!s || !s->connected()) return;
+        if (s->role() == coop::net::Role::Host) {
+            coop::prop_drive_host::OnPeerWorldReady();
+        } else {
+            s->SendReliableToSlot(0, coop::net::ReliableKind::ClientWorldReady, nullptr, 0);
+        }
+    });
+}
+
 void Install(coop::net::Session& session) {
     g_subsystemsSession.store(&session, std::memory_order_release);
     coop::grab_observer::Install();

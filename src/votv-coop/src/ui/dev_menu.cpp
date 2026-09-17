@@ -32,7 +32,6 @@
 #include "ui/scale.h"
 #include "ui/skins_panel.h"
 #include "ue_wrap/core/game_thread.h"
-#include "coop/props/prop_drive_host.h"
 #include "coop/player/puppet_drive.h"
 
 #include <cctype>
@@ -379,14 +378,12 @@ void RenderResync() {
     ImGui::TextDisabled("Use this if world state, elevator, or props are desynchronized.");
     ImGui::Spacing();
 
-    if (ImGui::Button("Resync Driven Props (Host -> Clients)")) {
-        ue_wrap::game_thread::Post([]() {
-            coop::prop_drive_host::OnPeerWorldReady();
-        });
+    if (ImGui::Button("Resync Driven Props")) {
+        coop::subsystems::TriggerDrivenPropResync();
     }
     if (ImGui::IsItemHovered()) {
-        ImGui::SetTooltip("Broadcasts the host-authoritative positions of all driven and\n"
-                          "resting props to all connected clients to resolve desync.");
+        ImGui::SetTooltip("Host: broadcasts active prop-drive positions. Client: requests an\n"
+                          "authoritative replay from the host.");
     }
     ImGui::TextDisabled("Use this if props or items appear desynchronized or frozen across peers.");
     ImGui::Spacing();
