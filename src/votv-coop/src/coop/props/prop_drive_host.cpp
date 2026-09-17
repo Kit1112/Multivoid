@@ -108,11 +108,12 @@ void OnActorReceiveHitPost(void* actor, void* /*function*/, void* params) {
 
     if (session->role() != coop::net::Role::Host) {
         void* local = coop::players::Registry::Get().Local();
+        if (!local || !R::IsLive(local)) return;
         void* other = nullptr;
         if (params && g_offReceiveHitOther >= 0)
             other = *reinterpret_cast<void* const*>(static_cast<const uint8_t*>(params) + g_offReceiveHitOther);
         void* prop = actor == local ? other : other == local ? actor : nullptr;
-        if (!prop || !PR::IsDescendantOfProp(prop)) return;
+        if (!prop || !R::IsLive(prop) || !PR::IsDescendantOfProp(prop)) return;
         const auto eid = coop::prop_element_tracker::GetPropElementIdForActor(prop);
         if (eid == coop::element::kInvalidId || eid == 0u) return;
         const ue_wrap::FVector v = E::GetActorVelocity(local);
