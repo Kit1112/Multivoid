@@ -37,6 +37,7 @@ std::vector<std::string> g_outDevices;
 char g_micCurrent[160] = {};
 char g_outCurrent[160] = {};
 char g_pttKey[32] = {};
+float g_distanceM = 24.0f;
 
 void RefreshDevices() {
     g_micDevices = coop::voice::Capture::EnumerateDevices();
@@ -47,6 +48,8 @@ void RefreshDevices() {
                   coop::config::ResolveString(coop::config_registry::rows::voice_output_device).c_str());
     std::snprintf(g_pttKey, sizeof(g_pttKey), "%s",
                   coop::config::ResolveString(coop::config_registry::rows::voice_ptt_key).c_str());
+    g_distanceM = coop::config::ResolveFloat(
+        coop::config_registry::rows::voice_distance_cm) / 100.0f;
     g_devicesFresh = true;
 }
 
@@ -208,6 +211,20 @@ void Render() {
             std::snprintf(v, sizeof(v), "%.2f", vol);
             coop::config::WriteIniValue(coop::config_registry::rows::voice_volume, v);
         }
+        ImGui::SliderFloat("Proximity range", &g_distanceM, 5.0f, 50.0f, "%.0f m");
+        // Persist only after the slider is released: reopening capture/playback for every
+        // render-frame drag would churn the audio device and drop speech.
+        if (ImGui::IsItemDeactivatedAfterEdit()) {
+            char v[16];
+            std::snprintf(v, sizeof(v), "%.0f", g_distanceM * 100.0f);
+            coop::config::WriteIniValue(coop::config_registry::rows::voice_distance_cm, v);
+            VC::RequestDevicesRestart();
+        }
+        ImGui::SameLine();
+        ImGui::TextDisabled("(?)");
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Distance where normal speech fades out. Whispering uses half this\n"
+                              "range. The default is 24 m; changes apply after releasing the slider.");
 
         ImGui::Spacing();
         ImGui::SeparatorText("Devices");
