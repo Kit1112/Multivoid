@@ -115,6 +115,8 @@ private:
         uint32_t reflectionWrite = 0;
         uint32_t tailSamplesRemaining = 0;
         float reverbDamp = 0.0f;
+        float reverbEnclosure = 0.0f;
+        float reverbScale = 1.0f;
         float mixedGainL = 0.0f;
         float mixedGainR = 0.0f;
 

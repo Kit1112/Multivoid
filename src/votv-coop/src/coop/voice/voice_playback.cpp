@@ -158,6 +158,8 @@ void Playback::ResetSlot(int slot) {
         ch.lowpassState1 = 0.0f;
         ch.lowpassState2 = 0.0f;
         ch.reverbDamp = 0.0f;
+        ch.reverbEnclosure = 0.0f;
+        ch.reverbScale = 1.0f;
         ch.tailSamplesRemaining = 0;
         ch.mixedGainL = 0.0f;
         ch.mixedGainR = 0.0f;
@@ -451,10 +453,16 @@ void Playback::MixOutput(float* out, uint32_t frameCount) {
         const float obstruction = ch.occlusion.load(std::memory_order_relaxed);
         const float listenerEnclosure = roomEnclosure_.load(std::memory_order_relaxed);
         const float sourceEnclosure = ch.sourceEnclosure.load(std::memory_order_relaxed);
-        const float roomEnclosure = listenerEnclosure * 0.65f + sourceEnclosure * 0.35f;
         const float listenerScale = roomScale_.load(std::memory_order_relaxed);
         const float sourceScale = ch.sourceRoomScale.load(std::memory_order_relaxed);
-        const float roomScale = listenerScale * 0.65f + sourceScale * 0.35f;
+        const float targetEnclosure = listenerEnclosure * 0.65f + sourceEnclosure * 0.35f;
+        const float targetScale = listenerScale * 0.65f + sourceScale * 0.35f;
+        // Room probes change at 4 Hz. Blend in the callback so crossing a doorway does not step
+        // the delay taps or the feedback gain at the probe boundary.
+        ch.reverbEnclosure += (targetEnclosure - ch.reverbEnclosure) * 0.12f;
+        ch.reverbScale += (targetScale - ch.reverbScale) * 0.12f;
+        const float roomEnclosure = ch.reverbEnclosure;
+        const float roomScale = ch.reverbScale;
         // A compact room yields tight early reflections; a large closed one spaces them farther
         // apart and carries a longer tail. The largest delay stays below the 600 ms ring length.
         const uint32_t d1 = static_cast<uint32_t>((20.0f + roomScale * 17.0f) * 48.0f);
