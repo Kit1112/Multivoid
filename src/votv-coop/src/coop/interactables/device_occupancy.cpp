@@ -8,7 +8,10 @@
 #include "coop/net/session.h"
 #include "coop/net/wire_key_util.h"
 #include "coop/player/players_registry.h"
+#include "coop/props/prop_save_data.h"
 #include "coop/props/prop_sound.h"
+#include "ue_wrap/actors/prop.h"
+#include "ue_wrap/engine/engine_mainplayer.h"
 #include "coop/session/net_pump.h"  // TickSerial: the aim memo's freshness clock
 
 #include "ue_wrap/desk/device_screen.h"
@@ -52,6 +55,8 @@ std::unordered_map<std::wstring, uint8_t> g_busy;
 // refused), retried each tick and cleared by the falling edge so a stale claim never ships
 // after exit.
 void* g_localWidget = nullptr;
+    g_activeInterfaceProp = nullptr;
+void* g_activeInterfaceProp = nullptr;
 std::wstring g_localKey;
 bool g_pendingSend = false;
 
@@ -321,6 +326,7 @@ void Tick() {
         }
         g_localKey.clear();
         g_localWidget = nullptr;
+        g_activeInterfaceProp = nullptr;
         g_pendingSend = false;
         return;
     }
@@ -356,8 +362,60 @@ void Tick() {
         g_pendingSend = false;
     }
 
+    // If an interface was open (note, paper, notebook, device), publish save data of the edited prop.
+    if (g_localWidget) {
+        void* targetProp = g_activeInterfaceProp;
+        g_activeInterfaceProp = nullptr;
+        if (!targetProp || !R::IsLive(targetProp)) {
+            ue_wrap::engine_mainplayer::MainPlayerGrabState grab{};
+            if (ue_wrap::engine_mainplayer::ReadMainPlayerGrabState(local, grab)) {
+                if (grab.grabbingActor && coop::prop_save_data::Covers(grab.grabbingActor)) {
+                    targetProp = grab.grabbingActor;
+                } else if (grab.holdingActor && coop::prop_save_data::Covers(grab.holdingActor)) {
+                    targetProp = grab.holdingActor;
+                }
+            }
+            if (!targetProp) {
+                void* look = ue_wrap::engine_mainplayer::ReadMainPlayerLookAtActor(local);
+                if (look && coop::prop_save_data::Covers(look)) {
+                    targetProp = look;
+                }
+            }
+        }
+        if (targetProp && R::IsLive(targetProp) && coop::prop_save_data::Covers(targetProp)) {
+            const std::wstring propKey = ue_wrap::prop::GetInteractableKeyString(targetProp);
+            if (!propKey.empty() && propKey != L"None") {
+                coop::prop_save_data::Publish(s, targetProp, propKey);
+                GT::Post([s, targetProp, propKey]() {
+                    if (s && s->connected() && R::IsLive(targetProp) && coop::prop_save_data::Covers(targetProp)) {
+                        coop::prop_save_data::Publish(s, targetProp, propKey);
+                    }
+                });
+                UE_LOGI("device_occupancy: published save record on interface exit for '%ls' (actor=%p)",
+                        propKey.c_str(), targetProp);
+            }
+        }
+    }
+
     // The rising edge: classify and claim.
     if (w) {
+        // Latch prop being interacted with (note, paper, notebook, etc.)
+        void* propActor = nullptr;
+        ue_wrap::engine_mainplayer::MainPlayerGrabState grab{};
+        if (ue_wrap::engine_mainplayer::ReadMainPlayerGrabState(local, grab)) {
+            if (grab.grabbingActor && coop::prop_save_data::Covers(grab.grabbingActor)) {
+                propActor = grab.grabbingActor;
+            } else if (grab.holdingActor && coop::prop_save_data::Covers(grab.holdingActor)) {
+                propActor = grab.holdingActor;
+            }
+        }
+        if (!propActor) {
+            void* look = ue_wrap::engine_mainplayer::ReadMainPlayerLookAtActor(local);
+            if (look && coop::prop_save_data::Covers(look)) {
+                propActor = look;
+            }
+        }
+        g_activeInterfaceProp = propActor;
         const std::wstring key = DS::ClassifyWidgetClaimKey(w);
         if (!key.empty()) {
             uint8_t holder = 0xFF;
