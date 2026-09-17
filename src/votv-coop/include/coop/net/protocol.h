@@ -30,7 +30,7 @@ inline constexpr uint32_t kMagic = 0x564D5450u;
 // This file is past the 1500-line hard cap and stays there: it is the single-feature exception the
 // rule names. One wire format, whose enum, payload structs and static_asserts are read together;
 // splitting it would put a kind's number in one file and its bytes in another.
-inline constexpr uint16_t kProtocolVersion = 163;
+inline constexpr uint16_t kProtocolVersion = 164;
 
 // Default LAN port (overridable via multivoid.ini "net.port=").
 inline constexpr uint16_t kDefaultPort = 47621;
@@ -709,6 +709,10 @@ enum class ReliableKind : uint8_t {
     // changed nothing.
     // BroomStrokePayload.
     BroomStroke = 139,
+
+    // Client to host: a local player physically bumped a resting world prop. The host validates
+    // reach, applies the bounded nudge in its own physics world, and streams the result. PropNudgePayload.
+    PropNudge = 140,
 };
 
 #pragma pack(push, 1)
@@ -1615,6 +1619,14 @@ struct BroomStrokePayload {
 static_assert(sizeof(BroomStrokePayload) == 48, "BroomStrokePayload must be 48 bytes");
 static_assert(sizeof(BroomStrokePayload) <= 256 - 20 - 8,
               "BroomStrokePayload must fit in one reliable datagram");
+
+struct PropNudgePayload {
+    uint32_t elementId = 0;
+    float dirX = 0.f, dirY = 0.f, dirZ = 0.f;
+};
+static_assert(sizeof(PropNudgePayload) == 16, "PropNudgePayload must be 16 bytes");
+static_assert(sizeof(PropNudgePayload) <= 256 - 20 - 8,
+              "PropNudgePayload must fit in one reliable datagram");
 
 // A keypad's input mirror (KeypadState): the typed buffer, the LED selector and a short-code
 // event. The buffer replays through inputNumber so every peer's keypad validates natively; a short

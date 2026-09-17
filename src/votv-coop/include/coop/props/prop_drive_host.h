@@ -14,7 +14,9 @@
 
 #pragma once
 
-namespace coop::net { class Session; }
+#include <cstdint>
+
+namespace coop::net { class Session; struct PropNudgePayload; }
 
 namespace coop::prop_drive_host {
 
@@ -34,14 +36,16 @@ void Release(void* actor);
 // `reason` names the push for the log. Game thread.
 void Coast(void* actor, const char* reason);
 
+void OnNudge(coop::net::Session& session, const coop::net::PropNudgePayload& nudge,
+             uint8_t senderSlot);
+
 // A peer's world just came up: every driven prop's current pose is re-sent on the next tick, so
 // the joiner parks the resting ones too, which the delta gate would otherwise never send it.
 // Game thread.
 void OnPeerWorldReady();
 
-// Per gameplay tick: read every driven prop's pose (resting ones at 4 Hz), publish the ones that
-// moved, close the streams of the props that rested or that a hand took, drop the dead. Game
-// thread.
+// Per gameplay tick: every role installs the body-contact observer; the host additionally reads
+// driven props, publishes movement and closes streams that settled. Game thread.
 void Tick(coop::net::Session& s);
 
 // Session end. Game thread.

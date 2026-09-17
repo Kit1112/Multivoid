@@ -20,6 +20,7 @@
 #include "coop/items/coingun_sync.h"
 #include "coop/items/order_sync.h"
 #include "coop/props/prop_drop_intent.h"  // CLIENT->HOST client-placed keyed prop
+#include "coop/props/prop_drive_host.h"
 #include "coop/items/broom_stroke.h"
 #include "coop/props/trash_channel.h"
 
@@ -38,6 +39,18 @@ bool HandleIntentEvent(net::Session& session,
     // CoinCollect is the family's first consumer of `localPlayer` -- the host passes its own
     // mainPlayer into the coin's `actionOptionIndex`. Every other case resolves targets by key/eid.
     switch (msg.kind) {
+    case net::ReliableKind::PropNudge: {
+        if (session.role() != net::Role::Host || msg.senderPeerSlot < 1 ||
+            msg.senderPeerSlot >= net::kMaxPeers ||
+            msg.payloadLen < sizeof(net::PropNudgePayload)) {
+            UE_LOGW("event_feed: invalid PropNudge -- dropping");
+            break;
+        }
+        net::PropNudgePayload p{};
+        std::memcpy(&p, msg.payload, sizeof(p));
+        coop::prop_drive_host::OnNudge(session, p, static_cast<uint8_t>(msg.senderPeerSlot));
+        break;
+    }
     case net::ReliableKind::OrderRequest: {
         // Delivery-drone ECONOMY: a CLIENT forwards a laptop shop order to the HOST (the
         // delivery authority). VARIABLE-LENGTH (OrderRequestHeader + packed items); the host

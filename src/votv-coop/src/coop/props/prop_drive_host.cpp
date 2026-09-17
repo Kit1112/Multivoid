@@ -4,8 +4,10 @@
 
 #include "coop/net/protocol.h"
 #include "coop/net/session.h"
+#include "coop/element/intent_authority.h"
 #include "coop/player/hand_item.h"            // IsHandAxisActor: the hotbar hand and its mirrors
 #include "coop/player/local_streams.h"        // LastHeldActor: this player's grab slot
+#include "coop/player/players_registry.h"
 #include "coop/props/active_drive.h"          // NowMs
 #include "coop/props/prop_element_tracker.h"  // GetPropElementIdForActor
 #include "coop/props/prop_lifecycle.h"        // IsWireSuppressedPropClass: a class no peer holds
@@ -56,6 +58,9 @@ constexpr uint64_t kSettleProbeMs = 50;
 // A velocity below this at the end goes out as zero: assigning a velocity wakes a body at rest.
 constexpr float kRestVelCmS = 1.0f;
 constexpr float kRestAngVelDegS = 1.0f;
+constexpr float kNudgeReachUU = 180.f;
+constexpr float kNudgeSpeedCmS = 260.f;
+constexpr uint64_t kNudgeIntervalMs = 100;
 
 struct Driven {
     ue_wrap::CachedObjRef ref;
@@ -98,8 +103,32 @@ bool HeldBySomeone(void* actor);
 // contacting 'Other' actor are evaluated, capturing knock chains even if only one has hit events.
 void OnActorReceiveHitPost(void* actor, void* /*function*/, void* params) {
     auto* session = g_session.load(std::memory_order_acquire);
-    if (!session || !session->connected() || session->role() != coop::net::Role::Host) return;
+    if (!session || !session->connected()) return;
     if (!ue_wrap::game_thread::IsGameThread()) return;
+
+    if (session->role() != coop::net::Role::Host) {
+        void* local = coop::players::Registry::Get().Local();
+        void* other = nullptr;
+        if (params && g_offReceiveHitOther >= 0)
+            other = *reinterpret_cast<void* const*>(static_cast<const uint8_t*>(params) + g_offReceiveHitOther);
+        void* prop = actor == local ? other : other == local ? actor : nullptr;
+        if (!prop || !PR::IsDescendantOfProp(prop)) return;
+        const auto eid = coop::prop_element_tracker::GetPropElementIdForActor(prop);
+        if (eid == coop::element::kInvalidId || eid == 0u) return;
+        const ue_wrap::FVector v = E::GetActorVelocity(local);
+        const float flat = std::sqrt(v.X * v.X + v.Y * v.Y);
+        if (!std::isfinite(flat) || flat < 30.f) return;
+        static std::unordered_map<uint32_t, uint64_t> s_lastNudge;
+        const uint64_t now = coop::active_drive::NowMs();
+        uint64_t& last = s_lastNudge[static_cast<uint32_t>(eid)];
+        if (now - last < kNudgeIntervalMs) return;
+        last = now;
+        coop::net::PropNudgePayload p{};
+        p.elementId = static_cast<uint32_t>(eid);
+        p.dirX = v.X / flat; p.dirY = v.Y / flat;
+        session->SendReliable(coop::net::ReliableKind::PropNudge, &p, sizeof(p));
+        return;
+    }
 
     if (actor && (PR::IsDescendantOfProp(actor) || PR::IsKeyedInteractable(actor))) {
         Coast(actor, "physics impact");
@@ -337,6 +366,31 @@ void Coast(void* actor, const char* reason) {
     Open(actor, /*claimed=*/false, reason ? reason : "");
 }
 
+void OnNudge(coop::net::Session& session, const coop::net::PropNudgePayload& p,
+             uint8_t senderSlot) {
+    UE_ASSERT_GAME_THREAD("prop_drive_host::OnNudge");
+    if (session.role() != coop::net::Role::Host || senderSlot == 0 ||
+        senderSlot >= coop::net::kMaxPeers || p.elementId == 0 ||
+        !std::isfinite(p.dirX) || !std::isfinite(p.dirY) || !std::isfinite(p.dirZ)) return;
+    static uint64_t s_lastNudge[coop::net::kMaxPeers]{};
+    const uint64_t now = coop::active_drive::NowMs();
+    if (now - s_lastNudge[senderSlot] < kNudgeIntervalMs) return;
+    s_lastNudge[senderSlot] = now;
+    const float flat = std::sqrt(p.dirX * p.dirX + p.dirY * p.dirY);
+    if (flat < 0.9f || flat > 1.1f || std::fabs(p.dirZ) > 0.1f) return;
+    const auto target = coop::element::IntentTarget::ForClientIntent(session, senderSlot, kNudgeReachUU)
+        .Resolve(static_cast<coop::element::ElementId>(p.elementId), coop::element::ElementType::Prop);
+    if (!target || HeldBySomeone(target.actor)) return;
+    void* mesh = PR::GetStaticMesh(target.actor);
+    if (!mesh) return;
+    coop::remote_prop::DriveSimulate(mesh, true);
+    const PR::VelocityState old = PR::GetPhysicsVelocity(target.actor);
+    coop::remote_prop::DriveSetLinearVelocity(mesh, p.dirX * kNudgeSpeedCmS,
+                                               p.dirY * kNudgeSpeedCmS,
+                                               old.ok ? old.linearCmS.Z : 0.f);
+    Coast(target.actor, "client body nudge");
+}
+
 void Release(void* actor) {
     UE_ASSERT_GAME_THREAD("prop_drive_host::Release");
     Driven* d = Find(actor);
@@ -367,6 +421,7 @@ void Tick(coop::net::Session& s) {
     UE_ASSERT_GAME_THREAD("prop_drive_host::Tick");
     g_session.store(&s, std::memory_order_release);
     InstallImpactObserver();
+    if (s.role() != coop::net::Role::Host) return;
     ScanAwakeProps();
     if (g_driven.empty()) return;
     const uint64_t now = coop::active_drive::NowMs();
