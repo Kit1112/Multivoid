@@ -199,6 +199,21 @@ bool ApplyToSaveObject(void* saveSlot, const PlayerInventory& inv) {
                       [](uint8_t* e, const EquipRecord& r) { WriteEquipRecord(e, r); });
     BuildAndSwapArray(saveSlot, kOff_hold, kEquipStride, inv.hold,
                       [](uint8_t* e, const EquipRecord& r) { WriteEquipRecord(e, r); });
+
+    // Also populate GObjStack[0] (the live personal container store), so the loaded world's
+    // playerContainer.propInventory (baked index 0) starts with the joiner's per-player items
+    // instead of the host's save items that were transferred in the save file.
+    if (CachedOffset(g_offGObjStack, R::ClassOf(saveSlot), L"GObjStack") >= 0) {
+        const SR::Arr stack = SR::ReadArr(saveSlot, g_offGObjStack);
+        if (stack.num > 0 && stack.data) {
+            uint8_t* slot0 = const_cast<uint8_t*>(stack.data);
+            BuildAndSwapArray(slot0, 0, SR::kSaveStride, inv.inventory,
+                              [](uint8_t* e, const SR::SaveRecord& r) { SR::WriteSaveRecord(e, r); });
+            UE_LOGI("inventory: ApplyToSaveObject(%p) applied personal items (%zu) to GObjStack[0]",
+                    saveSlot, inv.inventory.size());
+        }
+    }
+
     UE_LOGI("inventory: ApplyToSaveObject(%p) wrote inventory=%zu equipment=%zu hold=%zu",
             saveSlot, inv.inventory.size(), inv.equipment.size(), inv.hold.size());
     return true;

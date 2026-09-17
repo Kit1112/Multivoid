@@ -266,6 +266,10 @@ void ClientStreamTick(coop::net::Session* s) {
     g_lastPoll = now;
     ue_wrap::inventory::PlayerInventory inv;
     if (!ue_wrap::inventory::ReadAll(inv)) return;  // saveSlot not up yet
+    ue_wrap::inventory::LivePersonalStore live;
+    if (ue_wrap::inventory::ReadLivePersonalStore(live)) {
+        inv.inventory = std::move(live.records);
+    }
     const std::vector<uint8_t> blob = coop::inventory_wire::Serialize(inv);
     const uint64_t hash = coop::blob_chunks::Fnv64(blob);
     if (hash == g_lastSentHash) return;  // unchanged -> don't re-send
