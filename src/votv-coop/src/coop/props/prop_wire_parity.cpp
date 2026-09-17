@@ -73,7 +73,11 @@ uint8_t PhysFlagsOf(void* actor) {
 
 bool SpParitySimulate(uint8_t physFlags) {
     namespace pf = coop::net::propspawn_flags;
-    return (physFlags & (pf::kStatic | pf::kFrozen | pf::kSleep)) == 0;
+    // kSimulatePhysics is the host's awake-state decision. Ignoring it re-enabled a normal prop
+    // after every spawn or converge even when the host had already found its body at rest, leaving
+    // every client free to develop a different PhysX result before the next explicit drive.
+    return (physFlags & pf::kSimulatePhysics) != 0 &&
+           (physFlags & (pf::kStatic | pf::kFrozen | pf::kSleep)) == 0;
 }
 
 void RestoreSpParityPhysicsAfterConverge(void* actor, uint8_t physFlags) {

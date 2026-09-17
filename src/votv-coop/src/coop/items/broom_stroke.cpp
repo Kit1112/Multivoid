@@ -79,11 +79,9 @@ std::deque<coop::net::BroomStrokePayload> g_pending[coop::net::kMaxPeers];
 enum class Reg : uint8_t { Pending, Registered, Refused };
 Reg  g_regStroke = Reg::Pending, g_regArm = Reg::Pending, g_regBroomed = Reg::Pending;
 bool g_live = false;              // the stroke and arm watches have resolved their names
-bool g_liveAbsent = false;        // registered, and the gate never made them live
 int  g_nameTries = 0, g_liveTries = 0;
 uint64_t g_nextNameResolveMs = 0;
-bool g_namesAbsent = false;
-constexpr int kMaxTries = 40;     // ten seconds at the throttled 250 ms class/function discovery cadence
+constexpr int kWarnTries = 40;    // ten seconds at the throttled 250 ms class/function discovery cadence
 
 // The native seams on a holder's heading and velocity reads, installed disarmed on the first stroke
 // a host runs for a client and armed only for the length of each such run.
@@ -333,18 +331,18 @@ void Install(coop::net::Session* session) {
     g_session.store(session, std::memory_order_release);  // re-cache every call (reconnect)
     // This lane owns its own enable, as the trash morph gate does: the gate's switch is shared.
     if (session && session->running()) sg::SetEnabled(true);
-    if (g_namesAbsent || g_liveAbsent || (g_live && g_regBroomed != Reg::Pending)) return;
+    if (g_live && g_regBroomed != Reg::Pending) return;
     const uint64_t now = coop::active_drive::NowMs();
     if (now < g_nextNameResolveMs) return;
     g_nextNameResolveMs = now + 250;
     if (!ue_wrap::broom::ResolveNames()) {
-        if (++g_nameTries >= kMaxTries) {
-            g_namesAbsent = true;
-            UE_LOGE("[BROOM-STROKE] the broom's names did not resolve after %d tries -- for the rest of "
-                    "this process no stroke is refused or run for a remote player", g_nameTries);
+        if (++g_nameTries == kWarnTries) {
+            UE_LOGW("[BROOM-STROKE] the broom's names did not resolve after %d tries -- will keep "
+                    "waiting for the class to load", g_nameTries);
         }
         return;
     }
+    g_nameTries = 0;
     RegisterOnce(g_regStroke, ue_wrap::broom::StrokeNotifyFunctionName(), kTagStroke, &OnStrokeNotify);
     RegisterOnce(g_regArm, P::name::MainPlayerArmFn, kTagArm, &OnArm);
     RegisterOnce(g_regBroomed, P::name::PileBroomedFn, kTagBroomed, &OnBroomed, &OnBroomedDone);
@@ -355,12 +353,12 @@ void Install(coop::net::Session* session) {
     if (sg::NameWatchLive(ue_wrap::broom::StrokeNotifyFunctionName(), kTagStroke) &&
         sg::NameWatchLive(P::name::MainPlayerArmFn, kTagArm)) {
         g_live = true;
+        g_liveTries = 0;
         UE_LOGI("[BROOM-STROKE] watching the stroke, arm and '%ls' by name -- on a client every "
                 "stroke is the host's", P::name::PileBroomedFn);
-    } else if (++g_liveTries >= kMaxTries) {
-        g_liveAbsent = true;
-        UE_LOGE("[BROOM-STROKE] the stroke and arm watches registered and never went live after %d "
-                "tries -- for the rest of this process no stroke is refused or run for a remote player",
+    } else if (++g_liveTries == kWarnTries) {
+        UE_LOGW("[BROOM-STROKE] the stroke and arm watches are still pending after %d tries -- will "
+                "keep waiting for their names",
                 g_liveTries);
     }
 }
