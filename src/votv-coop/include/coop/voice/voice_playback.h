@@ -29,7 +29,7 @@ namespace coop::voice {
 struct PlaybackConfig {
     std::string device;          // output device name substring ("" = system default)
     float volume = 1.0f;         // master voice volume 0..3 (SVC range)
-    float distanceCm = 3000.0f;  // proximity radius (whisper = half)
+    float distanceCm = 2400.0f;  // proximity radius (whisper = half)
     int   jitterThreshold = 3;   // 0 disables buffering
     int   prebufferFrames = 5;   // ~100 ms latency floor
 };
@@ -107,6 +107,8 @@ private:
         float reflection[kReflectionSamples]{};
         uint32_t reflectionWrite = 0;
         uint32_t tailSamplesRemaining = 0;
+        float mixedGainL = 0.0f;
+        float mixedGainR = 0.0f;
 
         std::atomic<float> volume{1.0f};
     };
@@ -119,7 +121,7 @@ private:
 
     std::atomic<float> listenerX_{0}, listenerY_{0}, listenerZ_{0}, listenerYaw_{0};
     std::atomic<float> masterVolume_{1.0f};
-    float distanceCm_ = 3000.0f;
+    float distanceCm_ = 2400.0f;
     int jitterThreshold_ = 3;
     int prebufferFrames_ = 5;
 
