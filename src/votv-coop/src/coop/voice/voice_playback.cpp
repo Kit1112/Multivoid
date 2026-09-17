@@ -448,18 +448,6 @@ void Playback::MixOutput(float* out, uint32_t frameCount) {
 
         const uint32_t take =
             avail < frameCount ? static_cast<uint32_t>(avail) : frameCount;
-        // Continue feeding the feedback taps with silence after a phrase ends. This lets the
-        // room return decay naturally instead of cutting it at the PCM-ring boundary.
-        if (take > 0) ch.tailSamplesRemaining = Channel::kReflectionSamples;
-        const uint32_t mixSamples = take > 0 ? take :
-            (ch.tailSamplesRemaining < frameCount ? ch.tailSamplesRemaining : frameCount);
-        // Game-thread spatial snapshots arrive at 20 Hz. Give their gains a 50 ms time constant
-        // so stepping across a ray or rotating a head cannot make audible 20 Hz stair-steps.
-        const float blend = 1.0f - std::exp(-static_cast<float>(mixSamples) / 2400.0f);
-        const float targetL = ch.mixedGainL + (gainL - ch.mixedGainL) * blend;
-        const float targetR = ch.mixedGainR + (gainR - ch.mixedGainR) * blend;
-        const float gainStepL = (targetL - ch.mixedGainL) / static_cast<float>(mixSamples);
-        const float gainStepR = (targetR - ch.mixedGainR) / static_cast<float>(mixSamples);
         const float obstruction = ch.occlusion.load(std::memory_order_relaxed);
         const float listenerEnclosure = roomEnclosure_.load(std::memory_order_relaxed);
         const float sourceEnclosure = ch.sourceEnclosure.load(std::memory_order_relaxed);
@@ -482,6 +470,21 @@ void Playback::MixOutput(float* out, uint32_t frameCount) {
         const float feedback = 0.42f + roomEnclosure * (0.15f + roomScale * 0.17f);
         // Small rooms lose high frequencies faster; long rooms keep a slightly brighter tail.
         const float dampAlpha = 0.16f + (1.0f - roomScale) * 0.18f;
+        // Continue feeding silence into the feedback network after speech stops. An exposed
+        // position gets a short 375 ms cleanup tail; a large enclosed volume reaches 900 ms.
+        if (take > 0) {
+            ch.tailSamplesRemaining = static_cast<uint32_t>(
+                18000.0f + roomEnclosure * (9600.0f + roomScale * 15600.0f));
+        }
+        const uint32_t mixSamples = take > 0 ? take :
+            (ch.tailSamplesRemaining < frameCount ? ch.tailSamplesRemaining : frameCount);
+        // Game-thread spatial snapshots arrive at 20 Hz. Give their gains a 50 ms time constant
+        // so stepping across a ray or rotating a head cannot make audible 20 Hz stair-steps.
+        const float blend = 1.0f - std::exp(-static_cast<float>(mixSamples) / 2400.0f);
+        const float targetL = ch.mixedGainL + (gainL - ch.mixedGainL) * blend;
+        const float targetR = ch.mixedGainR + (gainR - ch.mixedGainR) * blend;
+        const float gainStepL = (targetL - ch.mixedGainL) / static_cast<float>(mixSamples);
+        const float gainStepR = (targetR - ch.mixedGainR) / static_cast<float>(mixSamples);
         // Cascaded poles give a wall a useful 12 dB/octave high-frequency rolloff. 0.92 is
         // effectively transparent; a closed path leaves a slow ~1 kHz speech contour.
         const float lowpassAlpha = 0.92f - obstruction * 0.80f;
