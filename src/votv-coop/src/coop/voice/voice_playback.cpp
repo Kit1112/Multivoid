@@ -459,10 +459,12 @@ void Playback::MixOutput(float* out, uint32_t frameCount) {
                                                Channel::kReflectionSamples]; // 140 ms
             const float late = ch.reflection[(w + Channel::kReflectionSamples - 10560) %
                                              Channel::kReflectionSamples];   // 220 ms
-            // Open air is nearly dry. A room adds a denser return, while an obstructed direct
-            // path promotes that return so speech stays located at a doorway or wall.
+            // Open air is nearly dry. A room adds a denser return, but walls must reduce that
+            // return with the direct path: otherwise several barriers leave a loud artificial
+            // bypass around the very obstruction the spatial trace found.
             const float roomMix = 0.20f + roomEnclosure * 0.60f;
-            const float reflectionMix = roomMix * (0.65f + obstruction * 0.35f);
+            const float transmission = 1.0f - obstruction * 0.88f;
+            const float reflectionMix = roomMix * (0.18f + transmission * 0.60f);
             const float wet = (near * 0.11f + early * 0.14f + middle * 0.10f + late * 0.08f) *
                 reflectionMix;
             const float decay = 0.55f + roomEnclosure * 0.45f;
