@@ -153,7 +153,8 @@ void Playback::ResetSlot(int slot) {
     if (!running_) {
         std::memset(ch.reflection, 0, sizeof(ch.reflection));
         ch.reflectionWrite = 0;
-        ch.lowpassState = 0.0f;
+        ch.lowpassState1 = 0.0f;
+        ch.lowpassState2 = 0.0f;
         ch.tailSamplesRemaining = 0;
         ch.mixedGainL = 0.0f;
         ch.mixedGainR = 0.0f;
@@ -438,15 +439,17 @@ void Playback::MixOutput(float* out, uint32_t frameCount) {
         const float gainStepR = (targetR - ch.mixedGainR) / static_cast<float>(mixSamples);
         const float obstruction = ch.occlusion.load(std::memory_order_relaxed);
         const float roomEnclosure = roomEnclosure_.load(std::memory_order_relaxed);
-        // 0.92 is effectively transparent; a closed wall leaves a slow ~1 kHz speech contour.
+        // Cascaded poles give a wall a useful 12 dB/octave high-frequency rolloff. 0.92 is
+        // effectively transparent; a closed path leaves a slow ~1 kHz speech contour.
         const float lowpassAlpha = 0.92f - obstruction * 0.80f;
         for (uint32_t i = 0; i < mixSamples; ++i) {
             ch.mixedGainL += gainStepL;
             ch.mixedGainR += gainStepR;
             const float s = i < take ?
                 static_cast<float>(ch.ring[(read + i) % Channel::kRingSamples]) / 32768.0f : 0.0f;
-            ch.lowpassState += lowpassAlpha * (s - ch.lowpassState);
-            const float dry = ch.lowpassState;
+            ch.lowpassState1 += lowpassAlpha * (s - ch.lowpassState1);
+            ch.lowpassState2 += lowpassAlpha * (ch.lowpassState1 - ch.lowpassState2);
+            const float dry = ch.lowpassState2;
             const uint32_t w = ch.reflectionWrite;
             const float near = ch.reflection[(w + Channel::kReflectionSamples - 1680) %
                                              Channel::kReflectionSamples];   // 35 ms

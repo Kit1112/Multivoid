@@ -101,8 +101,9 @@ private:
         std::atomic<float> occlusion{0.0f};
         std::atomic<float> forwardX{1.0f}, forwardY{0.0f}, forwardZ{0.0f};
 
-        // Callback-thread-only one-pole low-pass state for obstructed speech.
-        float lowpassState = 0.0f;
+        // Callback-thread-only cascaded low-pass state for obstructed speech.
+        float lowpassState1 = 0.0f;
+        float lowpassState2 = 0.0f;
 
         // Callback-thread-only short reflections. They give occluded voice a quiet room return
         // without allocating or calling the engine from the audio callback.
