@@ -30,7 +30,7 @@ inline constexpr uint32_t kMagic = 0x564D5450u;
 // This file is past the 1500-line hard cap and stays there: it is the single-feature exception the
 // rule names. One wire format, whose enum, payload structs and static_asserts are read together;
 // splitting it would put a kind's number in one file and its bytes in another.
-inline constexpr uint16_t kProtocolVersion = 164;
+inline constexpr uint16_t kProtocolVersion = 165;
 
 // Default LAN port (overridable via multivoid.ini "net.port=").
 inline constexpr uint16_t kDefaultPort = 47621;
@@ -1623,8 +1623,9 @@ static_assert(sizeof(BroomStrokePayload) <= 256 - 20 - 8,
 struct PropNudgePayload {
     uint32_t elementId = 0;
     float dirX = 0.f, dirY = 0.f, dirZ = 0.f;
+    float speedCmS = 0.f;
 };
-static_assert(sizeof(PropNudgePayload) == 16, "PropNudgePayload must be 16 bytes");
+static_assert(sizeof(PropNudgePayload) == 20, "PropNudgePayload must be 20 bytes");
 static_assert(sizeof(PropNudgePayload) <= 256 - 20 - 8,
               "PropNudgePayload must fit in one reliable datagram");
 

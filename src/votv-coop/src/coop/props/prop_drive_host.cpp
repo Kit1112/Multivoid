@@ -59,7 +59,8 @@ constexpr uint64_t kSettleProbeMs = 50;
 constexpr float kRestVelCmS = 1.0f;
 constexpr float kRestAngVelDegS = 1.0f;
 constexpr float kNudgeReachUU = 180.f;
-constexpr float kNudgeSpeedCmS = 260.f;
+constexpr float kNudgeMinSpeedCmS = 70.f;
+constexpr float kNudgeMaxSpeedCmS = 500.f;
 constexpr uint64_t kNudgeIntervalMs = 100;
 // PhysX can resolve one final contact just after the rest probe reads a quiet body. Keep the
 // final pose under a short host-only watch so late movement reopens the coast stream.
@@ -182,6 +183,7 @@ void SendClientNudge(coop::net::Session& session, void* actor, void* other) {
     coop::net::PropNudgePayload p{};
     p.elementId = static_cast<uint32_t>(eid);
     p.dirX = v.X / flat; p.dirY = v.Y / flat;
+    p.speedCmS = std::clamp(flat, kNudgeMinSpeedCmS, kNudgeMaxSpeedCmS);
     session.SendReliable(coop::net::ReliableKind::PropNudge, &p, sizeof(p));
 }
 
@@ -494,7 +496,8 @@ void OnNudge(coop::net::Session& session, const coop::net::PropNudgePayload& p,
     UE_ASSERT_GAME_THREAD("prop_drive_host::OnNudge");
     if (session.role() != coop::net::Role::Host || senderSlot == 0 ||
         senderSlot >= coop::net::kMaxPeers || p.elementId == 0 ||
-        !std::isfinite(p.dirX) || !std::isfinite(p.dirY) || !std::isfinite(p.dirZ)) return;
+        !std::isfinite(p.dirX) || !std::isfinite(p.dirY) || !std::isfinite(p.dirZ) ||
+        !std::isfinite(p.speedCmS)) return;
     static uint64_t s_lastNudge[coop::net::kMaxPeers]{};
     const uint64_t now = coop::active_drive::NowMs();
     if (now - s_lastNudge[senderSlot] < kNudgeIntervalMs) return;
@@ -506,10 +509,11 @@ void OnNudge(coop::net::Session& session, const coop::net::PropNudgePayload& p,
     if (!target || HeldBySomeone(target.actor)) return;
     void* mesh = PR::GetStaticMesh(target.actor);
     if (!mesh) return;
+    const float speed = std::clamp(p.speedCmS, kNudgeMinSpeedCmS, kNudgeMaxSpeedCmS);
     coop::remote_prop::DriveSimulate(mesh, true);
     const PR::VelocityState old = PR::GetPhysicsVelocity(target.actor);
-    coop::remote_prop::DriveSetLinearVelocity(mesh, p.dirX * kNudgeSpeedCmS,
-                                               p.dirY * kNudgeSpeedCmS,
+    coop::remote_prop::DriveSetLinearVelocity(mesh, p.dirX * speed,
+                                               p.dirY * speed,
                                                old.ok ? old.linearCmS.Z : 0.f);
     Coast(target.actor, "client body nudge");
 }
