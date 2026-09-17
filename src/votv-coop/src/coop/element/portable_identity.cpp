@@ -3,7 +3,8 @@
 
 #include "coop/element/portable_identity.h"
 
-#include "ue_wrap/actors/prop.h"        // GetInteractableKeyString (the generic Key read)
+#include "ue_wrap/actors/prop.h"
+#include "ue_wrap/devices/garage.h"        // GetInteractableKeyString (the generic Key read)
 #include "ue_wrap/core/log.h"
 #include "ue_wrap/core/reflection.h"
 #include "ue_wrap/core/sdk_profile.h"   // UObject_ObjectFlags
@@ -60,14 +61,19 @@ std::wstring PortableIdentity(void* actor) {
             // the persisted quantity and the name the transient one. Preferring the name would hand
             // one physical object two identities inside a single session.
             std::wstring anchor;
-            std::wstring key = ue_wrap::prop::GetInteractableKeyString(cur);
-            if (key.empty() || key == L"None")
-                key = ue_wrap::prop::GetActorSaveKeyString(cur);   // the OTHER half of the key surface
-            if (!key.empty() && key != L"None") {
-                anchor = L"k:" + key;
-            } else if (WasLoaded(cur)) {
-                anchor = L"n:" + R::ToString(R::NameOf(cur));
+            if (ue_wrap::garage::EnsureResolved() && ue_wrap::garage::IsGarage(cur)) {
+                // The base garage has no reliable save key and is a unique placed fixture.
+                // Anchor it deterministically to canonical "n:garage" across host and all clients.
+                anchor = L"n:garage";
             } else {
+                std::wstring key = ue_wrap::prop::GetInteractableKeyString(cur);
+                if (key.empty() || key == L"None")
+                    key = ue_wrap::prop::GetActorSaveKeyString(cur);   // the OTHER half of the key surface
+                if (!key.empty() && key != L"None") {
+                    anchor = L"k:" + key;
+                } else if (WasLoaded(cur)) {
+                    anchor = L"n:" + R::ToString(R::NameOf(cur));
+                } else {
                 // NO IDENTITY -- and say so loudly ONCE per class rather than returning a guess.
                 // Two different things land here and the log must not hide either: an actor whose
                 // Key really is None, and an actor of a class `ue_wrap::prop::GetInteractableKey`
@@ -88,6 +94,7 @@ std::wstring PortableIdentity(void* actor) {
                             "RF_WasLoaded nor a Key this reader can see (first of this class)",
                             cls.c_str());
                 return std::wstring();
+                }
             }
             return anchor + suffix;
         }

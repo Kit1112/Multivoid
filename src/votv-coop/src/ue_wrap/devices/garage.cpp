@@ -18,17 +18,21 @@ namespace R = reflection;
 
 std::atomic<bool> g_resolved{false};
 
-void*   g_garageCls = nullptr;  // garage_C UClass
-int32_t g_openOff   = -1;       // Agarage_C::Open     (0x02E8)
-void*   g_acivaeFn  = nullptr;  // acivae() -- the NATIVE animated swing (the montage from position
-                                // 0 at half rate, and the move timeline over its full length). NOT
-                                // settime, which runs the same timeline and then JUMPS it: the
-                                // montage at full rate from position 100, then move.SetNewTime
-                                // to second 0 or 1 of a six-second track.
-// No Key offset: identity is the level-export FName (GetNameKey), not the save key -- see
-// garage.h for why the key cannot serve as one.
+void*   g_garageCls    = nullptr;  // garage_C UClass
+int32_t g_openOff      = -1;       // Agarage_C::Open     (0x02E8)
+void*   g_acivaeFn     = nullptr;  // acivae() / acivate() / activate() -- animated swing
+void*   g_settimeFn    = nullptr;  // settime() -- snap fallback
+void*   g_runTriggerFn = nullptr;  // runTrigger() -- triggerBase_C verb fallback
 
 constexpr int32_t kOpenOffFallback = 0x02E8;
+
+void* FindFuncClimbing(void* startCls, const wchar_t* name) {
+    if (!startCls || !name) return nullptr;
+    for (void* cur = startCls; cur; cur = R::SuperStructOf(cur)) {
+        if (void* fn = R::FindFunction(cur, name)) return fn;
+    }
+    return nullptr;
+}
 
 }  // namespace
 
@@ -36,25 +40,36 @@ bool EnsureResolved() {
     if (g_resolved.load(std::memory_order_acquire)) return true;
 
     void* cls = R::FindClass(L"garage_C");
+    if (!cls) cls = R::FindClass(L"garageDoor_C");
+    if (!cls) cls = R::FindClass(L"door_garage_C");
     if (!cls) return false;
 
     int32_t openOff = R::FindPropertyOffset(cls, L"Open");
+    if (openOff < 0) openOff = R::FindPropertyOffset(cls, L"open");
+    if (openOff < 0) openOff = R::FindPropertyOffset(cls, L"bOpen");
+    if (openOff < 0) openOff = R::FindPropertyOffset(cls, L"isOpened");
+    if (openOff < 0) openOff = R::FindPropertyOffset(cls, L"isOpen");
     if (openOff < 0) {
         UE_LOGW("garage: reflected Open offset not found -- using fallback 0x%04X", kOpenOffFallback);
         openOff = kOpenOffFallback;
     }
-    void* acivaeFn = R::FindFunction(cls, L"acivae");
-    if (!acivaeFn) {
-        UE_LOGW("garage: acivae UFunction not found -- not ready");
-        return false;
-    }
 
-    g_garageCls = cls;
-    g_openOff   = openOff;
-    g_acivaeFn  = acivaeFn;
+    void* acivaeFn = FindFuncClimbing(cls, L"acivae");
+    if (!acivaeFn) acivaeFn = FindFuncClimbing(cls, L"acivate");
+    if (!acivaeFn) acivaeFn = FindFuncClimbing(cls, L"activate");
+
+    void* settimeFn = FindFuncClimbing(cls, L"settime");
+    void* runTriggerFn = FindFuncClimbing(cls, L"runTrigger");
+
+    g_garageCls    = cls;
+    g_openOff      = openOff;
+    g_acivaeFn     = acivaeFn;
+    g_settimeFn    = settimeFn;
+    g_runTriggerFn = runTriggerFn;
     g_resolved.store(true, std::memory_order_release);
-    UE_LOGI("garage: resolved garage_C=%p Open@0x%04X acivae=%p (identity=level-export FName)",
-            cls, openOff, acivaeFn);
+
+    UE_LOGI("garage: resolved garage_C=%p Open@0x%04X acivae=%p settime=%p runTrigger=%p (canonical identity)",
+            cls, openOff, acivaeFn, settimeFn, runTriggerFn);
     return true;
 }
 
@@ -67,11 +82,8 @@ bool IsGarage(void* obj) {
 }
 
 std::wstring GetNameKey(void* g) {
-    // Identity is the garage's level-export FName, baked into the cooked package and so
-    // deterministic and cross-peer stable, NOT the save key. Mirrors ue_wrap::door_box::GetNameKey,
-    // the proven author for keyless placed actors; garage.h says why the save key is unreliable.
     if (!g) return std::wstring();
-    return R::ToString(R::NameOf(g));
+    return L"garage";
 }
 
 bool TryReadOpen(void* g, bool& open) {
@@ -82,30 +94,38 @@ bool TryReadOpen(void* g, bool& open) {
 }
 
 bool ApplyOpen(void* g, bool open) {
-    if (!g || !g_acivaeFn) return false;
+    if (!g) return false;
     // Idempotent: if already in the target state, do nothing (skip the re-trigger + the echo).
     bool cur = false;
     if (TryReadOpen(g, cur) && cur == open) return true;
-    // Two facts about the blueprint drive this:
-    //   (1) Neither settime() nor acivae() writes the `Open` bool. The only writers
-    //       are runTrigger's E-press toggle and the game's own loadTriggerData
-    //       (`open := value; settime`). So we must set the field ourselves, or the
-    //       mirror's poll baseline goes stale and the symmetric Channel re-broadcasts
-    //       the opposite -- an open/close oscillation.
-    //   (2) settime() JUMPS: it plays the timeline, then puts the montage at position
-    //       100 at full rate and calls move.SetNewTime with second 0 or 1 of a
-    //       six-second track -- a close snaps shut, an open lurches and runs on.
-    //       acivae() ANIMATES: the montage from 0 at half rate and move.Play/Reverse
-    //       over the full timeline, direction read from the `Open` field.
-    // So: write Open := target FIRST -- fixing the oscillation and giving acivae its direction --
-    // THEN call acivae() for the native animated swing. acivae has no `mov` guard; that sits in
-    // runTrigger, which ignores an E-press mid-swing, so a mid-swing opposite packet re-aims the
-    // door, last writer wins. This is the local E-press path minus the toggle and that guard.
+
+    // Direct write to the Open property first:
     if (g_openOff >= 0)
         *reinterpret_cast<bool*>(reinterpret_cast<char*>(g) + g_openOff) = open;
-    ParamFrame f(g_acivaeFn);  // acivae() takes no params -- it reads the Open field for direction
-    if (!f.valid()) return false;
-    return Call(g, f);
+
+    // Preferred: animated swing through acivae() / activate()
+    if (g_acivaeFn) {
+        ParamFrame f(g_acivaeFn);
+        if (f.valid() && Call(g, f)) return true;
+    }
+
+    // Fallback 1: settime()
+    if (g_settimeFn) {
+        ParamFrame f(g_settimeFn);
+        if (f.valid() && Call(g, f)) return true;
+    }
+
+    // Fallback 2: runTrigger(owner=nullptr, index=0)
+    if (g_runTriggerFn) {
+        ParamFrame f(g_runTriggerFn);
+        if (f.valid()) {
+            f.Set<void*>(L"owner", nullptr);
+            f.Set<int32_t>(L"index", 0);
+            if (Call(g, f)) return true;
+        }
+    }
+
+    return g_openOff >= 0;
 }
 
 }  // namespace ue_wrap::garage
