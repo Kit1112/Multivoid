@@ -97,6 +97,27 @@ bool    g_overlapObserverInstalled = false;
 
 bool HeldBySomeone(void* actor);
 
+void SendClientNudge(coop::net::Session& session, void* actor, void* other) {
+    void* local = coop::players::Registry::Get().Local();
+    if (!local || !R::IsLive(local)) return;
+    void* prop = actor == local ? other : other == local ? actor : nullptr;
+    if (!prop || !R::IsLive(prop) || !PR::IsDescendantOfProp(prop)) return;
+    const auto eid = coop::prop_element_tracker::GetPropElementIdForActor(prop);
+    if (eid == coop::element::kInvalidId || eid == 0u) return;
+    const ue_wrap::FVector v = E::GetActorVelocity(local);
+    const float flat = std::sqrt(v.X * v.X + v.Y * v.Y);
+    if (!std::isfinite(flat) || flat < 30.f) return;
+    static std::unordered_map<uint32_t, uint64_t> s_lastNudge;
+    const uint64_t now = coop::active_drive::NowMs();
+    uint64_t& last = s_lastNudge[static_cast<uint32_t>(eid)];
+    if (now - last < kNudgeIntervalMs) return;
+    last = now;
+    coop::net::PropNudgePayload p{};
+    p.elementId = static_cast<uint32_t>(eid);
+    p.dirX = v.X / flat; p.dirY = v.Y / flat;
+    session.SendReliable(coop::net::ReliableKind::PropNudge, &p, sizeof(p));
+}
+
 // ReceiveHit is emitted after UE has resolved a blocking physics contact. This is the missing
 // verb for a prop a moving prop knocks: the impacted prop has already received its impulse when
 // this observer runs, so coast streams its actual host trajectory. Both the hit actor and the
@@ -107,27 +128,10 @@ void OnActorReceiveHitPost(void* actor, void* /*function*/, void* params) {
     if (!ue_wrap::game_thread::IsGameThread()) return;
 
     if (session->role() != coop::net::Role::Host) {
-        void* local = coop::players::Registry::Get().Local();
-        if (!local || !R::IsLive(local)) return;
         void* other = nullptr;
         if (params && g_offReceiveHitOther >= 0)
             other = *reinterpret_cast<void* const*>(static_cast<const uint8_t*>(params) + g_offReceiveHitOther);
-        void* prop = actor == local ? other : other == local ? actor : nullptr;
-        if (!prop || !R::IsLive(prop) || !PR::IsDescendantOfProp(prop)) return;
-        const auto eid = coop::prop_element_tracker::GetPropElementIdForActor(prop);
-        if (eid == coop::element::kInvalidId || eid == 0u) return;
-        const ue_wrap::FVector v = E::GetActorVelocity(local);
-        const float flat = std::sqrt(v.X * v.X + v.Y * v.Y);
-        if (!std::isfinite(flat) || flat < 30.f) return;
-        static std::unordered_map<uint32_t, uint64_t> s_lastNudge;
-        const uint64_t now = coop::active_drive::NowMs();
-        uint64_t& last = s_lastNudge[static_cast<uint32_t>(eid)];
-        if (now - last < kNudgeIntervalMs) return;
-        last = now;
-        coop::net::PropNudgePayload p{};
-        p.elementId = static_cast<uint32_t>(eid);
-        p.dirX = v.X / flat; p.dirY = v.Y / flat;
-        session->SendReliable(coop::net::ReliableKind::PropNudge, &p, sizeof(p));
+        SendClientNudge(*session, actor, other);
         return;
     }
 
@@ -146,8 +150,16 @@ void OnActorReceiveHitPost(void* actor, void* /*function*/, void* params) {
 // with another actor. Captures body bumps/walk-throughs where blocking hit events did not fire.
 void OnActorReceiveBeginOverlapPost(void* actor, void* /*function*/, void* params) {
     auto* session = g_session.load(std::memory_order_acquire);
-    if (!session || !session->connected() || session->role() != coop::net::Role::Host) return;
+    if (!session || !session->connected()) return;
     if (!ue_wrap::game_thread::IsGameThread()) return;
+
+    if (session->role() != coop::net::Role::Host) {
+        void* other = nullptr;
+        if (params && g_offReceiveOverlapOther >= 0)
+            other = *reinterpret_cast<void* const*>(static_cast<const uint8_t*>(params) + g_offReceiveOverlapOther);
+        SendClientNudge(*session, actor, other);
+        return;
+    }
 
     if (actor && (PR::IsDescendantOfProp(actor) || PR::IsKeyedInteractable(actor))) {
         Coast(actor, "actor overlap");
