@@ -86,6 +86,13 @@ void ApplyEnd(void* actor, const coop::net::PropDriveEndPayload& p, bool parkedH
     coop::prop_wire_parity::RestoreSpParityPhysicsAfterConverge(actor, p.physFlags);
     const float lin2 = p.linVelX * p.linVelX + p.linVelY * p.linVelY + p.linVelZ * p.linVelZ;
     const float ang2 = p.angVelX * p.angVelX + p.angVelY * p.angVelY + p.angVelZ * p.angVelZ;
+    // A zero-velocity end is the host's settled final state. Keeping that actor kinematic avoids
+    // each client's local PhysX contact solver nudging it away after the authoritative stream has
+    // closed. A later local grab or new host coast stream explicitly takes over the body again.
+    if (lin2 == 0.f && ang2 == 0.f) {
+        if (void* mesh = PR::GetStaticMesh(actor)) coop::remote_prop::DriveSimulate(mesh, false);
+        return;
+    }
     if (parkedHere && coop::prop_wire_parity::SpParitySimulate(p.physFlags) &&
         (lin2 > 0.f || ang2 > 0.f)) {
         void* mesh = PR::GetStaticMesh(actor);
