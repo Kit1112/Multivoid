@@ -36,7 +36,10 @@ using Clock = std::chrono::steady_clock;
 
 std::atomic<coop::net::Session*> g_session{nullptr};
 
-constexpr uint64_t kSweepMs = 1000;      // 1 Hz (the rack cadence)
+// The crate has no reliable mutation callback; its digest edge is therefore sampled frequently
+// enough that a put/take is visible while the box remains open.  The digest suppresses all idle
+// traffic, so this changes response time without creating a steady-state stream.
+constexpr uint64_t kSweepMs = 100;
 constexpr uint64_t kDenyTtlMs = 10000;   // reap correlation window
 constexpr uint64_t kPendingTtlMs = 30000;
 
@@ -216,7 +219,7 @@ void Sweep(coop::net::Session* s, uint64_t now) {
     if (now < g_nextSweep) return;
     g_nextSweep = now + kSweepMs;
 
-    g_asm.Sweep(Clock::now(), std::chrono::seconds(10));  // 1 Hz per the blob_chunks contract
+    g_asm.Sweep(Clock::now(), std::chrono::seconds(10));  // safe to sweep more often than its TTL
 
     // Retry: re-send refused canonicals (host only; erased on success).
     if (IsHost() && !g_canonRetry.empty()) {

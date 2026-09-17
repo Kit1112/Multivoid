@@ -84,6 +84,11 @@ void ApplyEnd(void* actor, const coop::net::PropDriveEndPayload& p, bool parkedH
     E::SetActorRotation(actor, ue_wrap::FRotator{p.pitch, p.yaw, p.roll});
     if (PhysicsStaysOff(actor)) return;
     coop::prop_wire_parity::RestoreSpParityPhysicsAfterConverge(actor, p.physFlags);
+    // A remote hand/display path can leave the shared body's query facet disabled.  The coast end
+    // is the authoritative return to a world prop, so restore the default query-and-physics
+    // collision before freezing a settled body.  Without this the object remains visible but has
+    // no local look trace, outline, or grab interaction after another player touched it.
+    ue_wrap::prop::ForceRestoreDefaultCollision(actor);
     const float lin2 = p.linVelX * p.linVelX + p.linVelY * p.linVelY + p.linVelZ * p.linVelZ;
     const float ang2 = p.angVelX * p.angVelX + p.angVelY * p.angVelY + p.angVelZ * p.angVelZ;
     // A zero-velocity end is the host's settled final state. Keeping that actor kinematic avoids

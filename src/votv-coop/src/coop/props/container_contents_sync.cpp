@@ -52,9 +52,9 @@ using coop::element::LivePropActor;
 constexpr int kVerbDirty   = 1;   // addObject
 constexpr int kVerbTakeObj = 2;   // takeObj
 
-// The sweep drains an edge-driven set, not a poll; 250 ms coalesces a burst (a loot roll fires
-// addObject four times) into one broadcast.
-constexpr uint64_t kSweepMs = 250;
+// The sweep drains an edge-driven set, not a poll; 100 ms captures a completed add/take before
+// the player can close the UI while still coalescing a burst such as a loot roll.
+constexpr uint64_t kSweepMs = 100;
 constexpr uint64_t kAuditRefreshMs = 2000;
 constexpr size_t kAuditBatch = 12;
 
@@ -639,6 +639,24 @@ sg::Verdict OnVerbEntry(const sg::Call& br) {
     return sg::Verdict::Run;
 }
 
+// The Blueprint verb may update GObjStack after its entry.  A pre-edge is still needed for the
+// extraction-birth bracket, but the post edge is the authoritative content notification: it
+// prevents a container that was opened and changed once from waiting for its later close or the
+// rotating safety check before its contents are published.
+void OnVerbExit(const sg::Call& br) {
+    if (!br.object) return;
+    auto* s = g_session.load(std::memory_order_acquire);
+    if (!s || !s->connected()) return;
+    if (!IsInventoryComponent(br.object) || !IsWorldContainerInventory(br.object)) return;
+    void* owner = OwnerOf(br.object);
+    if (!owner) return;
+    const uint32_t eid = static_cast<uint32_t>(coop::element::Registry::Get().EidForActor(owner));
+    if (eid == static_cast<uint32_t>(coop::element::kInvalidId)) return;
+    g_dirty.insert(eid);
+    if (IsHost()) wp::NoteLocalChange(eid, NowMs());
+    g_appliedHash.erase(eid);
+}
+
 }  // namespace
 
 // From event_feed's client-side SnapshotBegin and SnapshotComplete dispatch, on the game thread.
@@ -664,8 +682,8 @@ void Tick() {
 
     if (!g_verbsRegistered) {
         g_verbsRegistered =
-            sg::WatchName(L"addObject", kVerbDirty, &OnVerbEntry, nullptr) &&
-            sg::WatchName(L"takeObj",   kVerbTakeObj, &OnVerbEntry, nullptr);
+            sg::WatchName(L"addObject", kVerbDirty, &OnVerbEntry, &OnVerbExit) &&
+            sg::WatchName(L"takeObj",   kVerbTakeObj, &OnVerbEntry, &OnVerbExit);
         static bool s_saidFailed = false;
         if (!g_verbsRegistered && !s_saidFailed) {
             // Once. This block retries every tick, and the failure it reports is the gate
