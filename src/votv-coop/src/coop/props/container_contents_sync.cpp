@@ -616,10 +616,13 @@ sg::Verdict OnVerbEntry(const sg::Call& br) {
     // non-propInventory context carrying an addObject would otherwise poison the offset cache for
     // the session.
     if (!IsInventoryComponent(br.object)) return sg::Verdict::Run;
-    // A takeObj on any inventory component arms the extraction latch; addObject must not.
-    if (br.tag == kVerbTakeObj) g_takeObjInFlight.store(true, std::memory_order_relaxed);
     void* owner = OwnerOf(br.object);
     if (!owner) return sg::Verdict::Run;
+    // Only a WORLD container extraction may be paired with a spawned world prop. A personal
+    // inventory also calls takeObj while equipping and moving items; arming the latch there made
+    // the next unrelated spawn look like a container extraction.
+    if (!IsWorldContainerInventory(br.object)) return sg::Verdict::Run;
+    if (br.tag == kVerbTakeObj) g_takeObjInFlight.store(true, std::memory_order_relaxed);
     const uint32_t eid =
         static_cast<uint32_t>(coop::element::Registry::Get().EidForActor(owner));
     if (eid == static_cast<uint32_t>(coop::element::kInvalidId)) return sg::Verdict::Run;
