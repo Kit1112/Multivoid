@@ -48,15 +48,15 @@ public:
 
     // Game thread: position snapshots for the mixer (atomics).
     void SetListener(float x, float y, float z, float yawDeg);
-    // 0 = exposed space; 1 = surfaces close on most horizontal/upward room probes. This is a
-    // listener-side acoustic profile, independent of the direct path to each speaker.
-    void SetRoomEnclosure(float enclosure);
+    // Enclosure is 0 in exposed space and 1 around nearby surfaces. Scale is the measured free
+    // travel before those surfaces: 0 is a compact room, 1 is a large/open volume.
+    void SetRoomProfile(float enclosure, float scale);
     // `occlusion` is the 0..1 obstruction fraction sampled on the game thread by UE traces.
     // `forward*` is the speaking puppet's aim direction. The callback reads only published
     // values, never engine geometry.
     void SetSpeaker(int slot, float x, float y, float z, bool valid, float occlusion = 0.0f,
                     float forwardX = 1.0f, float forwardY = 0.0f, float forwardZ = 0.0f,
-                    float sourceEnclosure = 0.0f);
+                    float sourceEnclosure = 0.0f, float sourceRoomScale = 1.0f);
 
     // Game thread: a peer left -- drop its channel state.
     void ResetSlot(int slot);
@@ -101,18 +101,20 @@ private:
         std::atomic<float> occlusionGain{1.0f};
         std::atomic<float> occlusion{0.0f};
         std::atomic<float> sourceEnclosure{0.0f};
+        std::atomic<float> sourceRoomScale{1.0f};
         std::atomic<float> forwardX{1.0f}, forwardY{0.0f}, forwardZ{0.0f};
 
         // Callback-thread-only cascaded low-pass state for obstructed speech.
         float lowpassState1 = 0.0f;
         float lowpassState2 = 0.0f;
 
-        // Callback-thread-only short reflections. They give occluded voice a quiet room return
-        // without allocating or calling the engine from the audio callback.
-        static constexpr uint32_t kReflectionSamples = 12000;  // 250 ms at 48 kHz
+        // Callback-thread-only feedback delay network. It holds a 600 ms tail for a large room,
+        // while the sampled room scale chooses shorter, denser reflections in a compact space.
+        static constexpr uint32_t kReflectionSamples = 28800;  // 600 ms at 48 kHz
         float reflection[kReflectionSamples]{};
         uint32_t reflectionWrite = 0;
         uint32_t tailSamplesRemaining = 0;
+        float reverbDamp = 0.0f;
         float mixedGainL = 0.0f;
         float mixedGainR = 0.0f;
 
@@ -127,6 +129,7 @@ private:
 
     std::atomic<float> listenerX_{0}, listenerY_{0}, listenerZ_{0}, listenerYaw_{0};
     std::atomic<float> roomEnclosure_{0.0f};  // listener enclosure
+    std::atomic<float> roomScale_{1.0f};      // listener room's measured free travel
     std::atomic<float> masterVolume_{1.0f};
     float distanceCm_ = 2400.0f;
     int jitterThreshold_ = 3;

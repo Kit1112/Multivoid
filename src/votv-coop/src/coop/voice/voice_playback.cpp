@@ -145,6 +145,7 @@ void Playback::ResetSlot(int slot) {
     ch.occlusionGain.store(1.0f);
     ch.occlusion.store(0.0f);
     ch.sourceEnclosure.store(0.0f);
+    ch.sourceRoomScale.store(1.0f);
     ch.forwardX.store(1.0f);
     ch.forwardY.store(0.0f);
     ch.forwardZ.store(0.0f);
@@ -156,6 +157,7 @@ void Playback::ResetSlot(int slot) {
         ch.reflectionWrite = 0;
         ch.lowpassState1 = 0.0f;
         ch.lowpassState2 = 0.0f;
+        ch.reverbDamp = 0.0f;
         ch.tailSamplesRemaining = 0;
         ch.mixedGainL = 0.0f;
         ch.mixedGainR = 0.0f;
@@ -169,14 +171,18 @@ void Playback::SetListener(float x, float y, float z, float yawDeg) {
     listenerYaw_.store(yawDeg, std::memory_order_relaxed);
 }
 
-void Playback::SetRoomEnclosure(float enclosure) {
+void Playback::SetRoomProfile(float enclosure, float scale) {
     if (enclosure < 0.0f) enclosure = 0.0f;
     if (enclosure > 1.0f) enclosure = 1.0f;
+    if (scale < 0.0f) scale = 0.0f;
+    if (scale > 1.0f) scale = 1.0f;
     roomEnclosure_.store(enclosure, std::memory_order_relaxed);
+    roomScale_.store(scale, std::memory_order_relaxed);
 }
 
 void Playback::SetSpeaker(int slot, float x, float y, float z, bool valid, float occlusion,
-                          float forwardX, float forwardY, float forwardZ, float sourceEnclosure) {
+                          float forwardX, float forwardY, float forwardZ, float sourceEnclosure,
+                          float sourceRoomScale) {
     if (slot < 0 || slot >= coop::players::kMaxPeers) return;
     Channel& ch = channels_[slot];
     ch.posX.store(x, std::memory_order_relaxed);
@@ -188,6 +194,9 @@ void Playback::SetSpeaker(int slot, float x, float y, float z, bool valid, float
     if (sourceEnclosure < 0.0f) sourceEnclosure = 0.0f;
     if (sourceEnclosure > 1.0f) sourceEnclosure = 1.0f;
     ch.sourceEnclosure.store(sourceEnclosure, std::memory_order_relaxed);
+    if (sourceRoomScale < 0.0f) sourceRoomScale = 0.0f;
+    if (sourceRoomScale > 1.0f) sourceRoomScale = 1.0f;
+    ch.sourceRoomScale.store(sourceRoomScale, std::memory_order_relaxed);
     // A fully closed path remains intelligible through a quiet reflected return instead of
     // becoming the old all-or-nothing mute.
     ch.occlusionGain.store(1.0f - occlusion * 0.88f, std::memory_order_relaxed);
@@ -455,6 +464,24 @@ void Playback::MixOutput(float* out, uint32_t frameCount) {
         const float listenerEnclosure = roomEnclosure_.load(std::memory_order_relaxed);
         const float sourceEnclosure = ch.sourceEnclosure.load(std::memory_order_relaxed);
         const float roomEnclosure = listenerEnclosure * 0.65f + sourceEnclosure * 0.35f;
+        const float listenerScale = roomScale_.load(std::memory_order_relaxed);
+        const float sourceScale = ch.sourceRoomScale.load(std::memory_order_relaxed);
+        const float roomScale = listenerScale * 0.65f + sourceScale * 0.35f;
+        // A compact room yields tight early reflections; a large closed one spaces them farther
+        // apart and carries a longer tail. The largest delay stays below the 600 ms ring length.
+        const uint32_t d1 = static_cast<uint32_t>((20.0f + roomScale * 17.0f) * 48.0f);
+        const uint32_t d2 = static_cast<uint32_t>((33.0f + roomScale * 28.0f) * 48.0f);
+        const uint32_t d3 = static_cast<uint32_t>((52.0f + roomScale * 46.0f) * 48.0f);
+        const uint32_t d4 = static_cast<uint32_t>((81.0f + roomScale * 78.0f) * 48.0f);
+        const uint32_t d5 = static_cast<uint32_t>((126.0f + roomScale * 132.0f) * 48.0f);
+        const uint32_t d6 = static_cast<uint32_t>((197.0f + roomScale * 208.0f) * 48.0f);
+        const uint32_t d7 = static_cast<uint32_t>((302.0f + roomScale * 268.0f) * 48.0f);
+        const float transmission = 1.0f - obstruction * 0.88f;
+        const float roomMix = 0.16f + roomEnclosure * 0.68f;
+        const float reflectionMix = roomMix * (0.15f + transmission * 0.65f);
+        const float feedback = 0.42f + roomEnclosure * (0.15f + roomScale * 0.17f);
+        // Small rooms lose high frequencies faster; long rooms keep a slightly brighter tail.
+        const float dampAlpha = 0.16f + (1.0f - roomScale) * 0.18f;
         // Cascaded poles give a wall a useful 12 dB/octave high-frequency rolloff. 0.92 is
         // effectively transparent; a closed path leaves a slow ~1 kHz speech contour.
         const float lowpassAlpha = 0.92f - obstruction * 0.80f;
@@ -467,28 +494,23 @@ void Playback::MixOutput(float* out, uint32_t frameCount) {
             ch.lowpassState2 += lowpassAlpha * (ch.lowpassState1 - ch.lowpassState2);
             const float dry = ch.lowpassState2;
             const uint32_t w = ch.reflectionWrite;
-            const float near = ch.reflection[(w + Channel::kReflectionSamples - 1680) %
-                                             Channel::kReflectionSamples];   // 35 ms
-            const float early = ch.reflection[(w + Channel::kReflectionSamples - 3360) %
-                                              Channel::kReflectionSamples];  // 70 ms
-            const float middle = ch.reflection[(w + Channel::kReflectionSamples - 6720) %
-                                               Channel::kReflectionSamples]; // 140 ms
-            const float late = ch.reflection[(w + Channel::kReflectionSamples - 10560) %
-                                             Channel::kReflectionSamples];   // 220 ms
-            // Open air is nearly dry. A room adds a denser return, but walls must reduce that
-            // return with the direct path: otherwise several barriers leave a loud artificial
-            // bypass around the very obstruction the spatial trace found.
-            const float roomMix = 0.20f + roomEnclosure * 0.60f;
-            const float transmission = 1.0f - obstruction * 0.88f;
-            const float reflectionMix = roomMix * (0.18f + transmission * 0.60f);
-            const float wet = (near * 0.11f + early * 0.14f + middle * 0.10f + late * 0.08f) *
-                reflectionMix;
-            const float decay = 0.55f + roomEnclosure * 0.45f;
-            ch.reflection[w] = dry + near * (0.16f * decay) + early * (0.13f * decay) +
-                middle * (0.10f * decay) + late * (0.12f * decay);
+            const float r1 = ch.reflection[(w + Channel::kReflectionSamples - d1) % Channel::kReflectionSamples];
+            const float r2 = ch.reflection[(w + Channel::kReflectionSamples - d2) % Channel::kReflectionSamples];
+            const float r3 = ch.reflection[(w + Channel::kReflectionSamples - d3) % Channel::kReflectionSamples];
+            const float r4 = ch.reflection[(w + Channel::kReflectionSamples - d4) % Channel::kReflectionSamples];
+            const float r5 = ch.reflection[(w + Channel::kReflectionSamples - d5) % Channel::kReflectionSamples];
+            const float r6 = ch.reflection[(w + Channel::kReflectionSamples - d6) % Channel::kReflectionSamples];
+            const float r7 = ch.reflection[(w + Channel::kReflectionSamples - d7) % Channel::kReflectionSamples];
+            // Different left/right tap groups add width without a second feedback buffer.
+            const float wetL = (r1 * 0.15f + r3 * 0.13f + r5 * 0.10f + r7 * 0.08f) * reflectionMix;
+            const float wetR = (r2 * 0.15f + r4 * 0.13f + r6 * 0.10f + r7 * 0.08f) * reflectionMix;
+            const float feedbackInput = r1 * 0.13f + r2 * 0.12f + r3 * 0.10f + r4 * 0.09f +
+                r5 * 0.08f + r6 * 0.07f + r7 * 0.06f;
+            ch.reverbDamp += dampAlpha * (feedbackInput - ch.reverbDamp);
+            ch.reflection[w] = dry + ch.reverbDamp * feedback;
             ch.reflectionWrite = (w + 1) % Channel::kReflectionSamples;
-            out[2 * i + 0] += (dry + wet) * ch.mixedGainL;
-            out[2 * i + 1] += (dry + wet) * ch.mixedGainR;
+            out[2 * i + 0] += (dry + wetL) * ch.mixedGainL;
+            out[2 * i + 1] += (dry + wetR) * ch.mixedGainR;
         }
         if (take == 0) ch.tailSamplesRemaining -= mixSamples;
         ch.ringRead.store(read + take, std::memory_order_release);

@@ -117,7 +117,12 @@ float PathObstruction(void* worldCtx, const ue_wrap::FVector& start, const ue_wr
     return layers >= 3 ? 1.0f : 0.0f;
 }
 
-float RoomEnclosure(void* worldCtx, const ue_wrap::FVector& head, void* actorToIgnore) {
+struct RoomProfile {
+    float enclosure = 0.0f;
+    float scale = 1.0f;
+};
+
+RoomProfile SampleRoomProfile(void* worldCtx, const ue_wrap::FVector& head, void* actorToIgnore) {
     const ue_wrap::FVector origin{head.X, head.Y, head.Z + 20.0f};
     const ue_wrap::FVector probeEnd[5] = {
         {origin.X + 800.0f, origin.Y, origin.Z}, {origin.X - 800.0f, origin.Y, origin.Z},
@@ -125,11 +130,29 @@ float RoomEnclosure(void* worldCtx, const ue_wrap::FVector& head, void* actorToI
         {origin.X, origin.Y, origin.Z + 500.0f},
     };
     int traced = 0, blocked = 0;
+    float freeTravel = 0.0f;
     for (const ue_wrap::FVector& end : probeEnd) {
-        const int result = ue_wrap::trace::LineBlockedStatDyn(worldCtx, origin, end, actorToIgnore);
-        if (result >= 0) { ++traced; if (result == 1) ++blocked; }
+        ue_wrap::FVector impact{};
+        const int result = ue_wrap::trace::LineBlockedStatDyn(worldCtx, origin, end, actorToIgnore, &impact);
+        if (result < 0) continue;
+        ++traced;
+        const float dx = end.X - origin.X, dy = end.Y - origin.Y, dz = end.Z - origin.Z;
+        const float span = std::sqrt(dx * dx + dy * dy + dz * dz);
+        if (result == 1 && span > 1.0f) {
+            ++blocked;
+            const float ix = impact.X - origin.X, iy = impact.Y - origin.Y, iz = impact.Z - origin.Z;
+            float fraction = std::sqrt(ix * ix + iy * iy + iz * iz) / span;
+            if (!std::isfinite(fraction)) fraction = 1.0f;
+            if (fraction < 0.04f) fraction = 0.04f;
+            if (fraction > 1.0f) fraction = 1.0f;
+            freeTravel += fraction;
+        } else {
+            freeTravel += 1.0f;
+        }
     }
-    return traced > 0 ? static_cast<float>(blocked) / static_cast<float>(traced) : 0.0f;
+    if (traced == 0) return {};
+    return RoomProfile{static_cast<float>(blocked) / static_cast<float>(traced),
+                       freeTravel / static_cast<float>(traced)};
 }
 
 // The typed registry reads own the env twin and the garbage-to-default rule. A hand-rolled
@@ -291,6 +314,7 @@ void Tick() {
     static Clock::time_point s_lastRoomProbeAt{};
     static Clock::time_point s_lastSourceProbeAt{};
     static std::array<float, coop::net::kMaxPeers> s_sourceEnclosure{};
+    static std::array<float, coop::net::kMaxPeers> s_sourceRoomScale{};
     const auto now = Clock::now();
     if (now - s_lastPosAt >= std::chrono::milliseconds(50)) {
         s_lastPosAt = now;
@@ -306,13 +330,14 @@ void Tick() {
             g_playback.SetListener(listenerPos.X, listenerPos.Y, listenerPos.Z, r.Yaw);
             if (now - s_lastRoomProbeAt >= std::chrono::milliseconds(250)) {
                 s_lastRoomProbeAt = now;
-                g_playback.SetRoomEnclosure(
-                    RoomEnclosure(local, ue_wrap::FVector{listenerPos.X, listenerPos.Y, listenerPos.Z + 100.0f}, local));
+                const RoomProfile room = SampleRoomProfile(
+                    local, ue_wrap::FVector{listenerPos.X, listenerPos.Y, listenerPos.Z + 100.0f}, local);
+                g_playback.SetRoomProfile(room.enclosure, room.scale);
             }
             if (g_loopback && localSlot != coop::players::kPeerIdUnknown)
                 g_playback.SetSpeaker(localSlot, listenerPos.X, listenerPos.Y, listenerPos.Z, true);
         } else {
-            g_playback.SetRoomEnclosure(0.0f);
+            g_playback.SetRoomProfile(0.0f, 1.0f);
         }
         // Speakers = the peer puppets' heads.
         const bool sampleSourceRooms = now - s_lastSourceProbeAt >= std::chrono::milliseconds(250);
@@ -344,11 +369,15 @@ void Tick() {
                 const float edgeCoverage = (upper + lower + left + right) / (4.0f * 0.55f);
                 const float obstruction = centre > edgeCoverage * 0.45f ?
                     centre : edgeCoverage * 0.45f;
-                if (sampleSourceRooms)
-                    s_sourceEnclosure[slot] = RoomEnclosure(local, hp, rp->GetActor());
+                if (sampleSourceRooms) {
+                    const RoomProfile room = SampleRoomProfile(local, hp, rp->GetActor());
+                    s_sourceEnclosure[slot] = room.enclosure;
+                    s_sourceRoomScale[slot] = room.scale;
+                }
                 const ue_wrap::FVector facing = rp->GetSyncedAimDirection();
                 g_playback.SetSpeaker(slot, hp.X, hp.Y, hp.Z, true, obstruction,
-                                      facing.X, facing.Y, facing.Z, s_sourceEnclosure[slot]);
+                                      facing.X, facing.Y, facing.Z, s_sourceEnclosure[slot],
+                                      s_sourceRoomScale[slot]);
             } else {
                 g_playback.SetSpeaker(slot, 0, 0, 0, false);
             }
