@@ -48,9 +48,10 @@ public:
 
     // Game thread: position snapshots for the mixer (atomics).
     void SetListener(float x, float y, float z, float yawDeg);
-    // `occluded` is sampled on the game thread by an UE line trace. `forward*` is the speaking
-    // puppet's aim direction. The callback reads only published values, never engine geometry.
-    void SetSpeaker(int slot, float x, float y, float z, bool valid, bool occluded = false,
+    // `occlusion` is the 0..1 obstruction fraction sampled on the game thread by UE traces.
+    // `forward*` is the speaking puppet's aim direction. The callback reads only published
+    // values, never engine geometry.
+    void SetSpeaker(int slot, float x, float y, float z, bool valid, float occlusion = 0.0f,
                     float forwardX = 1.0f, float forwardY = 0.0f, float forwardZ = 0.0f);
 
     // Game thread: a peer left -- drop its channel state.
@@ -94,13 +95,18 @@ private:
         std::atomic<float> posX{0}, posY{0}, posZ{0};
         std::atomic<bool> posValid{false};
         std::atomic<float> occlusionGain{1.0f};
+        std::atomic<float> occlusion{0.0f};
         std::atomic<float> forwardX{1.0f}, forwardY{0.0f}, forwardZ{0.0f};
+
+        // Callback-thread-only one-pole low-pass state for obstructed speech.
+        float lowpassState = 0.0f;
 
         // Callback-thread-only short reflections. They give occluded voice a quiet room return
         // without allocating or calling the engine from the audio callback.
         static constexpr uint32_t kReflectionSamples = 12000;  // 250 ms at 48 kHz
         float reflection[kReflectionSamples]{};
         uint32_t reflectionWrite = 0;
+        uint32_t tailSamplesRemaining = 0;
 
         std::atomic<float> volume{1.0f};
     };

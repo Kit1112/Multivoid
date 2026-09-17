@@ -262,12 +262,26 @@ void Tick() {
             coop::RemotePlayer* rp = reg.Puppet(static_cast<uint8_t>(slot));
             if (listenerValid && rp && rp->GetActor()) {
                 const ue_wrap::FVector hp = rp->GetHeadPosition();
-                // The trace runs on the game thread at this position-snapshot cadence. A failed
-                // trace is treated as clear so a temporary reflection miss never mutes voice.
-                const bool occluded =
-                    ue_wrap::trace::LineBlockedStatDyn(local, listenerPos, hp, rp->GetActor()) == 1;
+                // Three nearby target points turn a door edge or thin prop into a gradual
+                // obstruction fraction. Failed reflection dispatches are deliberately omitted:
+                // a temporary engine miss must not muffle voice.
+                ue_wrap::FVector probe[3] = {hp, hp, hp};
+                probe[1].Z += 28.0f;
+                probe[2].Z -= 28.0f;
+                int traced = 0;
+                int blocked = 0;
+                for (const ue_wrap::FVector& target : probe) {
+                    const int result =
+                        ue_wrap::trace::LineBlockedStatDyn(local, listenerPos, target, rp->GetActor());
+                    if (result >= 0) {
+                        ++traced;
+                        if (result == 1) ++blocked;
+                    }
+                }
+                const float obstruction = traced > 0 ?
+                    static_cast<float>(blocked) / static_cast<float>(traced) : 0.0f;
                 const ue_wrap::FVector facing = rp->GetSyncedAimDirection();
-                g_playback.SetSpeaker(slot, hp.X, hp.Y, hp.Z, true, occluded,
+                g_playback.SetSpeaker(slot, hp.X, hp.Y, hp.Z, true, obstruction,
                                       facing.X, facing.Y, facing.Z);
             } else {
                 g_playback.SetSpeaker(slot, 0, 0, 0, false);

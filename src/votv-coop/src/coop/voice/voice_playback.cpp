@@ -143,6 +143,7 @@ void Playback::ResetSlot(int slot) {
     ch.whispering.store(false);
     ch.posValid.store(false);
     ch.occlusionGain.store(1.0f);
+    ch.occlusion.store(0.0f);
     ch.forwardX.store(1.0f);
     ch.forwardY.store(0.0f);
     ch.forwardZ.store(0.0f);
@@ -152,6 +153,8 @@ void Playback::ResetSlot(int slot) {
     if (!running_) {
         std::memset(ch.reflection, 0, sizeof(ch.reflection));
         ch.reflectionWrite = 0;
+        ch.lowpassState = 0.0f;
+        ch.tailSamplesRemaining = 0;
     }
 }
 
@@ -162,14 +165,19 @@ void Playback::SetListener(float x, float y, float z, float yawDeg) {
     listenerYaw_.store(yawDeg, std::memory_order_relaxed);
 }
 
-void Playback::SetSpeaker(int slot, float x, float y, float z, bool valid, bool occluded,
+void Playback::SetSpeaker(int slot, float x, float y, float z, bool valid, float occlusion,
                           float forwardX, float forwardY, float forwardZ) {
     if (slot < 0 || slot >= coop::players::kMaxPeers) return;
     Channel& ch = channels_[slot];
     ch.posX.store(x, std::memory_order_relaxed);
     ch.posY.store(y, std::memory_order_relaxed);
     ch.posZ.store(z, std::memory_order_relaxed);
-    ch.occlusionGain.store(occluded ? 0.22f : 1.0f, std::memory_order_relaxed);
+    if (occlusion < 0.0f) occlusion = 0.0f;
+    if (occlusion > 1.0f) occlusion = 1.0f;
+    ch.occlusion.store(occlusion, std::memory_order_relaxed);
+    // A fully closed path remains intelligible through a quiet reflected return instead of
+    // becoming the old all-or-nothing mute.
+    ch.occlusionGain.store(1.0f - occlusion * 0.70f, std::memory_order_relaxed);
     ch.forwardX.store(forwardX, std::memory_order_relaxed);
     ch.forwardY.store(forwardY, std::memory_order_relaxed);
     ch.forwardZ.store(forwardZ, std::memory_order_relaxed);
@@ -341,14 +349,14 @@ void Playback::MixOutput(float* out, uint32_t frameCount) {
 
     for (int slot = 0; slot < coop::players::kMaxPeers; ++slot) {
         Channel& ch = channels_[slot];
-        if (!ch.primed.load(std::memory_order_acquire)) continue;
+        if (!ch.primed.load(std::memory_order_acquire) && ch.tailSamplesRemaining == 0) continue;
         const uint64_t write = ch.ringWrite.load(std::memory_order_acquire);
         const uint64_t read = ch.ringRead.load(std::memory_order_relaxed);
         const uint64_t avail = write - read;
         if (avail == 0) {
             // Underrun: re-prebuffer before this channel speaks again.
             ch.primed.store(false, std::memory_order_release);
-            continue;
+            if (ch.tailSamplesRemaining == 0) continue;
         }
 
         // Spatial params once per callback block (~10 ms).
@@ -408,28 +416,40 @@ void Playback::MixOutput(float* out, uint32_t frameCount) {
 
         const uint32_t take =
             avail < frameCount ? static_cast<uint32_t>(avail) : frameCount;
-        for (uint32_t i = 0; i < take; ++i) {
-            const float s =
-                static_cast<float>(ch.ring[(read + i) % Channel::kRingSamples]) / 32768.0f;
+        // Continue feeding the feedback taps with silence after a phrase ends. This lets the
+        // room return decay naturally instead of cutting it at the PCM-ring boundary.
+        if (take > 0) ch.tailSamplesRemaining = Channel::kReflectionSamples;
+        const uint32_t mixSamples = take > 0 ? take :
+            (ch.tailSamplesRemaining < frameCount ? ch.tailSamplesRemaining : frameCount);
+        const float obstruction = ch.occlusion.load(std::memory_order_relaxed);
+        // 0.92 is effectively transparent; a closed wall leaves a slow ~1 kHz speech contour.
+        const float lowpassAlpha = 0.92f - obstruction * 0.80f;
+        for (uint32_t i = 0; i < mixSamples; ++i) {
+            const float s = i < take ?
+                static_cast<float>(ch.ring[(read + i) % Channel::kRingSamples]) / 32768.0f : 0.0f;
+            ch.lowpassState += lowpassAlpha * (s - ch.lowpassState);
+            const float dry = ch.lowpassState;
             const uint32_t w = ch.reflectionWrite;
-            const float early = ch.reflection[(w + Channel::kReflectionSamples - 5040) %
-                                              Channel::kReflectionSamples];  // 105 ms
-            const float late = ch.reflection[(w + Channel::kReflectionSamples - 11040) %
-                                             Channel::kReflectionSamples];  // 230 ms
-            // A clear line gets only a small room tone. Behind a wall the dry signal is strongly
-            // reduced, while these early reflections stay audible enough to avoid an abrupt,
-            // radio-like mute.
-            const float reflectionMix =
-                ch.occlusionGain.load(std::memory_order_relaxed) < 0.99f ? 1.0f : 0.25f;
-            const float wet = (early * 0.16f + late * 0.07f) * reflectionMix;
-            ch.reflection[w] = s + early * 0.18f;
+            const float near = ch.reflection[(w + Channel::kReflectionSamples - 1680) %
+                                             Channel::kReflectionSamples];   // 35 ms
+            const float early = ch.reflection[(w + Channel::kReflectionSamples - 3360) %
+                                              Channel::kReflectionSamples];  // 70 ms
+            const float middle = ch.reflection[(w + Channel::kReflectionSamples - 6720) %
+                                               Channel::kReflectionSamples]; // 140 ms
+            const float late = ch.reflection[(w + Channel::kReflectionSamples - 10560) %
+                                             Channel::kReflectionSamples];   // 220 ms
+            // Clear speech receives a modest room impression; obstructed speech gets more
+            // reflected energy, which preserves location while the direct path is muffled.
+            const float reflectionMix = 0.45f + obstruction * 0.55f;
+            const float wet = (near * 0.11f + early * 0.14f + middle * 0.10f + late * 0.08f) *
+                reflectionMix;
+            ch.reflection[w] = dry + near * 0.16f + early * 0.13f + middle * 0.10f + late * 0.12f;
             ch.reflectionWrite = (w + 1) % Channel::kReflectionSamples;
-            out[2 * i + 0] += (s + wet) * gainL;
-            out[2 * i + 1] += (s + wet) * gainR;
+            out[2 * i + 0] += (dry + wet) * gainL;
+            out[2 * i + 1] += (dry + wet) * gainR;
         }
+        if (take == 0) ch.tailSamplesRemaining -= mixSamples;
         ch.ringRead.store(read + take, std::memory_order_release);
-        // (take < frameCount leaves silence for the tail -- the underrun
-        // re-prime triggers on the next callback when avail hits 0.)
     }
 
     // Soft clip.
