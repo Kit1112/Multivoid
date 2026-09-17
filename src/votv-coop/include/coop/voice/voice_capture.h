@@ -94,6 +94,10 @@ private:
     float peakWindow_[50] = {};
     int   peakIdx_ = 0;
 
+    // Callback-thread-only DC blocker / subsonic rumble filter state.
+    float dcPrevInput_ = 0.0f;
+    float dcPrevOutput_ = 0.0f;
+
     // Tone mode.
     bool   toneMode_ = false;
     double tonePhase_ = 0.0;

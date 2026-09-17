@@ -72,6 +72,10 @@ bool Capture::Start(const CaptureConfig& cfg) {
     gainDb_.store(cfg.gainDb, std::memory_order_relaxed);
     thresholdDb_.store(cfg.thresholdDb, std::memory_order_relaxed);
     toneMode_ = cfg.testTone;
+    std::memset(peakWindow_, 0, sizeof(peakWindow_));
+    peakIdx_ = 0;
+    dcPrevInput_ = 0.0f;
+    dcPrevOutput_ = 0.0f;
 
     int err = 0;
     OpusEncoder* enc = opus_encoder_create(kSampleRate, 1, OPUS_APPLICATION_VOIP, &err);
@@ -189,6 +193,8 @@ void Capture::Stop() {
     stagingFill_ = 0;
     wasActive_ = false;
     releaseCountdown_ = 0;
+    dcPrevInput_ = 0.0f;
+    dcPrevOutput_ = 0.0f;
     ringHead_.store(0);
     ringTail_.store(0);
 }
@@ -212,10 +218,17 @@ void Capture::ProcessFrame(const int16_t* samples) {
     // Gain (manual dB) + the SVC 50-frame rolling-peak limiter: the applied
     // multiplier never pushes the window's peak past full scale.
     int16_t buf[kFrameSamples];
+    float filtered[kFrameSamples];
     const float gain = std::pow(10.0f, gainDb_.load(std::memory_order_relaxed) / 20.0f);
     float framePeak = 0.0f;
     for (int i = 0; i < kFrameSamples; ++i) {
-        const float a = std::fabs(static_cast<float>(samples[i]));
+        // ~80 Hz one-pole DC blocker before gain/Opus: handling noise and mic bias otherwise
+        // consume headroom, make peak-VAD chatter, and cost bits without helping speech.
+        const float input = static_cast<float>(samples[i]);
+        filtered[i] = input - dcPrevInput_ + 0.9895f * dcPrevOutput_;
+        dcPrevInput_ = input;
+        dcPrevOutput_ = filtered[i];
+        const float a = std::fabs(filtered[i]);
         if (a > framePeak) framePeak = a;
     }
     peakWindow_[peakIdx_] = framePeak;
@@ -227,7 +240,7 @@ void Capture::ProcessFrame(const int16_t* samples) {
     const float maxMult = 32767.0f / windowPeak;
     if (mult > maxMult) mult = maxMult;
     for (int i = 0; i < kFrameSamples; ++i) {
-        float v = static_cast<float>(samples[i]) * mult;
+        float v = filtered[i] * mult;
         if (v > 32767.0f) v = 32767.0f;
         if (v < -32768.0f) v = -32768.0f;
         buf[i] = static_cast<int16_t>(v);
