@@ -94,11 +94,16 @@ void DestroyResolvedLocalActor_(void* actor, const std::wstring& keyW,
         UE_LOGW("remote_prop::OnDestroy: K2_DestroyActor UFunction unresolved -- dropping");
         return;
     }
-    if (IsHeldByPlayer(actor, localPlayer)) {
-        UE_LOGW("remote_prop::OnDestroy: key '%ls' eid=%u actor %p is CURRENTLY HELD/GRABBED -- refusing destroy to protect hand prop",
+    // A destroy for the hand display is never a prop lifecycle edge. Do not let a malformed or
+    // recycled identity take out the player's hand actor.
+    if (coop::hand_item::IsHandAxisActor(actor)) {
+        UE_LOGW("remote_prop::OnDestroy: key '%ls' eid=%u resolved to hand actor %p -- dropping",
                 keyW.c_str(), payload.elementId, actor);
         return;
     }
+    if (IsHeldByPlayer(actor, localPlayer))
+        UE_LOGI("remote_prop::OnDestroy: key '%ls' eid=%u actor %p held -- releasing drive/grab before destroy",
+                keyW.c_str(), payload.elementId, actor);
     UE_LOGI("remote_prop::OnDestroy: key '%ls' eid=%u -> destroying local actor %p",
             keyW.c_str(), payload.elementId, actor);
     if (ue_wrap::prop::IsChipPile(actor) || ue_wrap::prop::IsGarbageClump(actor)) {

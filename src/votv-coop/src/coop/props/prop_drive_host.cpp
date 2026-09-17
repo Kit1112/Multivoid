@@ -162,9 +162,15 @@ void InstallImpactObserver() {
 void ScanAwakeProps() {
     static std::vector<coop::prop_element_tracker::KeyIndexEntry> s_entries;
     static uint64_t s_lastRefreshMs = 0;
+    static uint64_t s_nextScanMs = 0;
     static size_t s_cursor = 0;
 
     const uint64_t nowMs = coop::active_drive::NowMs();
+    // GetPhysicsVelocity dispatches two reflected UE calls per prop. ReceiveHit and overlap cover
+    // the immediate collision edge; this is the fallback for missed wakeups, so 20 Hz is ample
+    // and avoids multiplying the entire world's physics reads by the frame rate.
+    if (nowMs < s_nextScanMs) return;
+    s_nextScanMs = nowMs + 50;
     if (s_entries.empty() || (nowMs - s_lastRefreshMs >= 1500)) {
         s_entries.clear();
         coop::prop_element_tracker::CollectKeyIndexEntries(s_entries);
@@ -173,7 +179,7 @@ void ScanAwakeProps() {
     }
 
     const size_t n = s_entries.size();
-    const size_t batchSize = std::min<size_t>(96, n);
+    const size_t batchSize = std::min<size_t>(48, n);
     for (size_t i = 0; i < batchSize; ++i) {
         s_cursor = (s_cursor + 1) % n;
         const auto& entry = s_entries[s_cursor];
