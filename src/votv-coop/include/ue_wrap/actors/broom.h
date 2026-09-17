@@ -26,6 +26,10 @@ namespace ue_wrap::broom {
 // never from inside a hook. Idempotent; true once resolved.
 bool ResolveNames();
 
+// The dispatch function carrying the "clean" montage notify. Prefer the profile's measured name,
+// but rediscover a recooked OnNotifyBegin_* function when its GUID changed. Empty until ResolveNames.
+const wchar_t* StrokeNotifyFunctionName();
+
 // True iff `obj` is a broom (prop_broom_C or a subclass). False before ResolveNames. Game thread.
 bool IsBroom(void* obj);
 

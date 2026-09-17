@@ -81,8 +81,9 @@ Reg  g_regStroke = Reg::Pending, g_regArm = Reg::Pending, g_regBroomed = Reg::Pe
 bool g_live = false;              // the stroke and arm watches have resolved their names
 bool g_liveAbsent = false;        // registered, and the gate never made them live
 int  g_nameTries = 0, g_liveTries = 0;
+uint64_t g_nextNameResolveMs = 0;
 bool g_namesAbsent = false;
-constexpr int kMaxTries = 600;    // ten seconds of pump ticks: a name the engine can build resolves at once
+constexpr int kMaxTries = 40;     // ten seconds at the throttled 250 ms class/function discovery cadence
 
 // The native seams on a holder's heading and velocity reads, installed disarmed on the first stroke
 // a host runs for a client and armed only for the length of each such run.
@@ -333,6 +334,9 @@ void Install(coop::net::Session* session) {
     // This lane owns its own enable, as the trash morph gate does: the gate's switch is shared.
     if (session && session->running()) sg::SetEnabled(true);
     if (g_namesAbsent || g_liveAbsent || (g_live && g_regBroomed != Reg::Pending)) return;
+    const uint64_t now = coop::active_drive::NowMs();
+    if (now < g_nextNameResolveMs) return;
+    g_nextNameResolveMs = now + 250;
     if (!ue_wrap::broom::ResolveNames()) {
         if (++g_nameTries >= kMaxTries) {
             g_namesAbsent = true;
@@ -341,14 +345,14 @@ void Install(coop::net::Session* session) {
         }
         return;
     }
-    RegisterOnce(g_regStroke, P::name::BroomStrokeNotifyFn, kTagStroke, &OnStrokeNotify);
+    RegisterOnce(g_regStroke, ue_wrap::broom::StrokeNotifyFunctionName(), kTagStroke, &OnStrokeNotify);
     RegisterOnce(g_regArm, P::name::MainPlayerArmFn, kTagArm, &OnArm);
     RegisterOnce(g_regBroomed, P::name::PileBroomedFn, kTagBroomed, &OnBroomed, &OnBroomedDone);
     if (g_live || g_regStroke != Reg::Registered || g_regArm != Reg::Registered) return;
     // A name watch is inert until the gate turns its literal into a name, and the resolve is shared,
     // so this lane drives it rather than waiting on another consumer's tick.
     sg::ResolvePendingNames();
-    if (sg::NameWatchLive(P::name::BroomStrokeNotifyFn, kTagStroke) &&
+    if (sg::NameWatchLive(ue_wrap::broom::StrokeNotifyFunctionName(), kTagStroke) &&
         sg::NameWatchLive(P::name::MainPlayerArmFn, kTagArm)) {
         g_live = true;
         UE_LOGI("[BROOM-STROKE] watching the stroke, arm and '%ls' by name -- on a client every "

@@ -10,6 +10,7 @@
 
 #include <cstdint>
 #include <cstring>
+#include <string>
 
 namespace ue_wrap::broom {
 namespace {
@@ -21,6 +22,7 @@ namespace P = profile;
 R::FName g_className{0, 0};
 R::FName g_uberName{0, 0};
 R::FName g_strokeName{0, 0};
+std::wstring g_strokeNotifyFnName;
 bool     g_namesResolved = false;
 
 // The layout, read off the first broom a stroke is entered on.
@@ -51,11 +53,34 @@ bool ResolveNames() {
     const R::FName uber = ue_wrap::fname_utils::StringToFName(P::name::BroomUbergraphFn);
     const R::FName stroke = ue_wrap::fname_utils::StringToFName(P::name::BroomStrokeNotifyName);
     if (cls.ComparisonIndex == 0 || uber.ComparisonIndex == 0 || stroke.ComparisonIndex == 0) return false;
+    void* broomClass = R::FindClass(P::name::BroomClass);
+    if (!broomClass) return false;
+    g_strokeNotifyFnName = P::name::BroomStrokeNotifyFn;
+    if (!R::FindDispatchFunction(broomClass, g_strokeNotifyFnName.c_str(), nullptr)) {
+        // Animation notify UFunctions include a cook-generated GUID. Keep the measured profile
+        // name as the fast path, but recover after a recook by looking for the matching notify
+        // signature on this class. IsStrokeNotify still checks that the runtime FName is "clean".
+        g_strokeNotifyFnName.clear();
+        for (const R::ObjectRef& child : R::ChildObjectsOf(broomClass)) {
+            if (child.name.rfind(L"OnNotifyBegin_", 0) != 0) continue;
+            if (R::FindParamOffset(child.object, P::name::BroomNotifyNameParam) >= 0) {
+                g_strokeNotifyFnName = child.name;
+                break;
+            }
+        }
+        if (g_strokeNotifyFnName.empty()) return false;
+        UE_LOGW("broom: profile notify '%ls' was recooked; using '%ls'", P::name::BroomStrokeNotifyFn,
+                g_strokeNotifyFnName.c_str());
+    }
     g_className = cls;
     g_uberName = uber;
     g_strokeName = stroke;
     g_namesResolved = true;
     return true;
+}
+
+const wchar_t* StrokeNotifyFunctionName() {
+    return g_namesResolved ? g_strokeNotifyFnName.c_str() : L"";
 }
 
 bool IsBroom(void* obj) {
@@ -73,7 +98,7 @@ bool ResolveLayout(void* broom) {
     if (g_layoutAbsent || !IsBroom(broom)) return false;
     void* cls = R::ClassOf(broom);
     const int32_t holderOff = R::FindPropertyOffset(cls, P::name::BroomHolderProp);
-    void* notify = R::FindDispatchFunction(cls, P::name::BroomStrokeNotifyFn, nullptr);
+    void* notify = R::FindDispatchFunction(cls, g_strokeNotifyFnName.c_str(), nullptr);
     const int32_t nameOff = notify ? R::FindParamOffset(notify, P::name::BroomNotifyNameParam) : -1;
     // A function is a struct: its locals are properties of it like its parameters, at their
     // offsets into the frame the function runs in.
@@ -83,7 +108,7 @@ bool ResolveLayout(void* broom) {
         g_layoutAbsent = true;
         UE_LOGW("broom: '%ls' lacks part of the stroke's layout in this build (holder@%d, %ls.%ls@%d, "
                 "%ls.%ls@%d) -- a stroke cannot be refused, run for a remote player or named at its "
-                "clumps' birth", R::ClassNameOf(broom).c_str(), holderOff, P::name::BroomStrokeNotifyFn,
+                "clumps' birth", R::ClassNameOf(broom).c_str(), holderOff, g_strokeNotifyFnName.c_str(),
                 P::name::BroomNotifyNameParam, nameOff, P::name::BroomUbergraphFn,
                 P::name::BroomSweptPileLocal, pileOff);
         return false;
@@ -127,7 +152,7 @@ bool WriteHolder(void* broom, void* player) {
 
 bool FireStroke(void* broom) {
     if (!broom || !g_namesResolved || !R::IsLive(broom)) return false;
-    void* fn = R::FindDispatchFunctionCached(R::ClassOf(broom), P::name::BroomStrokeNotifyFn);
+    void* fn = R::FindDispatchFunctionCached(R::ClassOf(broom), g_strokeNotifyFnName.c_str());
     if (!fn) return false;
     ue_wrap::ParamFrame f(fn);
     return f.valid() && f.Set<R::FName>(P::name::BroomNotifyNameParam, g_strokeName) &&
