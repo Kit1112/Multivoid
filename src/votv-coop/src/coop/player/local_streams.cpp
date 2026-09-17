@@ -509,20 +509,30 @@ void Tick(coop::net::Session& session, void* local, void* controller) {
                     vel.linearCmS.X, vel.linearCmS.Y, vel.linearCmS.Z,
                     std::sqrt(linMagSq),
                     vel.angularDegS.X, vel.angularDegS.Y, vel.angularDegS.Z);
+            ue_wrap::FVector finalLoc{};
+            ue_wrap::FRotator finalRot{};
+            if (void* released = g_lastHeldProp.Raw()) {
+                finalLoc = ue_wrap::engine::GetActorLocation(released);
+                finalRot = ue_wrap::engine::GetActorRotation(released);
+            }
             session.SendPropRelease(g_lastHeldKey,
                                     vel.linearCmS.X, vel.linearCmS.Y, vel.linearCmS.Z,
-                                    vel.angularDegS.X, vel.angularDegS.Y, vel.angularDegS.Z, relEid, /*relCtx=*/0u);
+                                    vel.angularDegS.X, vel.angularDegS.Y, vel.angularDegS.Z, relEid, /*relCtx=*/0u,
+                                    finalLoc.X, finalLoc.Y, finalLoc.Z,
+                                    ue_wrap::NormalizeAxis(finalRot.Pitch),
+                                    ue_wrap::NormalizeAxis(finalRot.Yaw),
+                                    ue_wrap::NormalizeAxis(finalRot.Roll));
             releasedActor = g_lastHeldProp.Get();
             hostThrown = session.role() == coop::net::Role::Host &&
                 linMagSq > (coop::net::kThrownLinVelThreshold * coop::net::kThrownLinVelThreshold);
         }
         // Coast must observe the post-release state. Keep the guarded actor reference until the
-        // held lane's local state has been cleared, then let the host drive own its flight.
+        // held lane's local state has been cleared, then let the host drive own its settling/flight.
         g_lastHeldProp.Reset();
         g_lastHeldKey = {};
         g_lastHeldEid = coop::element::kInvalidId;  // the cached held eid goes with the release
-        if (hostThrown && releasedActor) {
-            coop::prop_drive_host::Coast(releasedActor, "host thrown release");
+        if (session.role() == coop::net::Role::Host && releasedActor) {
+            coop::prop_drive_host::Coast(releasedActor, hostThrown ? "host thrown release" : "host passive release");
         }
         }
     }

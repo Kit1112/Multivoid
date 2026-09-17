@@ -9,6 +9,7 @@
 #include "coop/player/hand_item.h"          // LocalHandActor (place detect: exclude the hand display)
 #include "coop/props/prop_echo_suppress.h"  // PeekIncomingSpawn (exclude host-echo adopt spawns)
 #include "coop/props/prop_save_data.h"
+#include "coop/props/prop_drive_host.h"     // Coast on placed prop spawn
 #include "coop/props/prop_element_tracker.h"// GetPropElementIdForActor, ResolveLiveActorByKey   
 #include "coop/props/container_contents_sync.h"  // TakeObjInFlight -- mark a container-extraction birth
 #include "coop/session/world_load_episode.h"  // InEpisode (quiet during the join loadObjects churn)
@@ -229,6 +230,11 @@ void* HostSpawnPlacedProp(const coop::net::PropDropIntentPayload& p, const std::
     // it after finishing and before the next-tick drain re-reads the scale for the broadcast.
     if (p.scaleX > 0.001f || p.scaleY > 0.001f || p.scaleZ > 0.001f) {
         E::SetActorScale3D(actor, ue_wrap::FVector{p.scaleX, p.scaleY, p.scaleZ});
+    }
+    // Coast the newly spawned placed prop while it settles under physics on the host,
+    // so resting pose and rotation converge identically across all peers.
+    if (actor && (p.physFlags & (pf::kStatic | pf::kFrozen | pf::kSleep)) == 0) {
+        coop::prop_drive_host::Coast(actor, "client placed spawn");
     }
     // The prop's own save record, if the author's copy is already here. It usually is not -- it
     // rides behind this intent in the same FIFO -- and then it lands on this actor by Key the

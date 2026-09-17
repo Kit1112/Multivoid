@@ -179,7 +179,17 @@ void SendEnd(coop::net::Session& s, const Driven& d, void* actor, const ue_wrap:
 Driven* Open(void* actor, bool claimed, const char* why) {
     if (!PR::IsDescendantOfProp(actor)) return nullptr;
     if (HeldBySomeone(actor)) return nullptr;   // the held-prop lane owns a prop in a hand
-    const coop::element::ElementId eid = coop::prop_element_tracker::GetPropElementIdForActor(actor);
+    coop::element::ElementId eid = coop::prop_element_tracker::GetPropElementIdForActor(actor);
+    if (eid == coop::element::kInvalidId || eid == 0u) {
+        // A live placed or spawned prop may not be enrolled yet; enroll it now so coasting is admitted.
+        const std::wstring key = PR::GetInteractableKeyString(actor);
+        const std::wstring cls = R::ClassNameOf(actor);
+        if (!key.empty() && key != L"None" && !cls.empty()) {
+            coop::prop_element_tracker::MarkPropElement(
+                actor, key, cls, coop::prop_element_tracker::EnrollSource::kExpressSeam);
+            eid = coop::prop_element_tracker::GetPropElementIdForActor(actor);
+        }
+    }
     if (eid == coop::element::kInvalidId || eid == 0u) {
         // A feeder asks again every pass while the tie holds, so the line is per actor, not per pass.
         static void* sRefusedSaid = nullptr;

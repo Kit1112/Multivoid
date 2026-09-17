@@ -205,7 +205,9 @@ bool Session::SendReliable(ReliableKind kind, const void* payload, int len) {
 bool Session::SendPropRelease(const WireKey& key,
                               float linVelX, float linVelY, float linVelZ,
                               float angVelX, float angVelY, float angVelZ,
-                              uint32_t elementId, uint8_t ctx) {
+                              uint32_t elementId, uint8_t ctx,
+                              float locX, float locY, float locZ,
+                              float rotPitch, float rotYaw, float rotRoll) {
     PropReleasePayload p{};
     p.key = key;
     p.linVelX = linVelX; p.linVelY = linVelY; p.linVelZ = linVelZ;
@@ -213,6 +215,8 @@ bool Session::SendPropRelease(const WireKey& key,
     p.elementId = elementId;  // a keyless trash clump is routed by eid (key=None cannot disambiguate)
     p.ctx = ctx;              // the host's per-eid generation, so a stale throw cannot re-apply after a
                               // transition
+    p.locX = locX; p.locY = locY; p.locZ = locZ;
+    p.rotPitch = rotPitch; p.rotYaw = rotYaw; p.rotRoll = rotRoll;
     return SendReliable(ReliableKind::PropRelease, &p, sizeof(p));
 }
 

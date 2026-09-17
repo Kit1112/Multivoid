@@ -90,21 +90,24 @@ bool HandleEntityEvent(net::Session& session,
         }
         net::PropReleasePayload p{};
         std::memcpy(&p, msg.payload, sizeof(p));
-        // A NaN, Inf or absurd velocity would reach the physics setters; rejected before dispatch.
-        const float vals[6] = {p.linVelX, p.linVelY, p.linVelZ,
-                               p.angVelX, p.angVelY, p.angVelZ};
+        // A NaN, Inf or absurd velocity/coordinate would corrupt physics or transform state; rejected before dispatch.
+        const float vals[12] = {p.linVelX, p.linVelY, p.linVelZ,
+                                p.angVelX, p.angVelY, p.angVelZ,
+                                p.locX, p.locY, p.locZ,
+                                p.rotPitch, p.rotYaw, p.rotRoll};
         bool finite = true;
         for (float v : vals) {
             if (!std::isfinite(v)) { finite = false; break; }
         }
         if (!finite) {
-            UE_LOGW("event_feed: PropRelease velocity non-finite -- dropping");
+            UE_LOGW("event_feed: PropRelease floats non-finite -- dropping");
             break;
         }
         // The bounds: real throws peak at a few thousand cm/s and a fast tumble at a few thousand
         // deg/s; 1e6 is generous headroom, below anything that would teleport a body in one tick.
         constexpr float kMaxLinVel = 1.0e6f;
         constexpr float kMaxAngVel = 1.0e6f;
+        constexpr float kMaxCoord  = 1.0e6f;
         if (std::fabs(p.linVelX) > kMaxLinVel ||
             std::fabs(p.linVelY) > kMaxLinVel ||
             std::fabs(p.linVelZ) > kMaxLinVel ||
@@ -114,6 +117,20 @@ bool HandleEntityEvent(net::Session& session,
             UE_LOGW("event_feed: PropRelease velocity out of bounds (lin=(%.1f,%.1f,%.1f) ang=(%.1f,%.1f,%.1f)) -- dropping",
                     p.linVelX, p.linVelY, p.linVelZ,
                     p.angVelX, p.angVelY, p.angVelZ);
+            break;
+        }
+        if (std::fabs(p.locX) > kMaxCoord ||
+            std::fabs(p.locY) > kMaxCoord ||
+            std::fabs(p.locZ) > kMaxCoord) {
+            UE_LOGW("event_feed: PropRelease location out of bounds (%.1f,%.1f,%.1f) -- dropping",
+                    p.locX, p.locY, p.locZ);
+            break;
+        }
+        if (std::fabs(p.rotPitch) > 180.f ||
+            std::fabs(p.rotYaw)   > 180.f ||
+            std::fabs(p.rotRoll)  > 180.f) {
+            UE_LOGW("event_feed: PropRelease rotation out of bounds (pitch=%.1f,yaw=%.1f,roll=%.1f) -- dropping",
+                    p.rotPitch, p.rotYaw, p.rotRoll);
             break;
         }
         remote_prop::OnRelease(msg.senderPeerSlot, p, localPlayer,

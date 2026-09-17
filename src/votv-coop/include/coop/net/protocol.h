@@ -1105,8 +1105,15 @@ struct PropReleasePayload {
     // The trash entity's generation; a release older than the eid's known generation is dropped.
     uint8_t ctx;
     uint8_t _pad[3];
+    // Placement transform at release: authoritative final held pose
+    float   locX;
+    float   locY;
+    float   locZ;
+    float   rotPitch;
+    float   rotYaw;
+    float   rotRoll;
 };
-static_assert(sizeof(PropReleasePayload) == 64, "PropReleasePayload must be 64 bytes");
+static_assert(sizeof(PropReleasePayload) == 88, "PropReleasePayload must be 88 bytes");
 // Every reliable payload carries this guard: a payload past one datagram's budget would be
 // refused at send time, so catch it at compile time.
 static_assert(sizeof(PropReleasePayload) <= 256 - 20 - 8,

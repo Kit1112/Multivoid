@@ -325,6 +325,9 @@ void Tick(coop::net::Session& session) {
                 ConsumeLocalActor(drive.actor);
             }
             ResetDriveState(drive);
+            if (isHost && liveA && !StickHoldsPhysicsOff(liveA)) {
+                coop::prop_drive_host::Coast(liveA, "remote stream stop");
+            }
         }
     }
 }
@@ -382,6 +385,13 @@ void OnRelease(int senderSlot, const coop::net::PropReleasePayload& payload, voi
             }
         }
     }
+    // If the release payload provides an authoritative release transform, apply it to the prop
+    // before re-enabling physics, so placement rotation and position match the sender exactly.
+    if (propActor && (payload.locX != 0.f || payload.locY != 0.f || payload.locZ != 0.f)) {
+        ue_wrap::engine::SetActorLocation(propActor, ue_wrap::FVector{payload.locX, payload.locY, payload.locZ});
+        ue_wrap::engine::SetActorRotation(propActor, ue_wrap::FRotator{payload.rotPitch, payload.rotYaw, payload.rotRoll});
+    }
+
     if (StickHoldsPhysicsOff(propActor)) {
         // The prop stuck while held (PropStickState arrived first on the same reliable lane): no
         // physics re-enable and no velocity, the camera stays on the wall; the drive cache still
@@ -443,8 +453,10 @@ void OnRelease(int senderSlot, const coop::net::PropReleasePayload& payload, voi
     // The host's drive set must take over only after the held-prop lane has released the actor.
     // Before ResetDriveState, Coast sees this exact actor through IsActorUnderAnyDrive and correctly
     // refuses it as held. Clients do not own a prop-drive stream, so they never open one here.
-    if (hostAuthoritative && propActor && linSpeed > coop::net::kThrownLinVelThreshold) {
-        coop::prop_drive_host::Coast(propActor, "remote thrown release");
+    if (hostAuthoritative && propActor) {
+        coop::prop_drive_host::Coast(propActor, (linSpeed > coop::net::kThrownLinVelThreshold)
+                                                    ? "remote thrown release"
+                                                    : "remote passive release");
     }
 }
 
