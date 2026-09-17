@@ -186,8 +186,8 @@ CFG_STRING(voice_output_device, "voice.output_device", "voice", "", nullptr, fal
     "Playback device name; empty = system default. Pick it via the in-game voice panel.")
 CFG_FLOAT(voice_volume, "voice.volume", "voice", 1.0f, 0, 10, nullptr,
     "Master playback volume multiplier for incoming voice.")
-CFG_FLOAT(voice_distance_cm, "voice.distance_cm", "voice", 2400.0f, 100, 1000000, nullptr,
-    "Maximum voice audibility distance in centimeters (2400 = 24 m).")
+CFG_FLOAT(voice_distance_cm, "voice.distance_cm", "voice", 1800.0f, 100, 1000000, nullptr,
+    "Maximum voice audibility distance in centimeters (1800 = 18 m).")
 CFG_INT(voice_jitter_threshold, "voice.jitter_threshold", "voice", 3, 0, 60, nullptr,
     "Jitter buffer: late-packet tolerance in frames before a reset.")
 CFG_INT(voice_prebuffer_frames, "voice.prebuffer_frames", "voice", 5, 0, 60, nullptr,
