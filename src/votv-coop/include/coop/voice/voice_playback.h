@@ -6,8 +6,8 @@
 // decoder), a gap of up to 5 frames covered by opus PLC and a wider one resetting the decoder,
 // dupes dropped, ~100 ms of prebuffer (5 frames) before a channel plays again after silence, a
 // distance gain of 1 - d/maxDist with a whisper halving the radius, a vertical fade of 1 -
-// |dz|/3200 cm, the REDUCED-mode pan in [-0.5,0.5] giving volume = clamp(1 -+ pan*1.4, 0.3, 1), and
-// talking meaning a frame decoded under 250 ms ago.
+// |dz|/3200 cm, a deliberately gentle stereo pan, broad speaker-facing attenuation, and talking
+// meaning a frame decoded under 250 ms ago.
 //
 // Threading: OnFrame, TickDecode, SetListener and SetSpeaker are GAME THREAD; the miniaudio
 // callback touches only the PCM rings (SPSC -- the game thread produces, the callback consumes) and
@@ -48,9 +48,10 @@ public:
 
     // Game thread: position snapshots for the mixer (atomics).
     void SetListener(float x, float y, float z, float yawDeg);
-    // `occluded` is sampled on the game thread by an UE line trace. The callback reads only the
-    // published gain, never engine geometry.
-    void SetSpeaker(int slot, float x, float y, float z, bool valid, bool occluded = false);
+    // `occluded` is sampled on the game thread by an UE line trace. `forward*` is the speaking
+    // puppet's aim direction. The callback reads only published values, never engine geometry.
+    void SetSpeaker(int slot, float x, float y, float z, bool valid, bool occluded = false,
+                    float forwardX = 1.0f, float forwardY = 0.0f, float forwardZ = 0.0f);
 
     // Game thread: a peer left -- drop its channel state.
     void ResetSlot(int slot);
@@ -93,6 +94,7 @@ private:
         std::atomic<float> posX{0}, posY{0}, posZ{0};
         std::atomic<bool> posValid{false};
         std::atomic<float> occlusionGain{1.0f};
+        std::atomic<float> forwardX{1.0f}, forwardY{0.0f}, forwardZ{0.0f};
 
         // Callback-thread-only short reflections. They give occluded voice a quiet room return
         // without allocating or calling the engine from the audio callback.

@@ -143,6 +143,9 @@ void Playback::ResetSlot(int slot) {
     ch.whispering.store(false);
     ch.posValid.store(false);
     ch.occlusionGain.store(1.0f);
+    ch.forwardX.store(1.0f);
+    ch.forwardY.store(0.0f);
+    ch.forwardZ.store(0.0f);
     // ResetSlot normally runs after Stop (the audio callback has joined). During a live peer
     // disconnect the existing PCM ring also remains callback-owned, so leave the reflection ring
     // untouched there; it is overwritten and decays before the slot can speak again.
@@ -159,13 +162,17 @@ void Playback::SetListener(float x, float y, float z, float yawDeg) {
     listenerYaw_.store(yawDeg, std::memory_order_relaxed);
 }
 
-void Playback::SetSpeaker(int slot, float x, float y, float z, bool valid, bool occluded) {
+void Playback::SetSpeaker(int slot, float x, float y, float z, bool valid, bool occluded,
+                          float forwardX, float forwardY, float forwardZ) {
     if (slot < 0 || slot >= coop::players::kMaxPeers) return;
     Channel& ch = channels_[slot];
     ch.posX.store(x, std::memory_order_relaxed);
     ch.posY.store(y, std::memory_order_relaxed);
     ch.posZ.store(z, std::memory_order_relaxed);
     ch.occlusionGain.store(occluded ? 0.22f : 1.0f, std::memory_order_relaxed);
+    ch.forwardX.store(forwardX, std::memory_order_relaxed);
+    ch.forwardY.store(forwardY, std::memory_order_relaxed);
+    ch.forwardZ.store(forwardZ, std::memory_order_relaxed);
     ch.posValid.store(valid, std::memory_order_relaxed);
 }
 
@@ -362,23 +369,36 @@ void Playback::MixOutput(float* out, uint32_t frameCount) {
             // Vertical fade (SVC: 1 - |dy_up| / 32 blocks).
             float vfade = 1.0f - std::fabs(dz) / kVerticalFadeCm;
             if (vfade < 0) vfade = 0;
-            // SVC REDUCED-mode pan: lateral/forward in listener space (UE:
-            // yaw 0 = +X, right = (-sin yaw, cos yaw)).
+            // Keep facing audible in the same room: headset rotation is a stereo cue, not a
+            // reason to turn a nearby speaker down in both ears.
+            const float sx = ch.forwardX.load(std::memory_order_relaxed);
+            const float sy = ch.forwardY.load(std::memory_order_relaxed);
+            const float sz = ch.forwardZ.load(std::memory_order_relaxed);
+            const float facingLen = std::sqrt(sx * sx + sy * sy + sz * sz);
+            float speakerFacing = 1.0f;
+            if (dist > 1.0f && facingLen > 0.01f) {
+                float facing = (-dx * sx - dy * sy - dz * sz) / (dist * facingLen);
+                if (facing < 0.0f) facing = 0.0f;
+                if (facing > 1.0f) facing = 1.0f;
+                speakerFacing = 0.68f + 0.32f * facing;
+            }
+            // Lateral/forward in listener space (UE yaw 0 = +X, right = (-sin yaw, cos yaw)).
             const float fwd = dx * std::cos(yawRad) + dy * std::sin(yawRad);
             const float lat = -dx * std::sin(yawRad) + dy * std::cos(yawRad);
             float pan = 0.0f;
             if (dist > 1.0f) {
                 pan = std::atan2(lat, fwd) / kPi;  // [-1, 1]
-                if (pan > 0.5f) pan = 0.5f;        // SVC clamps to +-0.5
-                if (pan < -0.5f) pan = -0.5f;
+                if (pan > 0.35f) pan = 0.35f;
+                if (pan < -0.35f) pan = -0.35f;
             }
-            float volL = 1.0f - pan * 1.4f;
-            float volR = 1.0f + pan * 1.4f;
+            float volL = 1.0f - pan * 0.9f;
+            float volR = 1.0f + pan * 0.9f;
             if (volL > 1) volL = 1;
-            if (volL < 0.3f) volL = 0.3f;
+            if (volL < 0.55f) volL = 0.55f;
             if (volR > 1) volR = 1;
-            if (volR < 0.3f) volR = 0.3f;
-            const float g = att * vfade * ch.occlusionGain.load(std::memory_order_relaxed);
+            if (volR < 0.55f) volR = 0.55f;
+            const float g = att * vfade * speakerFacing *
+                ch.occlusionGain.load(std::memory_order_relaxed);
             gainL = g * volL;
             gainR = g * volR;
         }

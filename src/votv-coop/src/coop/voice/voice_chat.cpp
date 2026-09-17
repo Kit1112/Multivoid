@@ -266,7 +266,9 @@ void Tick() {
                 // trace is treated as clear so a temporary reflection miss never mutes voice.
                 const bool occluded =
                     ue_wrap::trace::LineBlockedStatDyn(local, listenerPos, hp, rp->GetActor()) == 1;
-                g_playback.SetSpeaker(slot, hp.X, hp.Y, hp.Z, true, occluded);
+                const ue_wrap::FVector facing = rp->GetSyncedAimDirection();
+                g_playback.SetSpeaker(slot, hp.X, hp.Y, hp.Z, true, occluded,
+                                      facing.X, facing.Y, facing.Z);
             } else {
                 g_playback.SetSpeaker(slot, 0, 0, 0, false);
             }
