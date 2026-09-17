@@ -55,7 +55,8 @@ public:
     // `forward*` is the speaking puppet's aim direction. The callback reads only published
     // values, never engine geometry.
     void SetSpeaker(int slot, float x, float y, float z, bool valid, float occlusion = 0.0f,
-                    float forwardX = 1.0f, float forwardY = 0.0f, float forwardZ = 0.0f);
+                    float forwardX = 1.0f, float forwardY = 0.0f, float forwardZ = 0.0f,
+                    float sourceEnclosure = 0.0f);
 
     // Game thread: a peer left -- drop its channel state.
     void ResetSlot(int slot);
@@ -99,6 +100,7 @@ private:
         std::atomic<bool> posValid{false};
         std::atomic<float> occlusionGain{1.0f};
         std::atomic<float> occlusion{0.0f};
+        std::atomic<float> sourceEnclosure{0.0f};
         std::atomic<float> forwardX{1.0f}, forwardY{0.0f}, forwardZ{0.0f};
 
         // Callback-thread-only cascaded low-pass state for obstructed speech.
@@ -124,7 +126,7 @@ private:
     Channel channels_[coop::players::kMaxPeers];
 
     std::atomic<float> listenerX_{0}, listenerY_{0}, listenerZ_{0}, listenerYaw_{0};
-    std::atomic<float> roomEnclosure_{0.0f};
+    std::atomic<float> roomEnclosure_{0.0f};  // listener enclosure
     std::atomic<float> masterVolume_{1.0f};
     float distanceCm_ = 2400.0f;
     int jitterThreshold_ = 3;

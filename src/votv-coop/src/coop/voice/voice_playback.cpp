@@ -144,6 +144,7 @@ void Playback::ResetSlot(int slot) {
     ch.posValid.store(false);
     ch.occlusionGain.store(1.0f);
     ch.occlusion.store(0.0f);
+    ch.sourceEnclosure.store(0.0f);
     ch.forwardX.store(1.0f);
     ch.forwardY.store(0.0f);
     ch.forwardZ.store(0.0f);
@@ -175,7 +176,7 @@ void Playback::SetRoomEnclosure(float enclosure) {
 }
 
 void Playback::SetSpeaker(int slot, float x, float y, float z, bool valid, float occlusion,
-                          float forwardX, float forwardY, float forwardZ) {
+                          float forwardX, float forwardY, float forwardZ, float sourceEnclosure) {
     if (slot < 0 || slot >= coop::players::kMaxPeers) return;
     Channel& ch = channels_[slot];
     ch.posX.store(x, std::memory_order_relaxed);
@@ -184,6 +185,9 @@ void Playback::SetSpeaker(int slot, float x, float y, float z, bool valid, float
     if (occlusion < 0.0f) occlusion = 0.0f;
     if (occlusion > 1.0f) occlusion = 1.0f;
     ch.occlusion.store(occlusion, std::memory_order_relaxed);
+    if (sourceEnclosure < 0.0f) sourceEnclosure = 0.0f;
+    if (sourceEnclosure > 1.0f) sourceEnclosure = 1.0f;
+    ch.sourceEnclosure.store(sourceEnclosure, std::memory_order_relaxed);
     // A fully closed path remains intelligible through a quiet reflected return instead of
     // becoming the old all-or-nothing mute.
     ch.occlusionGain.store(1.0f - occlusion * 0.88f, std::memory_order_relaxed);
@@ -438,7 +442,9 @@ void Playback::MixOutput(float* out, uint32_t frameCount) {
         const float gainStepL = (targetL - ch.mixedGainL) / static_cast<float>(mixSamples);
         const float gainStepR = (targetR - ch.mixedGainR) / static_cast<float>(mixSamples);
         const float obstruction = ch.occlusion.load(std::memory_order_relaxed);
-        const float roomEnclosure = roomEnclosure_.load(std::memory_order_relaxed);
+        const float listenerEnclosure = roomEnclosure_.load(std::memory_order_relaxed);
+        const float sourceEnclosure = ch.sourceEnclosure.load(std::memory_order_relaxed);
+        const float roomEnclosure = listenerEnclosure * 0.65f + sourceEnclosure * 0.35f;
         // Cascaded poles give a wall a useful 12 dB/octave high-frequency rolloff. 0.92 is
         // effectively transparent; a closed path leaves a slow ~1 kHz speech contour.
         const float lowpassAlpha = 0.92f - obstruction * 0.80f;

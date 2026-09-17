@@ -18,6 +18,7 @@
 #include <Windows.h>
 
 #include <atomic>
+#include <array>
 #include <cctype>
 #include <chrono>
 #include <cmath>
@@ -114,6 +115,21 @@ float PathObstruction(void* worldCtx, const ue_wrap::FVector& start, const ue_wr
     if (layers == 1) return 0.55f;
     if (layers == 2) return 0.88f;
     return layers >= 3 ? 1.0f : 0.0f;
+}
+
+float RoomEnclosure(void* worldCtx, const ue_wrap::FVector& head, void* actorToIgnore) {
+    const ue_wrap::FVector origin{head.X, head.Y, head.Z + 20.0f};
+    const ue_wrap::FVector probeEnd[5] = {
+        {origin.X + 800.0f, origin.Y, origin.Z}, {origin.X - 800.0f, origin.Y, origin.Z},
+        {origin.X, origin.Y + 800.0f, origin.Z}, {origin.X, origin.Y - 800.0f, origin.Z},
+        {origin.X, origin.Y, origin.Z + 500.0f},
+    };
+    int traced = 0, blocked = 0;
+    for (const ue_wrap::FVector& end : probeEnd) {
+        const int result = ue_wrap::trace::LineBlockedStatDyn(worldCtx, origin, end, actorToIgnore);
+        if (result >= 0) { ++traced; if (result == 1) ++blocked; }
+    }
+    return traced > 0 ? static_cast<float>(blocked) / static_cast<float>(traced) : 0.0f;
 }
 
 // The typed registry reads own the env twin and the garbage-to-default rule. A hand-rolled
@@ -273,6 +289,8 @@ void Tick() {
     // arrive every 20 ms. The mixer smoothly approaches the latest atomics.
     static Clock::time_point s_lastPosAt{};
     static Clock::time_point s_lastRoomProbeAt{};
+    static Clock::time_point s_lastSourceProbeAt{};
+    static std::array<float, coop::net::kMaxPeers> s_sourceEnclosure{};
     const auto now = Clock::now();
     if (now - s_lastPosAt >= std::chrono::milliseconds(50)) {
         s_lastPosAt = now;
@@ -288,28 +306,8 @@ void Tick() {
             g_playback.SetListener(listenerPos.X, listenerPos.Y, listenerPos.Z, r.Yaw);
             if (now - s_lastRoomProbeAt >= std::chrono::milliseconds(250)) {
                 s_lastRoomProbeAt = now;
-                // Probe only around and above the listener: the floor would always count as a
-                // hit and would falsely make fields and exterior walkways sound like rooms.
-                ue_wrap::FVector origin = listenerPos;
-                origin.Z += 120.0f;
-                const ue_wrap::FVector probeEnd[5] = {
-                    {origin.X + 800.0f, origin.Y, origin.Z},
-                    {origin.X - 800.0f, origin.Y, origin.Z},
-                    {origin.X, origin.Y + 800.0f, origin.Z},
-                    {origin.X, origin.Y - 800.0f, origin.Z},
-                    {origin.X, origin.Y, origin.Z + 500.0f},
-                };
-                int traced = 0;
-                int blocked = 0;
-                for (const ue_wrap::FVector& end : probeEnd) {
-                    const int result = ue_wrap::trace::LineBlockedStatDyn(local, origin, end);
-                    if (result >= 0) {
-                        ++traced;
-                        if (result == 1) ++blocked;
-                    }
-                }
-                g_playback.SetRoomEnclosure(traced > 0 ?
-                    static_cast<float>(blocked) / static_cast<float>(traced) : 0.0f);
+                g_playback.SetRoomEnclosure(
+                    RoomEnclosure(local, ue_wrap::FVector{listenerPos.X, listenerPos.Y, listenerPos.Z + 100.0f}, local));
             }
             if (g_loopback && localSlot != coop::players::kPeerIdUnknown)
                 g_playback.SetSpeaker(localSlot, listenerPos.X, listenerPos.Y, listenerPos.Z, true);
@@ -317,6 +315,8 @@ void Tick() {
             g_playback.SetRoomEnclosure(0.0f);
         }
         // Speakers = the peer puppets' heads.
+        const bool sampleSourceRooms = now - s_lastSourceProbeAt >= std::chrono::milliseconds(250);
+        if (sampleSourceRooms) s_lastSourceProbeAt = now;
         for (int slot = 0; slot < coop::net::kMaxPeers; ++slot) {
             if (slot == localSlot) continue;
             coop::RemotePlayer* rp = reg.Puppet(static_cast<uint8_t>(slot));
@@ -325,18 +325,30 @@ void Tick() {
                 // The centre ray counts successive walls, while nearby head rays make a doorway
                 // or wall edge a partial obstruction. Failed reflection dispatches stay clear:
                 // a temporary engine miss must not muffle voice.
-                ue_wrap::FVector probe[3] = {hp, hp, hp};
+                ue_wrap::FVector probe[5] = {hp, hp, hp, hp, hp};
                 probe[1].Z += 28.0f;
                 probe[2].Z -= 28.0f;
+                const float dx = hp.X - listenerPos.X, dy = hp.Y - listenerPos.Y;
+                const float horizontal = std::sqrt(dx * dx + dy * dy);
+                if (horizontal > 1.0f) {
+                    const float sideX = -dy / horizontal * 24.0f;
+                    const float sideY = dx / horizontal * 24.0f;
+                    probe[3].X += sideX; probe[3].Y += sideY;
+                    probe[4].X -= sideX; probe[4].Y -= sideY;
+                }
                 const float centre = PathObstruction(local, listenerPos, probe[0], rp->GetActor(), 3);
                 const float upper = PathObstruction(local, listenerPos, probe[1], rp->GetActor(), 1);
                 const float lower = PathObstruction(local, listenerPos, probe[2], rp->GetActor(), 1);
-                const float edgeCoverage = (upper + lower) / (2.0f * 0.55f);
+                const float left = PathObstruction(local, listenerPos, probe[3], rp->GetActor(), 1);
+                const float right = PathObstruction(local, listenerPos, probe[4], rp->GetActor(), 1);
+                const float edgeCoverage = (upper + lower + left + right) / (4.0f * 0.55f);
                 const float obstruction = centre > edgeCoverage * 0.45f ?
                     centre : edgeCoverage * 0.45f;
+                if (sampleSourceRooms)
+                    s_sourceEnclosure[slot] = RoomEnclosure(local, hp, rp->GetActor());
                 const ue_wrap::FVector facing = rp->GetSyncedAimDirection();
                 g_playback.SetSpeaker(slot, hp.X, hp.Y, hp.Z, true, obstruction,
-                                      facing.X, facing.Y, facing.Z);
+                                      facing.X, facing.Y, facing.Z, s_sourceEnclosure[slot]);
             } else {
                 g_playback.SetSpeaker(slot, 0, 0, 0, false);
             }
