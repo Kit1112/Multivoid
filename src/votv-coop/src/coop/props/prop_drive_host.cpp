@@ -90,6 +90,8 @@ int32_t g_offReceiveHitOther = -1;
 int32_t g_offReceiveOverlapOther = -1;
 bool    g_overlapObserverInstalled = false;
 
+bool HeldBySomeone(void* actor);
+
 // ReceiveHit is emitted after UE has resolved a blocking physics contact. This is the missing
 // verb for a prop a moving prop knocks: the impacted prop has already received its impulse when
 // this observer runs, so coast streams its actual host trajectory. Both the hit actor and the

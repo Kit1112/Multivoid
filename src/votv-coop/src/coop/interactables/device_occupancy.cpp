@@ -366,8 +366,8 @@ void Tick() {
         void* targetProp = g_activeInterfaceProp;
         g_activeInterfaceProp = nullptr;
         if (!targetProp || !R::IsLive(targetProp)) {
-            ue_wrap::engine_mainplayer::MainPlayerGrabState grab{};
-            if (ue_wrap::engine_mainplayer::ReadMainPlayerGrabState(local, grab)) {
+            ue_wrap::engine::MainPlayerGrabState grab{};
+            if (ue_wrap::engine::ReadMainPlayerGrabState(local, grab)) {
                 if (grab.grabbingActor && coop::prop_save_data::Covers(grab.grabbingActor)) {
                     targetProp = grab.grabbingActor;
                 } else if (grab.holdingActor && coop::prop_save_data::Covers(grab.holdingActor)) {
@@ -375,7 +375,7 @@ void Tick() {
                 }
             }
             if (!targetProp) {
-                void* look = ue_wrap::engine_mainplayer::ReadMainPlayerLookAtActor(local);
+                void* look = ue_wrap::engine::ReadMainPlayerLookAtActor(local);
                 if (look && coop::prop_save_data::Covers(look)) {
                     targetProp = look;
                 }
@@ -405,8 +405,8 @@ void Tick() {
     if (w) {
         // Latch prop being interacted with (note, paper, notebook, etc.)
         void* propActor = nullptr;
-        ue_wrap::engine_mainplayer::MainPlayerGrabState grab{};
-        if (ue_wrap::engine_mainplayer::ReadMainPlayerGrabState(local, grab)) {
+        ue_wrap::engine::MainPlayerGrabState grab{};
+        if (ue_wrap::engine::ReadMainPlayerGrabState(local, grab)) {
             if (grab.grabbingActor && coop::prop_save_data::Covers(grab.grabbingActor)) {
                 propActor = grab.grabbingActor;
             } else if (grab.holdingActor && coop::prop_save_data::Covers(grab.holdingActor)) {
@@ -414,7 +414,7 @@ void Tick() {
             }
         }
         if (!propActor) {
-            void* look = ue_wrap::engine_mainplayer::ReadMainPlayerLookAtActor(local);
+            void* look = ue_wrap::engine::ReadMainPlayerLookAtActor(local);
             if (look && coop::prop_save_data::Covers(look)) {
                 propActor = look;
             }
