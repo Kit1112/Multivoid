@@ -1,6 +1,7 @@
 #include "coop/session/teleport_client.h"
 
 #include "coop/player/players_registry.h"
+#include "coop/player/remote_player.h"
 #include "coop/net/protocol.h"
 #include "coop/net/session.h"
 #include "ue_wrap/core/call.h"
@@ -170,6 +171,38 @@ void TeleportSlotToHost(int peerSlot) {
         return;
     }
     GT::Post([s, peerSlot] { SnapshotAndSendToSlot(s, peerSlot); });
+}
+
+void TeleportMeToSlot(int peerSlot) {
+    if (peerSlot < 0 || peerSlot >= static_cast<int>(coop::players::kMaxPeers)) {
+        UE_LOGW("teleport_client: TeleportMeToSlot rejected -- slot %d out of range", peerSlot);
+        return;
+    }
+    GT::Post([peerSlot] {
+        auto& reg = coop::players::Registry::Get();
+        if (peerSlot == static_cast<int>(reg.LocalPeerId())) {
+            UE_LOGW("teleport_client: TeleportMeToSlot ignored -- cannot teleport to self");
+            return;
+        }
+        auto* puppet = reg.Puppet(static_cast<uint8_t>(peerSlot));
+        if (!puppet || !puppet->valid() || !puppet->GetActor()) {
+            UE_LOGW("teleport_client: TeleportMeToSlot failed -- no valid puppet at slot %d", peerSlot);
+            return;
+        }
+        void* targetActor = puppet->GetActor();
+        const ue_wrap::FVector loc = E::GetActorLocation(targetActor);
+        const ue_wrap::FRotator rot = E::GetActorRotation(targetActor);
+
+        ApplyArgs args{};
+        args.locX = loc.X;
+        args.locY = loc.Y;
+        args.locZ = loc.Z + 10.0f;
+        args.rotPitch = rot.Pitch;
+        args.rotYaw = rot.Yaw;
+        args.rotRoll = rot.Roll;
+
+        ApplyLocally(args);
+    });
 }
 
 }  // namespace coop::teleport_client

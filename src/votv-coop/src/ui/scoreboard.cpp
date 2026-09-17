@@ -168,7 +168,7 @@ void Render() {
                 StatusDot(r.connected);
                 ImGui::SameLine();
 
-                const bool actionable = host && !r.isLocal && r.connected && r.slot >= 1;
+                const bool actionable = !r.isLocal && r.connected;
                 if (actionable) {
                     ImGui::PushStyleColor(ImGuiCol_Text, nickCol);
                     // DontClosePopups, since clicking the row toggles the popup and the selection
@@ -181,30 +181,32 @@ void Render() {
                                               ImGuiSelectableFlags_AllowOverlap))
                         ImGui::OpenPopup("##act");
                     ImGui::PopStyleColor();
+                    if (r.isHost) {
+                        ImGui::SameLine(0.0f, S(6.0f));
+                        ImGui::TextColored(ImVec4(1.00f, 0.82f, 0.35f, 0.85f), "HOST");
+                    }
 
                     if (ImGui::BeginPopup("##act")) {
                         ImGui::TextDisabled("%s", nick);
                         ImGui::Separator();
-                        // Host-standard actions, not dev-gated. The token is captured, not the
-                        // slot: slots recycle, so a slot number stops naming this person the moment
-                        // they leave, and these actions execute later on the game thread, when the
-                        // seat may have a new occupant.
+                        // Captured player token for robust, slot-recycle-safe actions.
                         const auto token =
                             coop::moderation::TokenFor(r.slot, r.playerNo, r.generation);
-                        if (ImGui::MenuItem("Teleport to me"))
-                            coop::moderation::TeleportPlayerToMe(token);
-                        if (ImGui::MenuItem("Kick"))
-                            coop::moderation::KickPlayer(token);
-                        ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.00f, 0.45f, 0.42f, 1.0f));
-                        const bool banClicked = ImGui::MenuItem("Ban (permanent)");
-                        ImGui::PopStyleColor();
-                        if (banClicked) {
-                            // The confirm modal executes after an arbitrary typing delay, exactly
-                            // the window a slot can change hands in, so the token is stashed and
-                            // the ban aimed at the person.
-                            g_banConfirmToken = token;
-                            g_banConfirmSlot = r.slot;
-                            std::snprintf(g_banConfirmNick, sizeof(g_banConfirmNick), "%s", nick);
+                        if (ImGui::MenuItem("Teleport to player"))
+                            coop::moderation::TeleportMeToPlayer(token);
+                        if (host && r.slot >= 1) {
+                            if (ImGui::MenuItem("Teleport to me"))
+                                coop::moderation::TeleportPlayerToMe(token);
+                            if (ImGui::MenuItem("Kick"))
+                                coop::moderation::KickPlayer(token);
+                            ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.00f, 0.45f, 0.42f, 1.0f));
+                            const bool banClicked = ImGui::MenuItem("Ban (permanent)");
+                            ImGui::PopStyleColor();
+                            if (banClicked) {
+                                g_banConfirmToken = token;
+                                g_banConfirmSlot = r.slot;
+                                std::snprintf(g_banConfirmNick, sizeof(g_banConfirmNick), "%s", nick);
+                            }
                         }
                         ImGui::EndPopup();
                     }

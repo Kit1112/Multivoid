@@ -67,6 +67,27 @@ void RenderTeleportClients() {
     if (ImGui::Button("Teleport clients to me")) coop::teleport_client::TeleportClientsToHost();
     ImGui::SameLine();
     ImGui::TextDisabled("(host only)");
+    ImGui::Spacing();
+    ImGui::TextUnformatted("Teleport to player:");
+    const auto rs = coop::roster::TakeSnapshot();
+    bool hasRemote = false;
+    for (int i = 0; i < rs.count; ++i) {
+        const auto& r = rs.rows[i];
+        if (r.isLocal || !r.connected) continue;
+        hasRemote = true;
+        char label[64];
+        std::snprintf(label, sizeof(label), "Go to %s##%d",
+                      r.nick[0] ? r.nick : "Player", r.slot);
+        if (ImGui::Button(label)) {
+            coop::teleport_client::TeleportMeToSlot(r.slot);
+        }
+        ImGui::SameLine();
+    }
+    if (hasRemote) {
+        ImGui::NewLine();
+    } else {
+        ImGui::TextDisabled("No remote peers connected.");
+    }
 }
 
 void RenderFreecam() {

@@ -151,4 +151,16 @@ void TeleportPlayerToMe(const PlayerToken& token) {
     });
 }
 
+void TeleportMeToPlayer(const PlayerToken& token) {
+    if (!token.valid()) return;
+    GT::Post([token] {
+        if (coop::roster_ledger::Get(token.slot).playerNo != token.playerNo) {
+            UE_LOGW("moderation: teleport to #%u skipped -- slot %d changed hands",
+                    static_cast<unsigned>(token.playerNo), token.slot);
+            return;
+        }
+        coop::teleport_client::TeleportMeToSlot(token.slot);
+    });
+}
+
 }  // namespace coop::moderation

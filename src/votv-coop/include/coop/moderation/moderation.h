@@ -95,4 +95,7 @@ void Unban(const char* ip);
 // consistent rule is what keeps the check from being forgotten where it matters.
 void TeleportPlayerToMe(const PlayerToken& token);
 
+// Teleport local player to the captured player's current pose (both host and client).
+void TeleportMeToPlayer(const PlayerToken& token);
+
 }  // namespace coop::moderation

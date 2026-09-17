@@ -32,6 +32,10 @@ void TeleportClientsToHost();
 // for an out-of-range slot. Safe to call off the game thread.
 void TeleportSlotToHost(int peerSlot);
 
+// Teleport the local player (host or client) to the current pose of the player at peerSlot.
+// Works for any connected peer. Safe to call off the game thread (posts to game thread).
+void TeleportMeToSlot(int peerSlot);
+
 // Receiver: apply the teleport on the local mainPlayer (K2_TeleportTo).
 // Called from event_feed.cpp on incoming ReliableKind::TeleportClient AND
 // gated to client-role receivers (host echo is a no-op). Game thread only.

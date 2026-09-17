@@ -85,7 +85,7 @@ void RenderOnlineSection(const coop::roster::Snapshot& rs) {
         ImGui::TableSetupColumn("Player", ImGuiTableColumnFlags_WidthStretch);
         ImGui::TableSetupColumn("Link", ImGuiTableColumnFlags_WidthFixed, S(72.f));
         ImGui::TableSetupColumn("Ping", ImGuiTableColumnFlags_WidthFixed, S(52.f));
-        ImGui::TableSetupColumn("Actions", ImGuiTableColumnFlags_WidthFixed, S(220.f));
+        ImGui::TableSetupColumn("Actions", ImGuiTableColumnFlags_WidthFixed, S(245.f));
         ImGui::TableHeadersRow();
         for (int i = 0; i < rs.count; ++i) {
             const coop::roster::Row& r = rs.rows[i];
@@ -112,7 +112,9 @@ void RenderOnlineSection(const coop::roster::Snapshot& rs) {
             // slot-addressed action captures the person, so no call site has to
             // remember which ones are destructive.
             const auto token = coop::moderation::TokenFor(r.slot, r.playerNo, r.generation);
-            if (ImGui::SmallButton("Teleport")) coop::moderation::TeleportPlayerToMe(token);
+            if (ImGui::SmallButton("Bring")) coop::moderation::TeleportPlayerToMe(token);
+            ImGui::SameLine();
+            if (ImGui::SmallButton("Goto")) coop::moderation::TeleportMeToPlayer(token);
             ImGui::SameLine();
             if (ImGui::SmallButton("Kick")) coop::moderation::KickPlayer(token);
             ImGui::SameLine();
