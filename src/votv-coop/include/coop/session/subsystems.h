@@ -35,6 +35,11 @@ void Install(coop::net::Session& session);
 // thread, on the event_feed drain.
 void ConnectReplayForSlot(int slot);
 
+// Trigger a full authoritative world replay for all connected clients (if Host),
+// or request an authoritative replay from the host (if Client).
+// Safe to call from any thread (posts to game thread).
+void TriggerFullWorldResync();
+
 // CLIENT -> HOST (slot 0) connect edge: announce LOCAL flashlight state so
 // the host can show it on our puppet; send the save-transfer request if this
 // join armed one (menu-mode browser join); open OUR world-ready send gate

@@ -55,6 +55,9 @@ void NotifyWireDestroy(const std::wstring& key);
 // sweep). Called from the net-pump connect replay. Game thread.
 void QueueConnectBroadcastForSlot(int peerSlot);
 
+// Force resynchronization of trash and dispenser piles across peers.
+void ForceResyncAllTrashPiles();
+
 // Per-tick: poll for counter decreases (broadcast collects) + the depletion death-watch
 // + retry deferred applies (throttled). `inTransition` suppresses the death-watch during
 // flee/join windows (stream-outs masquerade as deaths). Net-pump tick, game thread.

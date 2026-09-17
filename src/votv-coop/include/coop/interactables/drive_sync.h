@@ -52,6 +52,10 @@ void QueueConnectBroadcastForSlot(int peerSlot);
 // plus any unmatched-eid strays.
 void NoteLocalDriveBirth(void* actor);
 
+// Force resynchronization of all signal drive payloads and workstation slots.
+// Host broadcasts all drives and slot lines; client requests replay from host.
+void ForceResyncAllDrives(int peerSlot = -1);
+
 // Full teardown (the OnDisconnect fanout) -- clears slot/payload baselines,
 // dirty marks, pending applies, noted births; the deny/taken rings are
 // drive_rack_sync's (its own OnDisconnect). Re-run implicitly at next start.

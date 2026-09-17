@@ -2,6 +2,7 @@
 // a new sync feature wires in here.
 
 #include "ue_wrap/core/gc_pin.h"
+#include "ue_wrap/core/game_thread.h"
 #include "coop/props/trash_mirror.h"
 #include "coop/session/subsystems.h"
 
@@ -149,7 +150,28 @@
 
 namespace coop::subsystems {
 
+std::atomic<coop::net::Session*> g_subsystemsSession{nullptr};
+
+void TriggerFullWorldResync() {
+    ue_wrap::game_thread::Post([] {
+        auto* s = g_subsystemsSession.load(std::memory_order_acquire);
+        if (!s || !s->connected()) return;
+        if (s->role() == coop::net::Role::Host) {
+            UE_LOGI("subsystems: HOST triggered full world resync to all ready peers");
+            for (int slot = 1; slot < static_cast<int>(coop::players::kMaxPeers); ++slot) {
+                if (s->IsSlotWorldReady(slot)) {
+                    ConnectReplayForSlot(slot);
+                }
+            }
+        } else {
+            UE_LOGI("subsystems: CLIENT requested full world resync from host");
+            s->SendReliableToSlot(0, coop::net::ReliableKind::ClientWorldReady, nullptr, 0);
+        }
+    });
+}
+
 void Install(coop::net::Session& session) {
+    g_subsystemsSession.store(&session, std::memory_order_release);
     coop::grab_observer::Install();
     coop::prop_lifecycle::InstallInventory(&session);
     coop::prop_lifecycle::Install(&session);

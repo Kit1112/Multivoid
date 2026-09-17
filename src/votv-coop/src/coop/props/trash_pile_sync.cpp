@@ -390,4 +390,17 @@ void OnDisconnect() {
     UE_LOGI("trash_pile: OnDisconnect cleared index + baselines + depleted keys");
 }
 
+void ForceResyncAllTrashPiles() {
+    auto* s = g_session.load(std::memory_order_acquire);
+    if (!s || !s->connected()) return;
+    if (s->role() == coop::net::Role::Host) {
+        for (int slot = 1; slot < static_cast<int>(coop::players::kMaxPeers); ++slot) {
+            if (s->IsSlotWorldReady(slot)) QueueConnectBroadcastForSlot(slot);
+        }
+        UE_LOGI("trash_pile_sync: ForceResyncAllTrashPiles broadcast to all ready clients");
+    } else {
+        s->SendReliableToSlot(0, coop::net::ReliableKind::ClientWorldReady, nullptr, 0);
+    }
+}
+
 }  // namespace coop::trash_pile_sync

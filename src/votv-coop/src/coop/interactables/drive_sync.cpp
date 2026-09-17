@@ -592,6 +592,39 @@ void NoteLocalDriveBirth(void* actor) {
     g_notedBirths.push_back({actor, now + kNotedBirthTtl});
 }
 
+void ForceResyncAllDrives(int peerSlot) {
+    auto* s = g_session.load(std::memory_order_acquire);
+    if (!s || !s->connected()) return;
+    if (s->role() == coop::net::Role::Host) {
+        std::vector<std::pair<uint32_t, void*>> drives;
+        SnapshotDrives(drives);
+        int count = 0;
+        for (const auto& [eid, actor] : drives) {
+            SD::Row row;
+            if (!DC::ReadDriveRow(actor, row)) continue;
+            SendPayload(eid, row, peerSlot);
+            g_driveBase[eid] = coop::blob_chunks::Fnv64(coop::signal_wire::Serialize(row, false));
+            ++count;
+        }
+        for (int r = 0; r < DC::kRoleCount; ++r) {
+            void* slot = DC::SlotActor(r);
+            if (!slot) continue;
+            void* drive = DC::SlotDrive(slot);
+            coop::net::DriveSlotStatePayload p{};
+            p.role = static_cast<uint8_t>(r);
+            p.occupied = drive ? 1 : 0;
+            p.driveEid = drive ? static_cast<uint32_t>(
+                coop::element::Registry::Get().EidForActor(drive)) : 0;
+            if (peerSlot < 0) s->SendReliable(coop::net::ReliableKind::DriveSlotState, &p, sizeof(p));
+            else s->SendReliableToSlot(peerSlot, coop::net::ReliableKind::DriveSlotState, &p, sizeof(p));
+        }
+        UE_LOGI("drive_sync: ForceResyncAllDrives broadcast %d drives and slots (target=%d)", count, peerSlot);
+    } else {
+        s->SendReliableToSlot(0, coop::net::ReliableKind::ClientWorldReady, nullptr, 0);
+        UE_LOGI("drive_sync: client requested full world resync from host");
+    }
+}
+
 void OnDisconnect() {
     for (int r = 0; r < DC::kRoleCount; ++r) {
         g_slotDirty[r].store(false, std::memory_order_relaxed);

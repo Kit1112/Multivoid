@@ -16,6 +16,9 @@
 #include "coop/dev/spawn_menu_unlock.h"
 #include "coop/dev/spawn_npc.h"
 #include "coop/session/teleport_client.h"
+#include "coop/session/subsystems.h"
+#include "coop/interactables/drive_sync.h"
+#include "coop/props/trash_pile_sync.h"
 #include "coop/comms/peer_action_feed.h"
 #include "coop/player/nameplate.h"
 #include "coop/player/nick_color.h"
@@ -366,6 +369,16 @@ void RenderNetStats() { ui::net_stats_panel::RenderMenuPref(); }
 void RenderResync() {
     ImGui::TextUnformatted("Manual World & Props Resynchronization:");
     ImGui::Spacing();
+    if (ImGui::Button("Full World & Props Resync (All Subsystems)")) {
+        coop::subsystems::TriggerFullWorldResync();
+    }
+    if (ImGui::IsItemHovered()) {
+        ImGui::SetTooltip("Broadcasts/requests a complete authoritative state replay across\n"
+                          "all peers: props, doors, lifts/elevators, drives, trash piles, and weather.");
+    }
+    ImGui::TextDisabled("Use this if world state, elevator, or props are desynchronized.");
+    ImGui::Spacing();
+
     if (ImGui::Button("Resync Driven Props (Host -> Clients)")) {
         ue_wrap::game_thread::Post([]() {
             coop::prop_drive_host::OnPeerWorldReady();
@@ -377,8 +390,32 @@ void RenderResync() {
     }
     ImGui::TextDisabled("Use this if props or items appear desynchronized or frozen across peers.");
     ImGui::Spacing();
+
+    if (ImGui::Button("Resync All Signal Drives & Workstation Slots")) {
+        ue_wrap::game_thread::Post([]() {
+            coop::drive_sync::ForceResyncAllDrives();
+        });
+    }
+    if (ImGui::IsItemHovered()) {
+        ImGui::SetTooltip("Broadcasts current data of all signal drives across the map and\n"
+                          "refreshes computer, playback, and eraser workstation slots.");
+    }
+    ImGui::TextDisabled("Use this if signal drives on tables, slots or racks are missing or desynced.");
+    ImGui::Spacing();
+
+    if (ImGui::Button("Resync Trash & Dispenser Piles")) {
+        ue_wrap::game_thread::Post([]() {
+            coop::trash_pile_sync::ForceResyncAllTrashPiles();
+        });
+    }
+    if (ImGui::IsItemHovered()) {
+        ImGui::SetTooltip("Resynchronizes all trash pile counters and depleted pile states.");
+    }
+    ImGui::TextDisabled("Use this if trash piles or scrap counters appear desynchronized.");
+    ImGui::Spacing();
     ImGui::Separator();
     ImGui::Spacing();
+
     ImGui::TextUnformatted("Player Puppets (Avatars):");
     ImGui::Spacing();
     if (ImGui::Button("Respawn Remote Puppets (Fix Invisible Peers)")) {
