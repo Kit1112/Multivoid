@@ -61,6 +61,9 @@ constexpr float kRestAngVelDegS = 1.0f;
 constexpr float kNudgeReachUU = 180.f;
 constexpr float kNudgeSpeedCmS = 260.f;
 constexpr uint64_t kNudgeIntervalMs = 100;
+// PhysX can resolve one final contact just after the rest probe reads a quiet body. Keep the
+// final pose under a short host-only watch so late movement reopens the coast stream.
+constexpr uint64_t kSettledWatchMs = 1500;
 
 struct Driven {
     ue_wrap::CachedObjRef ref;
@@ -77,6 +80,13 @@ struct Driven {
 };
 
 std::vector<Driven> g_driven;   // game thread only
+struct SettledWatch {
+    ue_wrap::CachedObjRef ref;
+    ue_wrap::FVector      loc{};
+    ue_wrap::FRotator     rot{};
+    uint64_t              expiresMs = 0;
+};
+std::vector<SettledWatch> g_settled; // recently ended host bodies, game thread only
 size_t              g_turn = 0; // where the next tick's publishing starts, so no prop waits forever
 std::atomic<coop::net::Session*> g_session{nullptr};
 bool g_impactObserverInstalled = false;
@@ -258,15 +268,58 @@ bool HeldBySomeone(void* actor) {
            coop::hand_item::IsHandAxisActor(actor);
 }
 
-bool Moved(const Driven& d, const ue_wrap::FVector& loc, const ue_wrap::FRotator& rot) {
-    if (!d.everSent) return true;
-    if (std::fabs(loc.X - d.sentLoc.X) > kSendEpsCm) return true;
-    if (std::fabs(loc.Y - d.sentLoc.Y) > kSendEpsCm) return true;
-    if (std::fabs(loc.Z - d.sentLoc.Z) > kSendEpsCm) return true;
-    if (std::fabs(ue_wrap::NormalizeAxis(rot.Pitch - d.sentRot.Pitch)) > kSendEpsDeg) return true;
-    if (std::fabs(ue_wrap::NormalizeAxis(rot.Yaw   - d.sentRot.Yaw))   > kSendEpsDeg) return true;
-    if (std::fabs(ue_wrap::NormalizeAxis(rot.Roll  - d.sentRot.Roll))  > kSendEpsDeg) return true;
+bool PoseDiffers(const ue_wrap::FVector& aLoc, const ue_wrap::FRotator& aRot,
+                 const ue_wrap::FVector& bLoc, const ue_wrap::FRotator& bRot) {
+    if (std::fabs(aLoc.X - bLoc.X) > kSendEpsCm) return true;
+    if (std::fabs(aLoc.Y - bLoc.Y) > kSendEpsCm) return true;
+    if (std::fabs(aLoc.Z - bLoc.Z) > kSendEpsCm) return true;
+    if (std::fabs(ue_wrap::NormalizeAxis(aRot.Pitch - bRot.Pitch)) > kSendEpsDeg) return true;
+    if (std::fabs(ue_wrap::NormalizeAxis(aRot.Yaw   - bRot.Yaw))   > kSendEpsDeg) return true;
+    if (std::fabs(ue_wrap::NormalizeAxis(aRot.Roll  - bRot.Roll))  > kSendEpsDeg) return true;
     return false;
+}
+
+bool Moved(const Driven& d, const ue_wrap::FVector& loc, const ue_wrap::FRotator& rot) {
+    return !d.everSent || PoseDiffers(loc, rot, d.sentLoc, d.sentRot);
+}
+
+void WatchSettled(void* actor, const ue_wrap::FVector& loc, const ue_wrap::FRotator& rot) {
+    for (SettledWatch& watch : g_settled) {
+        if (watch.ref.Raw() == actor) {
+            watch.loc = loc;
+            watch.rot = rot;
+            watch.expiresMs = coop::active_drive::NowMs() + kSettledWatchMs;
+            return;
+        }
+    }
+    SettledWatch watch;
+    watch.ref.Set(actor);
+    watch.loc = loc;
+    watch.rot = rot;
+    watch.expiresMs = coop::active_drive::NowMs() + kSettledWatchMs;
+    g_settled.push_back(std::move(watch));
+}
+
+void SweepSettled(uint64_t now) {
+    for (size_t i = 0; i < g_settled.size();) {
+        SettledWatch& watch = g_settled[i];
+        void* actor = watch.ref.Get();
+        if (!actor || now >= watch.expiresMs || HeldBySomeone(actor)) {
+            g_settled[i] = std::move(g_settled.back());
+            g_settled.pop_back();
+            continue;
+        }
+        const ue_wrap::FVector loc = E::GetActorLocation(actor);
+        const ue_wrap::FRotator rot = E::GetActorRotation(actor);
+        if (PoseDiffers(loc, rot, watch.loc, watch.rot)) {
+            UE_LOGI("[PROP-DRIVE] HOST late post-settle movement -- reopening coast");
+            Coast(actor, "late post-settle movement");
+            g_settled[i] = std::move(g_settled.back());
+            g_settled.pop_back();
+            continue;
+        }
+        ++i;
+    }
 }
 
 void SendEnd(coop::net::Session& s, const Driven& d, void* actor, const ue_wrap::FVector& loc,
@@ -436,6 +489,7 @@ void Tick(coop::net::Session& s) {
     InstallImpactObserver();
     if (s.role() != coop::net::Role::Host) return;
     ScanAwakeProps();
+    SweepSettled(coop::active_drive::NowMs());
     if (g_driven.empty()) return;
     const uint64_t now = coop::active_drive::NowMs();
     static uint32_t sPublished = 0;
@@ -504,6 +558,7 @@ void Tick(coop::net::Session& s) {
             }
             if (!d.claimed) {
                 SendEnd(s, d, actor, loc, rot, "rested");
+                WatchSettled(actor, loc, rot);
                 d.dead = true;
                 continue;
             }
@@ -519,6 +574,7 @@ void Tick(coop::net::Session& s) {
 void OnDisconnect() {
     g_session.store(nullptr, std::memory_order_release);
     g_driven.clear();
+    g_settled.clear();
     g_turn = 0;
     g_genByEid.clear();
 }
