@@ -18,6 +18,8 @@
 #include "coop/props/join_membership_sweep.h" // HasLoadTailQuiesced (steady-state vs load-tail gate for the defer)
 #include "coop/creatures/kerfur_entity.h"     // ForgetKerfurPropMirror (mirror-teardown choke-point)
 #include "coop/player/players_registry.h"     // players::Registry::Get().Local() (TryApplyDestroy)
+#include "coop/player/hand_item.h"
+#include "coop/player/local_streams.h" 
 #include "coop/props/prop_echo_suppress.h"    // MarkIncomingDestroy
 #include "coop/props/prop_element_tracker.h"  // ResolveLiveActorByKey
 #include "coop/props/trash_channel.h"         // ClearClientCarry (a destroyed carried clump)
@@ -77,10 +79,24 @@ void UnregisterPropMirror(coop::element::ElementId eid) {
 // The terminal local teardown of a resolved doomed actor, shared by the in-time destroy and
 // the deferred re-apply: clear any drive, release a local grab, echo-suppress, then destroy.
 // Game thread.
+bool IsHeldByPlayer(void* actor, void* localPlayer) {
+    if (!actor) return false;
+    if (localPlayer && ue_wrap::engine::IsMainPlayerGrabbing(localPlayer, actor)) return true;
+    if (actor == coop::local_streams::LastHeldActor()) return true;
+    if (coop::hand_item::IsHandAxisActor(actor)) return true;
+    if (coop::remote_prop::IsActorUnderAnyDrive(actor)) return true;
+    return false;
+}
+
 void DestroyResolvedLocalActor_(void* actor, const std::wstring& keyW,
                                 const coop::net::PropDestroyPayload& payload, void* localPlayer) {
     if (!ResolveDestroyFn()) {
         UE_LOGW("remote_prop::OnDestroy: K2_DestroyActor UFunction unresolved -- dropping");
+        return;
+    }
+    if (IsHeldByPlayer(actor, localPlayer)) {
+        UE_LOGW("remote_prop::OnDestroy: key '%ls' eid=%u actor %p is CURRENTLY HELD/GRABBED -- refusing destroy to protect hand prop",
+                keyW.c_str(), payload.elementId, actor);
         return;
     }
     UE_LOGI("remote_prop::OnDestroy: key '%ls' eid=%u -> destroying local actor %p",

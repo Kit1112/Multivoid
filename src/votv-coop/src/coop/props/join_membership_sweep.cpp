@@ -4,6 +4,8 @@
 // per-class completeness floor and a >50% valve.
 
 #include "coop/props/join_membership_sweep.h"
+#include "coop/player/hand_item.h"
+#include "coop/player/local_streams.h" 
 #include "coop/session/world_load_episode.h"  // the load-tail quiescence probe
 
 #include "coop/creatures/kerfur_entity.h"
@@ -372,6 +374,16 @@ static void RunDivergenceSweep_(void* localPlayer) {
     // observer does not broadcast them; deferred=false, since this runs from the event_feed drain,
     // not inside a BP graph.
     for (void* a : doomed) {
+        if (!a || !R::IsLive(a)) continue;
+        if (localPlayer && ue_wrap::engine::IsMainPlayerGrabbing(localPlayer, a)) {
+            UE_LOGW("join_membership_sweep: actor %p is grabbed by local player -- skipping doom", a);
+            continue;
+        }
+        if (coop::hand_item::IsHandAxisActor(a) || a == coop::local_streams::LastHeldActor() ||
+            coop::remote_prop::IsActorUnderAnyDrive(a)) {
+            UE_LOGW("join_membership_sweep: actor %p is held/driven -- skipping doom", a);
+            continue;
+        }
         // One line per doomed actor with its class, key and position; the histogram below says what
         // died, this says which and where. Cold path, once per join.
         {
