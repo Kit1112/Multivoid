@@ -342,7 +342,10 @@ void RepointSackContainers() {
         }
         if (s_offSackContainer >= 0) {
             void** slot = reinterpret_cast<void**>(reinterpret_cast<char*>(sack) + s_offSackContainer);
-            if (!*slot || !R::IsLive(*slot)) {
+            // A client-created sack can retain a live local container from before its drone
+            // mirror arrived. Liveness alone does not establish ownership: every visible sack
+            // belongs to the currently mirrored drone container, so repair a stale live link too.
+            if (*slot != c) {
                 *slot = c;
                 UE_LOGI("drone: repointed prop_dronesack_C %p container @0x%04X -> %p",
                         sack, s_offSackContainer, c);
