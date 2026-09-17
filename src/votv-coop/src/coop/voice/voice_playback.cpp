@@ -186,7 +186,7 @@ void Playback::SetSpeaker(int slot, float x, float y, float z, bool valid, float
     ch.occlusion.store(occlusion, std::memory_order_relaxed);
     // A fully closed path remains intelligible through a quiet reflected return instead of
     // becoming the old all-or-nothing mute.
-    ch.occlusionGain.store(1.0f - occlusion * 0.70f, std::memory_order_relaxed);
+    ch.occlusionGain.store(1.0f - occlusion * 0.88f, std::memory_order_relaxed);
     ch.forwardX.store(forwardX, std::memory_order_relaxed);
     ch.forwardY.store(forwardY, std::memory_order_relaxed);
     ch.forwardZ.store(forwardZ, std::memory_order_relaxed);

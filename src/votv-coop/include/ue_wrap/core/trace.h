@@ -24,7 +24,8 @@ namespace ue_wrap::trace {
 // Game thread only (dispatches a UFunction). `actorToIgnore` supplements the context actor the
 // engine ignores through bIgnoreSelf; callers tracing to another pawn should pass that endpoint
 // actor so its own collision does not masquerade as an obstruction at the end of the ray.
+// When non-null and blocked, `outImpactPoint` receives the first impact point.
 int LineBlockedStatDyn(void* worldCtx, const FVector& start, const FVector& end,
-                       void* actorToIgnore = nullptr);
+                       void* actorToIgnore = nullptr, FVector* outImpactPoint = nullptr);
 
 }  // namespace ue_wrap::trace

@@ -20,6 +20,7 @@
 #include <atomic>
 #include <cctype>
 #include <chrono>
+#include <cmath>
 #include <cstdlib>
 #include <cstring>
 #include <mutex>
@@ -82,6 +83,37 @@ int ParseKey(const std::string& s, int def) {
     if (s.empty()) return def;
     if (s.size() == 1) return std::toupper(static_cast<unsigned char>(s[0]));
     return static_cast<int>(std::strtol(s.c_str(), nullptr, 0));
+}
+
+// Count only a few consecutive blocking surfaces. A closed door is one layer; two walls are
+// nearly isolating and three are treated as effectively sealed. The two off-centre head probes
+// still catch doorways and wall edges without multiplying this into an unbounded trace budget.
+float PathObstruction(void* worldCtx, const ue_wrap::FVector& start, const ue_wrap::FVector& end,
+                      void* actorToIgnore, int maxLayers) {
+    const float dx = end.X - start.X, dy = end.Y - start.Y, dz = end.Z - start.Z;
+    const float length = std::sqrt(dx * dx + dy * dy + dz * dz);
+    if (length < 1.0f || maxLayers <= 0) return 0.0f;
+    const float ux = dx / length, uy = dy / length, uz = dz / length;
+    ue_wrap::FVector cursor = start;
+    int layers = 0;
+    for (int i = 0; i < maxLayers; ++i) {
+        ue_wrap::FVector impact{};
+        const int result = ue_wrap::trace::LineBlockedStatDyn(worldCtx, cursor, end,
+                                                               actorToIgnore, &impact);
+        if (result != 1) break;
+        ++layers;
+        const float rx = impact.X - cursor.X, ry = impact.Y - cursor.Y, rz = impact.Z - cursor.Z;
+        const float advance = rx * ux + ry * uy + rz * uz;
+        const float toEnd = (end.X - impact.X) * ux + (end.Y - impact.Y) * uy +
+            (end.Z - impact.Z) * uz;
+        if (!std::isfinite(advance) || advance < 1.0f || toEnd < 1.0f) break;
+        cursor.X = impact.X + ux * 3.0f;
+        cursor.Y = impact.Y + uy * 3.0f;
+        cursor.Z = impact.Z + uz * 3.0f;
+    }
+    if (layers == 1) return 0.55f;
+    if (layers == 2) return 0.88f;
+    return layers >= 3 ? 1.0f : 0.0f;
 }
 
 // The typed registry reads own the env twin and the garbage-to-default rule. A hand-rolled
@@ -290,24 +322,18 @@ void Tick() {
             coop::RemotePlayer* rp = reg.Puppet(static_cast<uint8_t>(slot));
             if (listenerValid && rp && rp->GetActor()) {
                 const ue_wrap::FVector hp = rp->GetHeadPosition();
-                // Three nearby target points turn a door edge or thin prop into a gradual
-                // obstruction fraction. Failed reflection dispatches are deliberately omitted:
+                // The centre ray counts successive walls, while nearby head rays make a doorway
+                // or wall edge a partial obstruction. Failed reflection dispatches stay clear:
                 // a temporary engine miss must not muffle voice.
                 ue_wrap::FVector probe[3] = {hp, hp, hp};
                 probe[1].Z += 28.0f;
                 probe[2].Z -= 28.0f;
-                int traced = 0;
-                int blocked = 0;
-                for (const ue_wrap::FVector& target : probe) {
-                    const int result =
-                        ue_wrap::trace::LineBlockedStatDyn(local, listenerPos, target, rp->GetActor());
-                    if (result >= 0) {
-                        ++traced;
-                        if (result == 1) ++blocked;
-                    }
-                }
-                const float obstruction = traced > 0 ?
-                    static_cast<float>(blocked) / static_cast<float>(traced) : 0.0f;
+                const float centre = PathObstruction(local, listenerPos, probe[0], rp->GetActor(), 3);
+                const float upper = PathObstruction(local, listenerPos, probe[1], rp->GetActor(), 1);
+                const float lower = PathObstruction(local, listenerPos, probe[2], rp->GetActor(), 1);
+                const float edgeCoverage = (upper + lower) / (2.0f * 0.55f);
+                const float obstruction = centre > edgeCoverage * 0.45f ?
+                    centre : edgeCoverage * 0.45f;
                 const ue_wrap::FVector facing = rp->GetSyncedAimDirection();
                 g_playback.SetSpeaker(slot, hp.X, hp.Y, hp.Z, true, obstruction,
                                       facing.X, facing.Y, facing.Z);

@@ -6,6 +6,7 @@
 #include "ue_wrap/core/reflection.h"
 
 #include <cstdint>
+#include <cstring>
 
 namespace ue_wrap::trace {
 namespace {
@@ -28,7 +29,7 @@ struct TArrayControl { void* data; int32_t num; int32_t max; };
 }  // namespace
 
 int LineBlockedStatDyn(void* worldCtx, const FVector& start, const FVector& end,
-                       void* actorToIgnore) {
+                       void* actorToIgnore, FVector* outImpactPoint) {
     if (!worldCtx) return -1;
     if (!g_traceFn || !g_kslCdo) {
         if (!g_kslCdo) g_kslCdo = R::FindClassDefaultObject(L"KismetSystemLibrary");
@@ -54,7 +55,15 @@ int LineBlockedStatDyn(void* worldCtx, const FVector& start, const FVector& end,
     // only -- FName/floats/weak ptrs -- so no destructor concerns on our frame).
     f.Set<bool>(L"bIgnoreSelf", true);
     if (!ue_wrap::Call(g_kslCdo, f)) return -1;
-    return f.Get<bool>(L"ReturnValue") ? 1 : 0;
+    const bool blocked = f.Get<bool>(L"ReturnValue");
+    if (blocked && outImpactPoint) {
+        // Copy the engine FHitResult's stable ImpactPoint field. ParamFrame owns the reflected
+        // out-param's actual frame offset, rather than assuming a Blueprint frame layout.
+        uint8_t hit[0x88]{};
+        if (f.GetRaw(L"OutHit", hit, sizeof(hit)))
+            std::memcpy(outImpactPoint, hit + 0x14, sizeof(*outImpactPoint));
+    }
+    return blocked ? 1 : 0;
 }
 
 }  // namespace ue_wrap::trace
