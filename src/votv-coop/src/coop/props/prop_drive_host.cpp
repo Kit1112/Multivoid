@@ -24,6 +24,7 @@
 #include "ue_wrap/engine/engine.h"
 
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <cmath>
 #include <cstdint>
@@ -62,6 +63,7 @@ constexpr float kNudgeReachUU = 180.f;
 constexpr float kNudgeMinSpeedCmS = 70.f;
 constexpr float kNudgeMaxSpeedCmS = 500.f;
 constexpr uint64_t kNudgeIntervalMs = 100;
+constexpr uint8_t kNudgeBurstPerInterval = 8;
 // PhysX can resolve one final contact just after the rest probe reads a quiet body. Keep the
 // final pose under a short host-only watch so late movement reopens the coast stream.
 constexpr uint64_t kSettledWatchMs = 1500;
@@ -498,15 +500,29 @@ void OnNudge(coop::net::Session& session, const coop::net::PropNudgePayload& p,
         senderSlot >= coop::net::kMaxPeers || p.elementId == 0 ||
         !std::isfinite(p.dirX) || !std::isfinite(p.dirY) || !std::isfinite(p.dirZ) ||
         !std::isfinite(p.speedCmS)) return;
-    static uint64_t s_lastNudge[coop::net::kMaxPeers]{};
+    // Keep a small global ingress gate, but rate-limit the actual impulse by (sender, prop).
+    // A held box clipping two loose boxes is two real contacts, not a reason to discard the
+    // second one because the first message arrived in the same tenth of a second.
+    struct NudgeIngress { uint64_t windowMs = 0; uint8_t count = 0; };
+    static std::array<NudgeIngress, coop::net::kMaxPeers> s_ingress;
+    static std::unordered_map<uint64_t, uint64_t> s_lastTargetNudge;
     const uint64_t now = coop::active_drive::NowMs();
-    if (now - s_lastNudge[senderSlot] < kNudgeIntervalMs) return;
-    s_lastNudge[senderSlot] = now;
+    NudgeIngress& ingress = s_ingress[senderSlot];
+    if (now - ingress.windowMs >= kNudgeIntervalMs) {
+        ingress.windowMs = now;
+        ingress.count = 0;
+    }
+    if (ingress.count >= kNudgeBurstPerInterval) return;
+    ++ingress.count;
     const float flat = std::sqrt(p.dirX * p.dirX + p.dirY * p.dirY);
     if (flat < 0.9f || flat > 1.1f || std::fabs(p.dirZ) > 0.1f) return;
     const auto target = coop::element::IntentTarget::ForClientIntent(session, senderSlot, kNudgeReachUU)
         .Resolve(static_cast<coop::element::ElementId>(p.elementId), coop::element::ElementType::Prop);
     if (!target || HeldBySomeone(target.actor)) return;
+    const uint64_t targetKey = (static_cast<uint64_t>(senderSlot) << 32) | p.elementId;
+    uint64_t& lastTarget = s_lastTargetNudge[targetKey];
+    if (now - lastTarget < kNudgeIntervalMs) return;
+    lastTarget = now;
     void* mesh = PR::GetStaticMesh(target.actor);
     if (!mesh) return;
     const float speed = std::clamp(p.speedCmS, kNudgeMinSpeedCmS, kNudgeMaxSpeedCmS);
