@@ -312,6 +312,15 @@ void WriteGateFields(void* drone, bool canTakeOff, bool hasSack) {
 }
 
 void RepointSackContainers() {
+    // drone_sync calls this from its per-frame client mirror tick. A class enumeration walks the
+    // UObject array, so it is a discovery edge rather than a frame-rate operation; 250 ms keeps a
+    // freshly materialised sack responsive without turning an idle drone into a global scan.
+    static std::chrono::steady_clock::time_point s_lastSackScan{};
+    const auto now = std::chrono::steady_clock::now();
+    if (s_lastSackScan.time_since_epoch().count() != 0 &&
+        now - s_lastSackScan < std::chrono::milliseconds(250)) return;
+    s_lastSackScan = now;
+
     void* drone = Find();
     void* c = nullptr;
     if (drone && EnsureFxResolved() && g_containerOff >= 0) {
