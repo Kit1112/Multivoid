@@ -97,6 +97,9 @@ struct LocalHeldMotion {
     uint64_t              lastMs = 0;
 };
 LocalHeldMotion g_localHeldMotion; // sampled while held, for client-only kinematic contacts
+struct NudgeIngress { uint64_t windowMs = 0; uint8_t count = 0; };
+std::array<NudgeIngress, coop::net::kMaxPeers> g_nudgeIngress;
+std::unordered_map<uint64_t, uint64_t> g_lastNudgeByTarget;
 size_t              g_turn = 0; // where the next tick's publishing starts, so no prop waits forever
 std::atomic<coop::net::Session*> g_session{nullptr};
 bool g_impactObserverInstalled = false;
@@ -503,11 +506,8 @@ void OnNudge(coop::net::Session& session, const coop::net::PropNudgePayload& p,
     // Keep a small global ingress gate, but rate-limit the actual impulse by (sender, prop).
     // A held box clipping two loose boxes is two real contacts, not a reason to discard the
     // second one because the first message arrived in the same tenth of a second.
-    struct NudgeIngress { uint64_t windowMs = 0; uint8_t count = 0; };
-    static std::array<NudgeIngress, coop::net::kMaxPeers> s_ingress;
-    static std::unordered_map<uint64_t, uint64_t> s_lastTargetNudge;
     const uint64_t now = coop::active_drive::NowMs();
-    NudgeIngress& ingress = s_ingress[senderSlot];
+    NudgeIngress& ingress = g_nudgeIngress[senderSlot];
     if (now - ingress.windowMs >= kNudgeIntervalMs) {
         ingress.windowMs = now;
         ingress.count = 0;
@@ -520,7 +520,7 @@ void OnNudge(coop::net::Session& session, const coop::net::PropNudgePayload& p,
         .Resolve(static_cast<coop::element::ElementId>(p.elementId), coop::element::ElementType::Prop);
     if (!target || HeldBySomeone(target.actor)) return;
     const uint64_t targetKey = (static_cast<uint64_t>(senderSlot) << 32) | p.elementId;
-    uint64_t& lastTarget = s_lastTargetNudge[targetKey];
+    uint64_t& lastTarget = g_lastNudgeByTarget[targetKey];
     if (now - lastTarget < kNudgeIntervalMs) return;
     lastTarget = now;
     void* mesh = PR::GetStaticMesh(target.actor);
@@ -656,6 +656,8 @@ void OnDisconnect() {
     g_localHeldMotion.ref.Reset();
     g_localHeldMotion.velocity = {};
     g_localHeldMotion.lastMs = 0;
+    g_nudgeIngress = {};
+    g_lastNudgeByTarget.clear();
     g_turn = 0;
     g_genByEid.clear();
 }
