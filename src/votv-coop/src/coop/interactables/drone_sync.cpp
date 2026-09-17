@@ -241,6 +241,7 @@ void Tick() {
         // interp toward the last streamed pose (no-op when frozen at target between packets).
         if (!g_m.suppressed) { D::SuppressTick(drone); g_m.suppressed = true; }
         if (g_m.hasPose) { AdvanceInterp(g_m); ApplyMirror(drone, g_m); }
+        D::RepointSackContainers();
     }
 }
 

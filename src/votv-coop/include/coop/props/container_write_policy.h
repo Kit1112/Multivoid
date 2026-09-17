@@ -58,7 +58,7 @@ inline constexpr uint64_t kConflictWindowMs = 1500;
 // The lane's own reach, before intent_authority adds the target's bounds and its pose-staleness
 // budget. The game opens and mutates a container through the camera trace mainPlayer::arm, whose
 // default length is armLength = 200 uu, so that is the number this lane owns.
-inline constexpr float kReachUU = 200.0f;
+inline constexpr float kReachUU = 450.0f;
 
 // How many slices one author may have arbitrated inside a window, and how long the refusal lasts.
 // An author's own sweep ships at most one slice per container per 250 ms, so sixteen in a second

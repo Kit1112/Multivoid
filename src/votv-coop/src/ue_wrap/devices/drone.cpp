@@ -311,6 +311,37 @@ void WriteGateFields(void* drone, bool canTakeOff, bool hasSack) {
         *reinterpret_cast<bool*>(reinterpret_cast<char*>(drone) + g_hasSackOff) = hasSack;
 }
 
+void RepointSackContainers() {
+    void* drone = Find();
+    void* c = nullptr;
+    if (drone && EnsureFxResolved() && g_containerOff >= 0) {
+        c = *reinterpret_cast<void**>(reinterpret_cast<char*>(drone) + g_containerOff);
+    }
+    if (!c || !R::IsLive(c)) {
+        c = R::FindObjectByClass(L"prop_inventoryContainer_drone_C");
+    }
+    if (!c || !R::IsLive(c)) return;
+
+    static int32_t s_offSackContainer = -2;
+    static void* s_sackCls = nullptr;
+    const std::vector<void*> sacks = R::FindObjectsByClass(L"prop_dronesack_C");
+    for (void* sack : sacks) {
+        if (!sack || !R::IsLive(sack)) continue;
+        if (s_offSackContainer == -2) {
+            s_sackCls = R::ClassOf(sack);
+            s_offSackContainer = s_sackCls ? R::FindPropertyOffset(s_sackCls, L"container") : -1;
+        }
+        if (s_offSackContainer >= 0) {
+            void** slot = reinterpret_cast<void**>(reinterpret_cast<char*>(sack) + s_offSackContainer);
+            if (!*slot || !R::IsLive(*slot)) {
+                *slot = c;
+                UE_LOGI("drone: repointed prop_dronesack_C %p container @0x%04X -> %p",
+                        sack, s_offSackContainer, c);
+            }
+        }
+    }
+}
+
 void RepointContainer(void* drone) {
     if (!drone || !EnsureFxResolved() || g_containerOff < 0) return;
     // openPropInv(container) reads the mirror drone's OWN container@0x04F8, which the suppressed tick
@@ -318,12 +349,14 @@ void RepointContainer(void* drone) {
     // 'droneContainer') is already mirrored by the prop pipeline -- find it + point the field at it so
     // the inventory opens. Idempotent: only writes when the field is null + the actor exists.
     void** slot = reinterpret_cast<void**>(reinterpret_cast<char*>(drone) + g_containerOff);
-    if (*slot && R::IsLive(*slot)) return;  // already pointed at a live container
-    if (void* c = R::FindObjectByClass(L"prop_inventoryContainer_drone_C")) {
-        *slot = c;
-        UE_LOGI("drone: repointed mirror container @0x%04X -> %p (prop-mirrored 'droneContainer')",
-                g_containerOff, c);
+    if (!(*slot && R::IsLive(*slot))) {
+        if (void* c = R::FindObjectByClass(L"prop_inventoryContainer_drone_C")) {
+            *slot = c;
+            UE_LOGI("drone: repointed mirror container @0x%04X -> %p (prop-mirrored 'droneContainer')",
+                    g_containerOff, c);
+        }
     }
+    RepointSackContainers();
 }
 
 }  // namespace ue_wrap::drone

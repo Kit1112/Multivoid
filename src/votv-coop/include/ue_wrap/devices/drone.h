@@ -92,4 +92,9 @@ void WriteGateFields(void* drone, bool canTakeOff, bool hasSack);
 // container (Aprop_inventoryContainer_drone_C) so openPropInv opens it. Idempotent. Game thread.
 void RepointContainer(void* drone);
 
+// CLIENT mirror: point any live prop_dronesack_C actors' container field at the authoritative
+// cargo container (Aprop_inventoryContainer_drone_C) so interacting with the sack opens the
+// container and allows loading/unloading items. Idempotent. Game thread.
+void RepointSackContainers();
+
 }  // namespace ue_wrap::drone
