@@ -86,15 +86,26 @@ Driven* Find(void* actor) {
     return nullptr;
 }
 
+int32_t g_offReceiveHitOther = -1;
+
 // ReceiveHit is emitted after UE has resolved a blocking physics contact. This is the missing
 // verb for a prop a moving prop knocks: the impacted prop has already received its impulse when
-// this observer runs, so coast streams its actual host trajectory. The same observer also sees
-// wall contacts; Coast is idempotent and merely refreshes an existing rest clock in that case.
-void OnActorReceiveHitPost(void* actor, void* /*function*/, void* /*params*/) {
+// this observer runs, so coast streams its actual host trajectory. Both the hit actor and the
+// contacting 'Other' actor are evaluated, capturing knock chains even if only one has hit events.
+void OnActorReceiveHitPost(void* actor, void* /*function*/, void* params) {
     auto* session = g_session.load(std::memory_order_acquire);
     if (!session || !session->connected() || session->role() != coop::net::Role::Host) return;
-    if (!ue_wrap::game_thread::IsGameThread() || !PR::IsDescendantOfProp(actor)) return;
-    Coast(actor, "physics impact");
+    if (!ue_wrap::game_thread::IsGameThread()) return;
+
+    if (actor && (PR::IsDescendantOfProp(actor) || PR::IsKeyedInteractable(actor))) {
+        Coast(actor, "physics impact");
+    }
+    if (params && g_offReceiveHitOther >= 0) {
+        void* other = *reinterpret_cast<void* const*>(static_cast<const uint8_t*>(params) + g_offReceiveHitOther);
+        if (other && R::IsLive(other) && (PR::IsDescendantOfProp(other) || PR::IsKeyedInteractable(other))) {
+            Coast(other, "chain impact");
+        }
+    }
 }
 
 void InstallImpactObserver() {
@@ -102,12 +113,14 @@ void InstallImpactObserver() {
     void* actorClass = R::FindClass(P::name::ActorClass);
     void* receiveHit = actorClass ? R::FindFunction(actorClass, P::name::ActorReceiveHitFn) : nullptr;
     if (!receiveHit) return;  // classes can still be loading; retry on a later host tick
+    g_offReceiveHitOther = R::FindParamOffset(receiveHit, L"Other");
     if (!ue_wrap::game_thread::RegisterPostObserver(receiveHit, &OnActorReceiveHitPost)) {
         UE_LOGE("[PROP-DRIVE] HOST ReceiveHit observer registration failed -- chain impacts remain unstreamed");
         return;
     }
     g_impactObserverInstalled = true;
-    UE_LOGI("[PROP-DRIVE] HOST observing AActor.ReceiveHit for chain-impact coast handoff");
+    UE_LOGI("[PROP-DRIVE] HOST observing AActor.ReceiveHit (Other offset=%d) for chain-impact coast handoff",
+            g_offReceiveHitOther);
 }
 
 // A prop in a hand: this player's grab slot, a peer's held-prop stream, or the hotbar hand axis
