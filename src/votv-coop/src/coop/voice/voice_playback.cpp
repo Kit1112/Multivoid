@@ -309,8 +309,21 @@ void Playback::DeliverInOrder(Channel& ch, const coop::net::VoiceFramePayload& f
     }
     if (ch.lastSeq >= 0) {
         const int64_t gap = seq - (ch.lastSeq + 1);
-        if (gap > 0 && gap <= kMaxPlcFrames) {
-            // Opus PLC for the missing frames.
+        if (gap == 1) {
+            // The encoder carries one-frame in-band FEC. Recover the immediately preceding
+            // frame from this packet before decoding its normal audio; PLC remains the fallback
+            // if the redundancy is absent or cannot be decoded.
+            int16_t recovered[kFrameSamples];
+            const int n = opus_decode(static_cast<OpusDecoder*>(ch.decoder), f.opus, f.opusLen,
+                                      recovered, kFrameSamples, /*decode_fec=*/1);
+            if (n > 0) PushPcm(ch, recovered, n);
+            else {
+                const int plcN = opus_decode(static_cast<OpusDecoder*>(ch.decoder), nullptr, 0,
+                                              recovered, kFrameSamples, 0);
+                if (plcN > 0) PushPcm(ch, recovered, plcN);
+            }
+        } else if (gap > 1 && gap <= kMaxPlcFrames) {
+            // Opus PLC covers bursts longer than FEC's one preceding frame.
             int16_t plc[kFrameSamples];
             for (int64_t i = 0; i < gap; ++i) {
                 const int n = opus_decode(static_cast<OpusDecoder*>(ch.decoder), nullptr, 0,
