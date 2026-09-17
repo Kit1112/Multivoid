@@ -87,6 +87,8 @@ Driven* Find(void* actor) {
 }
 
 int32_t g_offReceiveHitOther = -1;
+int32_t g_offReceiveOverlapOther = -1;
+bool    g_overlapObserverInstalled = false;
 
 // ReceiveHit is emitted after UE has resolved a blocking physics contact. This is the missing
 // verb for a prop a moving prop knocks: the impacted prop has already received its impulse when
@@ -108,19 +110,94 @@ void OnActorReceiveHitPost(void* actor, void* /*function*/, void* params) {
     }
 }
 
-void InstallImpactObserver() {
-    if (g_impactObserverInstalled) return;
-    void* actorClass = R::FindClass(P::name::ActorClass);
-    void* receiveHit = actorClass ? R::FindFunction(actorClass, P::name::ActorReceiveHitFn) : nullptr;
-    if (!receiveHit) return;  // classes can still be loading; retry on a later host tick
-    g_offReceiveHitOther = R::FindParamOffset(receiveHit, L"Other");
-    if (!ue_wrap::game_thread::RegisterPostObserver(receiveHit, &OnActorReceiveHitPost)) {
-        UE_LOGE("[PROP-DRIVE] HOST ReceiveHit observer registration failed -- chain impacts remain unstreamed");
-        return;
+// ReceiveActorBeginOverlap is emitted when any actor (player capsule, puppet, vehicle) overlaps
+// with another actor. Captures body bumps/walk-throughs where blocking hit events did not fire.
+void OnActorReceiveBeginOverlapPost(void* actor, void* /*function*/, void* params) {
+    auto* session = g_session.load(std::memory_order_acquire);
+    if (!session || !session->connected() || session->role() != coop::net::Role::Host) return;
+    if (!ue_wrap::game_thread::IsGameThread()) return;
+
+    if (actor && (PR::IsDescendantOfProp(actor) || PR::IsKeyedInteractable(actor))) {
+        Coast(actor, "actor overlap");
     }
-    g_impactObserverInstalled = true;
-    UE_LOGI("[PROP-DRIVE] HOST observing AActor.ReceiveHit (Other offset=%d) for chain-impact coast handoff",
-            g_offReceiveHitOther);
+    if (params && g_offReceiveOverlapOther >= 0) {
+        void* other = *reinterpret_cast<void* const*>(static_cast<const uint8_t*>(params) + g_offReceiveOverlapOther);
+        if (other && R::IsLive(other) && (PR::IsDescendantOfProp(other) || PR::IsKeyedInteractable(other))) {
+            Coast(other, "actor overlap other");
+        }
+    }
+}
+
+void InstallImpactObserver() {
+    void* actorClass = R::FindClass(P::name::ActorClass);
+    if (!actorClass) return;
+
+    if (!g_impactObserverInstalled) {
+        void* receiveHit = R::FindFunction(actorClass, P::name::ActorReceiveHitFn);
+        if (receiveHit) {
+            g_offReceiveHitOther = R::FindParamOffset(receiveHit, L"Other");
+            if (ue_wrap::game_thread::RegisterPostObserver(receiveHit, &OnActorReceiveHitPost)) {
+                g_impactObserverInstalled = true;
+                UE_LOGI("[PROP-DRIVE] HOST observing AActor.ReceiveHit (Other offset=%d) for chain-impact coast handoff",
+                        g_offReceiveHitOther);
+            }
+        }
+    }
+
+    if (!g_overlapObserverInstalled) {
+        void* receiveOverlap = R::FindFunction(actorClass, L"ReceiveActorBeginOverlap");
+        if (receiveOverlap) {
+            g_offReceiveOverlapOther = R::FindParamOffset(receiveOverlap, L"OtherActor");
+            if (ue_wrap::game_thread::RegisterPostObserver(receiveOverlap, &OnActorReceiveBeginOverlapPost)) {
+                g_overlapObserverInstalled = true;
+                UE_LOGI("[PROP-DRIVE] HOST observing AActor.ReceiveActorBeginOverlap (Other offset=%d) for body knock/overlap coast",
+                        g_offReceiveOverlapOther);
+            }
+        }
+    }
+}
+
+// Scans a sliced budget of tracked world props on the host to catch any props moving from physics
+// (player capsule pushes, depenetration impulses, rolls, falls) that are not yet enrolled in g_driven.
+void ScanAwakeProps() {
+    static std::vector<coop::prop_element_tracker::KeyIndexEntry> s_entries;
+    static uint64_t s_lastRefreshMs = 0;
+    static size_t s_cursor = 0;
+
+    const uint64_t nowMs = coop::active_drive::NowMs();
+    if (s_entries.empty() || (nowMs - s_lastRefreshMs >= 1500)) {
+        s_entries.clear();
+        coop::prop_element_tracker::CollectKeyIndexEntries(s_entries);
+        s_lastRefreshMs = nowMs;
+        if (s_entries.empty()) return;
+    }
+
+    const size_t n = s_entries.size();
+    const size_t batchSize = std::min<size_t>(96, n);
+    for (size_t i = 0; i < batchSize; ++i) {
+        s_cursor = (s_cursor + 1) % n;
+        const auto& entry = s_entries[s_cursor];
+        void* actor = entry.actor;
+        if (!actor || !R::IsLiveByIndex(actor, entry.internalIdx)) continue;
+        if (Find(actor) || HeldBySomeone(actor)) continue;
+        if (!PR::IsDescendantOfProp(actor)) continue;
+
+        const PR::VelocityState v = PR::GetPhysicsVelocity(actor);
+        if (!v.ok) continue;
+
+        const float speedSq = v.linearCmS.X * v.linearCmS.X +
+                              v.linearCmS.Y * v.linearCmS.Y +
+                              v.linearCmS.Z * v.linearCmS.Z;
+        const float angSpeedSq = v.angularDegS.X * v.angularDegS.X +
+                                 v.angularDegS.Y * v.angularDegS.Y +
+                                 v.angularDegS.Z * v.angularDegS.Z;
+
+        // Linear speed >= 12 cm/s or angular speed >= 12 deg/s indicates active physics motion.
+        constexpr float kActiveVelSq = 12.0f * 12.0f;
+        if (speedSq >= kActiveVelSq || angSpeedSq >= kActiveVelSq) {
+            Coast(actor, "host physics wake / motion scan");
+        }
+    }
 }
 
 // A prop in a hand: this player's grab slot, a peer's held-prop stream, or the hotbar hand axis
@@ -282,6 +359,7 @@ void Tick(coop::net::Session& s) {
     UE_ASSERT_GAME_THREAD("prop_drive_host::Tick");
     g_session.store(&s, std::memory_order_release);
     InstallImpactObserver();
+    ScanAwakeProps();
     if (g_driven.empty()) return;
     const uint64_t now = coop::active_drive::NowMs();
     static uint32_t sPublished = 0;
