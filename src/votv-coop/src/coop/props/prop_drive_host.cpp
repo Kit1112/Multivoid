@@ -87,6 +87,13 @@ struct SettledWatch {
     uint64_t              expiresMs = 0;
 };
 std::vector<SettledWatch> g_settled; // recently ended host bodies, game thread only
+struct LocalHeldMotion {
+    ue_wrap::CachedObjRef ref;
+    ue_wrap::FVector      velocity{};
+    ue_wrap::FVector      lastLoc{};
+    uint64_t              lastMs = 0;
+};
+LocalHeldMotion g_localHeldMotion; // sampled while held, for client-only kinematic contacts
 size_t              g_turn = 0; // where the next tick's publishing starts, so no prop waits forever
 std::atomic<coop::net::Session*> g_session{nullptr};
 bool g_impactObserverInstalled = false;
@@ -107,6 +114,36 @@ bool    g_overlapObserverInstalled = false;
 
 bool HeldBySomeone(void* actor);
 
+void SampleLocalHeldMotion() {
+    void* held = coop::local_streams::LastHeldActor();
+    if (!held || !R::IsLive(held)) {
+        g_localHeldMotion.ref.Reset();
+        g_localHeldMotion.velocity = {};
+        g_localHeldMotion.lastMs = 0;
+        return;
+    }
+    const uint64_t now = coop::active_drive::NowMs();
+    const ue_wrap::FVector loc = E::GetActorLocation(held);
+    if (g_localHeldMotion.ref.Raw() == held && g_localHeldMotion.lastMs != 0) {
+        const uint64_t elapsed = now - g_localHeldMotion.lastMs;
+        // A long pause is not motion: retain no stale direction after a load or frame hitch.
+        if (elapsed > 0 && elapsed <= 250) {
+            const float scale = 1000.0f / static_cast<float>(elapsed);
+            g_localHeldMotion.velocity = ue_wrap::FVector{
+                (loc.X - g_localHeldMotion.lastLoc.X) * scale,
+                (loc.Y - g_localHeldMotion.lastLoc.Y) * scale,
+                (loc.Z - g_localHeldMotion.lastLoc.Z) * scale};
+        } else {
+            g_localHeldMotion.velocity = {};
+        }
+    } else {
+        g_localHeldMotion.ref.Set(held);
+        g_localHeldMotion.velocity = {};
+    }
+    g_localHeldMotion.lastLoc = loc;
+    g_localHeldMotion.lastMs = now;
+}
+
 void SendClientNudge(coop::net::Session& session, void* actor, void* other) {
     void* local = coop::players::Registry::Get().Local();
     if (!local || !R::IsLive(local)) return;
@@ -124,11 +161,15 @@ void SendClientNudge(coop::net::Session& session, void* actor, void* other) {
     // leave it at zero, so then use the held item's velocity, followed by the player capsule.
     ue_wrap::FVector v = E::GetActorVelocity(prop);
     float flat = std::sqrt(v.X * v.X + v.Y * v.Y);
-    if (flat < 30.f && held && R::IsLive(held)) {
+    if ((!std::isfinite(flat) || flat < 30.f) && held && R::IsLive(held)) {
         v = E::GetActorVelocity(held);
         flat = std::sqrt(v.X * v.X + v.Y * v.Y);
     }
-    if (flat < 30.f) {
+    if ((!std::isfinite(flat) || flat < 30.f) && g_localHeldMotion.ref.Raw() == held) {
+        v = g_localHeldMotion.velocity;
+        flat = std::sqrt(v.X * v.X + v.Y * v.Y);
+    }
+    if (!std::isfinite(flat) || flat < 30.f) {
         v = E::GetActorVelocity(local);
         flat = std::sqrt(v.X * v.X + v.Y * v.Y);
     }
@@ -503,6 +544,7 @@ void Tick(coop::net::Session& s) {
     UE_ASSERT_GAME_THREAD("prop_drive_host::Tick");
     g_session.store(&s, std::memory_order_release);
     InstallImpactObserver();
+    SampleLocalHeldMotion();
     if (s.role() != coop::net::Role::Host) return;
     ScanAwakeProps();
     SweepSettled(coop::active_drive::NowMs());
@@ -591,6 +633,9 @@ void OnDisconnect() {
     g_session.store(nullptr, std::memory_order_release);
     g_driven.clear();
     g_settled.clear();
+    g_localHeldMotion.ref.Reset();
+    g_localHeldMotion.velocity = {};
+    g_localHeldMotion.lastMs = 0;
     g_turn = 0;
     g_genByEid.clear();
 }
