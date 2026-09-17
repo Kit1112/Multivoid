@@ -519,11 +519,15 @@ void Playback::MixOutput(float* out, uint32_t frameCount) {
         ch.ringRead.store(read + take, std::memory_order_release);
     }
 
-    // Soft clip.
+    // Smoothly limit overlapping voices and their room tails. Hard clipping makes a second
+    // speaker sound like digital crackle; this curve is unity below roughly -2 dBFS and eases
+    // overloads into the legal [-1, 1] output range.
     const uint32_t n = 2 * frameCount;
     for (uint32_t i = 0; i < n; ++i) {
-        if (out[i] > 1.0f) out[i] = 1.0f;
-        else if (out[i] < -1.0f) out[i] = -1.0f;
+        const float sign = out[i] < 0.0f ? -1.0f : 1.0f;
+        const float magnitude = std::fabs(out[i]);
+        if (magnitude > 0.8f)
+            out[i] = sign * (0.8f + 0.2f * std::tanh((magnitude - 0.8f) * 5.0f));
     }
 }
 
