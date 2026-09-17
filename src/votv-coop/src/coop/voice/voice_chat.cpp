@@ -238,8 +238,9 @@ void Tick() {
     // Listener and speaker positions for the spatial mixer, throttled to about 20 Hz: the block
     // costs two reflected dispatches plus a head read per other peer, and position freshness
     // under 50 ms is inaudible in the attenuation and pan maths, when the frames themselves
-    // arrive every 20 ms. The mixer interpolates nothing; it reads the latest atomics.
+    // arrive every 20 ms. The mixer smoothly approaches the latest atomics.
     static Clock::time_point s_lastPosAt{};
+    static Clock::time_point s_lastRoomProbeAt{};
     const auto now = Clock::now();
     if (now - s_lastPosAt >= std::chrono::milliseconds(50)) {
         s_lastPosAt = now;
@@ -253,8 +254,35 @@ void Tick() {
             listenerValid = true;
             const ue_wrap::FRotator r = ue_wrap::engine::GetActorRotation(local);
             g_playback.SetListener(listenerPos.X, listenerPos.Y, listenerPos.Z, r.Yaw);
+            if (now - s_lastRoomProbeAt >= std::chrono::milliseconds(250)) {
+                s_lastRoomProbeAt = now;
+                // Probe only around and above the listener: the floor would always count as a
+                // hit and would falsely make fields and exterior walkways sound like rooms.
+                ue_wrap::FVector origin = listenerPos;
+                origin.Z += 120.0f;
+                const ue_wrap::FVector probeEnd[5] = {
+                    {origin.X + 800.0f, origin.Y, origin.Z},
+                    {origin.X - 800.0f, origin.Y, origin.Z},
+                    {origin.X, origin.Y + 800.0f, origin.Z},
+                    {origin.X, origin.Y - 800.0f, origin.Z},
+                    {origin.X, origin.Y, origin.Z + 500.0f},
+                };
+                int traced = 0;
+                int blocked = 0;
+                for (const ue_wrap::FVector& end : probeEnd) {
+                    const int result = ue_wrap::trace::LineBlockedStatDyn(local, origin, end);
+                    if (result >= 0) {
+                        ++traced;
+                        if (result == 1) ++blocked;
+                    }
+                }
+                g_playback.SetRoomEnclosure(traced > 0 ?
+                    static_cast<float>(blocked) / static_cast<float>(traced) : 0.0f);
+            }
             if (g_loopback && localSlot != coop::players::kPeerIdUnknown)
                 g_playback.SetSpeaker(localSlot, listenerPos.X, listenerPos.Y, listenerPos.Z, true);
+        } else {
+            g_playback.SetRoomEnclosure(0.0f);
         }
         // Speakers = the peer puppets' heads.
         for (int slot = 0; slot < coop::net::kMaxPeers; ++slot) {

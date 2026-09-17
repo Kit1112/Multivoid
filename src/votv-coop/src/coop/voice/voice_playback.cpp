@@ -167,6 +167,12 @@ void Playback::SetListener(float x, float y, float z, float yawDeg) {
     listenerYaw_.store(yawDeg, std::memory_order_relaxed);
 }
 
+void Playback::SetRoomEnclosure(float enclosure) {
+    if (enclosure < 0.0f) enclosure = 0.0f;
+    if (enclosure > 1.0f) enclosure = 1.0f;
+    roomEnclosure_.store(enclosure, std::memory_order_relaxed);
+}
+
 void Playback::SetSpeaker(int slot, float x, float y, float z, bool valid, float occlusion,
                           float forwardX, float forwardY, float forwardZ) {
     if (slot < 0 || slot >= coop::players::kMaxPeers) return;
@@ -431,6 +437,7 @@ void Playback::MixOutput(float* out, uint32_t frameCount) {
         const float gainStepL = (targetL - ch.mixedGainL) / static_cast<float>(mixSamples);
         const float gainStepR = (targetR - ch.mixedGainR) / static_cast<float>(mixSamples);
         const float obstruction = ch.occlusion.load(std::memory_order_relaxed);
+        const float roomEnclosure = roomEnclosure_.load(std::memory_order_relaxed);
         // 0.92 is effectively transparent; a closed wall leaves a slow ~1 kHz speech contour.
         const float lowpassAlpha = 0.92f - obstruction * 0.80f;
         for (uint32_t i = 0; i < mixSamples; ++i) {
@@ -449,12 +456,15 @@ void Playback::MixOutput(float* out, uint32_t frameCount) {
                                                Channel::kReflectionSamples]; // 140 ms
             const float late = ch.reflection[(w + Channel::kReflectionSamples - 10560) %
                                              Channel::kReflectionSamples];   // 220 ms
-            // Clear speech receives a modest room impression; obstructed speech gets more
-            // reflected energy, which preserves location while the direct path is muffled.
-            const float reflectionMix = 0.45f + obstruction * 0.55f;
+            // Open air is nearly dry. A room adds a denser return, while an obstructed direct
+            // path promotes that return so speech stays located at a doorway or wall.
+            const float roomMix = 0.20f + roomEnclosure * 0.60f;
+            const float reflectionMix = roomMix * (0.65f + obstruction * 0.35f);
             const float wet = (near * 0.11f + early * 0.14f + middle * 0.10f + late * 0.08f) *
                 reflectionMix;
-            ch.reflection[w] = dry + near * 0.16f + early * 0.13f + middle * 0.10f + late * 0.12f;
+            const float decay = 0.55f + roomEnclosure * 0.45f;
+            ch.reflection[w] = dry + near * (0.16f * decay) + early * (0.13f * decay) +
+                middle * (0.10f * decay) + late * (0.12f * decay);
             ch.reflectionWrite = (w + 1) % Channel::kReflectionSamples;
             out[2 * i + 0] += (dry + wet) * ch.mixedGainL;
             out[2 * i + 1] += (dry + wet) * ch.mixedGainR;

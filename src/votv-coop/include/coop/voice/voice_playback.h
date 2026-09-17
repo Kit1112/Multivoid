@@ -48,6 +48,9 @@ public:
 
     // Game thread: position snapshots for the mixer (atomics).
     void SetListener(float x, float y, float z, float yawDeg);
+    // 0 = exposed space; 1 = surfaces close on most horizontal/upward room probes. This is a
+    // listener-side acoustic profile, independent of the direct path to each speaker.
+    void SetRoomEnclosure(float enclosure);
     // `occlusion` is the 0..1 obstruction fraction sampled on the game thread by UE traces.
     // `forward*` is the speaking puppet's aim direction. The callback reads only published
     // values, never engine geometry.
@@ -120,6 +123,7 @@ private:
     Channel channels_[coop::players::kMaxPeers];
 
     std::atomic<float> listenerX_{0}, listenerY_{0}, listenerZ_{0}, listenerYaw_{0};
+    std::atomic<float> roomEnclosure_{0.0f};
     std::atomic<float> masterVolume_{1.0f};
     float distanceCm_ = 2400.0f;
     int jitterThreshold_ = 3;
