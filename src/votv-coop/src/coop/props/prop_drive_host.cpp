@@ -125,7 +125,7 @@ void SampleLocalHeldMotion() {
     }
     const uint64_t now = coop::active_drive::NowMs();
     const ue_wrap::FVector loc = E::GetActorLocation(held);
-    if (g_localHeldMotion.ref.Raw() == held && g_localHeldMotion.lastMs != 0) {
+    if (g_localHeldMotion.ref.Get() == held && g_localHeldMotion.lastMs != 0) {
         const uint64_t elapsed = now - g_localHeldMotion.lastMs;
         // A long pause is not motion: retain no stale direction after a load or frame hitch.
         if (elapsed > 0 && elapsed <= 250) {
@@ -166,7 +166,7 @@ void SendClientNudge(coop::net::Session& session, void* actor, void* other) {
         v = E::GetActorVelocity(held);
         flat = std::sqrt(v.X * v.X + v.Y * v.Y);
     }
-    if ((!std::isfinite(flat) || flat < 30.f) && g_localHeldMotion.ref.Raw() == held) {
+    if ((!std::isfinite(flat) || flat < 30.f) && g_localHeldMotion.ref.Get() == held) {
         v = g_localHeldMotion.velocity;
         flat = std::sqrt(v.X * v.X + v.Y * v.Y);
     }
