@@ -385,8 +385,13 @@ void Tick() {
             const std::wstring propKey = ue_wrap::prop::GetInteractableKeyString(targetProp);
             if (!propKey.empty() && propKey != L"None") {
                 coop::prop_save_data::Publish(s, targetProp, propKey);
-                GT::Post([s, targetProp, propKey]() {
-                    if (s && s->connected() && R::IsLive(targetProp) && coop::prop_save_data::Covers(targetProp)) {
+                const int32_t targetIdx = R::InternalIndexOf(targetProp);
+                GT::Post([s, targetProp, targetIdx, propKey]() {
+                    // A raw UObject address can be recycled before this next game-thread turn.
+                    // Pair it with its captured object-array slot before publishing a second copy.
+                    if (s && s->connected() && targetIdx >= 0 &&
+                        R::IsLiveByIndex(targetProp, targetIdx) &&
+                        coop::prop_save_data::Covers(targetProp)) {
                         coop::prop_save_data::Publish(s, targetProp, propKey);
                     }
                 });
