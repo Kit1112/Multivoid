@@ -30,7 +30,7 @@ inline constexpr uint32_t kMagic = 0x564D5450u;
 // This file is past the 1500-line hard cap and stays there: it is the single-feature exception the
 // rule names. One wire format, whose enum, payload structs and static_asserts are read together;
 // splitting it would put a kind's number in one file and its bytes in another.
-inline constexpr uint16_t kProtocolVersion = 162;
+inline constexpr uint16_t kProtocolVersion = 163;
 
 // Default LAN port (overridable via multivoid.ini "net.port=").
 inline constexpr uint16_t kDefaultPort = 47621;
@@ -1104,8 +1104,11 @@ struct PropReleasePayload {
     uint32_t elementId;
     // The trash entity's generation; a release older than the eid's known generation is dropped.
     uint8_t ctx;
-    uint8_t _pad[3];
-    // Placement transform at release: authoritative final held pose
+    // Bit 0 says the final held pose is present. A separate bit is required because (0,0,0) is a
+    // valid world position and cannot be used as an "absent" sentinel.
+    uint8_t flags;
+    uint8_t _pad[2];
+    // Placement transform at release: authoritative final held pose when kPropReleaseHasPose is set.
     float   locX;
     float   locY;
     float   locZ;
@@ -1114,6 +1117,7 @@ struct PropReleasePayload {
     float   rotRoll;
 };
 static_assert(sizeof(PropReleasePayload) == 88, "PropReleasePayload must be 88 bytes");
+inline constexpr uint8_t kPropReleaseHasPose = 1u << 0;
 // Every reliable payload carries this guard: a payload past one datagram's budget would be
 // refused at send time, so catch it at compile time.
 static_assert(sizeof(PropReleasePayload) <= 256 - 20 - 8,

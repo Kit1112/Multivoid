@@ -511,7 +511,9 @@ void Tick(coop::net::Session& session, void* local, void* controller) {
                     vel.angularDegS.X, vel.angularDegS.Y, vel.angularDegS.Z);
             ue_wrap::FVector finalLoc{};
             ue_wrap::FRotator finalRot{};
-            if (void* released = g_lastHeldProp.Raw()) {
+            releasedActor = g_lastHeldProp.Get();
+            if (releasedActor) {
+                void* released = releasedActor;
                 finalLoc = ue_wrap::engine::GetActorLocation(released);
                 finalRot = ue_wrap::engine::GetActorRotation(released);
             }
@@ -521,8 +523,8 @@ void Tick(coop::net::Session& session, void* local, void* controller) {
                                     finalLoc.X, finalLoc.Y, finalLoc.Z,
                                     ue_wrap::NormalizeAxis(finalRot.Pitch),
                                     ue_wrap::NormalizeAxis(finalRot.Yaw),
-                                    ue_wrap::NormalizeAxis(finalRot.Roll));
-            releasedActor = g_lastHeldProp.Get();
+                                    ue_wrap::NormalizeAxis(finalRot.Roll),
+                                    /*hasFinalPose=*/releasedActor != nullptr);
             hostThrown = session.role() == coop::net::Role::Host &&
                 linMagSq > (coop::net::kThrownLinVelThreshold * coop::net::kThrownLinVelThreshold);
         }

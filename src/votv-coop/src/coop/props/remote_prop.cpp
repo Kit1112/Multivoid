@@ -385,9 +385,9 @@ void OnRelease(int senderSlot, const coop::net::PropReleasePayload& payload, voi
             }
         }
     }
-    // If the release payload provides an authoritative release transform, apply it to the prop
-    // before re-enabling physics, so placement rotation and position match the sender exactly.
-    if (propActor && (payload.locX != 0.f || payload.locY != 0.f || payload.locZ != 0.f)) {
+    // Apply the explicitly present release pose before physics comes back. World origin is valid,
+    // so the wire flag, rather than a coordinate sentinel, controls this path.
+    if (propActor && (payload.flags & coop::net::kPropReleaseHasPose) != 0) {
         ue_wrap::engine::SetActorLocation(propActor, ue_wrap::FVector{payload.locX, payload.locY, payload.locZ});
         ue_wrap::engine::SetActorRotation(propActor, ue_wrap::FRotator{payload.rotPitch, payload.rotYaw, payload.rotRoll});
     }

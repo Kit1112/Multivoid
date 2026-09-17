@@ -312,7 +312,8 @@ public:
                          uint32_t elementId = 0,  // trash-entity eid (0 = a keyed Aprop, routed by key)
                          uint8_t ctx = 0,         // trash-entity sync-time context (0 = not trash, no enforcement)
                          float locX = 0.f, float locY = 0.f, float locZ = 0.f,
-                         float rotPitch = 0.f, float rotYaw = 0.f, float rotRoll = 0.f);
+                         float rotPitch = 0.f, float rotYaw = 0.f, float rotRoll = 0.f,
+                         bool hasFinalPose = false);
     bool SendPropSpawn(const PropSpawnPayload& payload);
     bool SendPropDestroy(const PropDestroyPayload& payload);
     bool SendEntitySpawn(const EntitySpawnPayload& payload);
