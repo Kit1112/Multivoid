@@ -110,12 +110,28 @@ bool HeldBySomeone(void* actor);
 void SendClientNudge(coop::net::Session& session, void* actor, void* other) {
     void* local = coop::players::Registry::Get().Local();
     if (!local || !R::IsLive(local)) return;
+    // A local capsule can push a prop, and so can the prop currently moved in that player's hand.
+    // The latter is normally kinematic on the host, so its contact exists only in the client's
+    // physics scene unless we forward this bounded intent.
+    void* held = coop::local_streams::LastHeldActor();
     void* prop = actor == local ? other : other == local ? actor : nullptr;
+    if (!prop && held && R::IsLive(held))
+        prop = actor == held ? other : other == held ? actor : nullptr;
     if (!prop || !R::IsLive(prop) || !PR::IsDescendantOfProp(prop)) return;
     const auto eid = coop::prop_element_tracker::GetPropElementIdForActor(prop);
     if (eid == coop::element::kInvalidId || eid == 0u) return;
-    const ue_wrap::FVector v = E::GetActorVelocity(local);
-    const float flat = std::sqrt(v.X * v.X + v.Y * v.Y);
+    // The struck body's post-contact velocity is the best direction. A kinematic hand move may
+    // leave it at zero, so then use the held item's velocity, followed by the player capsule.
+    ue_wrap::FVector v = E::GetActorVelocity(prop);
+    float flat = std::sqrt(v.X * v.X + v.Y * v.Y);
+    if (flat < 30.f && held && R::IsLive(held)) {
+        v = E::GetActorVelocity(held);
+        flat = std::sqrt(v.X * v.X + v.Y * v.Y);
+    }
+    if (flat < 30.f) {
+        v = E::GetActorVelocity(local);
+        flat = std::sqrt(v.X * v.X + v.Y * v.Y);
+    }
     if (!std::isfinite(flat) || flat < 30.f) return;
     static std::unordered_map<uint32_t, uint64_t> s_lastNudge;
     const uint64_t now = coop::active_drive::NowMs();
