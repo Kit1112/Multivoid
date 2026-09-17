@@ -55,7 +55,6 @@ std::unordered_map<std::wstring, uint8_t> g_busy;
 // refused), retried each tick and cleared by the falling edge so a stale claim never ships
 // after exit.
 void* g_localWidget = nullptr;
-    g_activeInterfaceProp = nullptr;
 void* g_activeInterfaceProp = nullptr;
 std::wstring g_localKey;
 bool g_pendingSend = false;

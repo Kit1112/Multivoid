@@ -73,6 +73,13 @@ void Refresh();
 // Copy the latest snapshot. Safe from ANY thread (the render thread reads it).
 void GetSnapshot(Snapshot& out);
 
+// Value-returning wrapper for GetSnapshot. Safe from ANY thread.
+inline Snapshot TakeSnapshot() {
+    Snapshot s{};
+    GetSnapshot(s);
+    return s;
+}
+
 // Lock-free read of just "is the local peer the host?" -- the overlay checks this
 // on a hot path (the SetCursorPos detour) to decide capture, so it must not copy
 // the whole snapshot under the mutex. Updated by Refresh. Any thread.

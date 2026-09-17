@@ -233,7 +233,8 @@ void* HostSpawnPlacedProp(const coop::net::PropDropIntentPayload& p, const std::
     }
     // Coast the newly spawned placed prop while it settles under physics on the host,
     // so resting pose and rotation converge identically across all peers.
-    if (actor && (p.physFlags & (pf::kStatic | pf::kFrozen | pf::kSleep)) == 0) {
+    namespace psf = coop::net::propspawn_flags;
+    if (actor && (p.physFlags & (psf::kStatic | psf::kFrozen | psf::kSleep)) == 0) {
         coop::prop_drive_host::Coast(actor, "client placed spawn");
     }
     // The prop's own save record, if the author's copy is already here. It usually is not -- it
