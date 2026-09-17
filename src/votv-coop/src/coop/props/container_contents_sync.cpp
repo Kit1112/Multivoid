@@ -23,6 +23,7 @@
 #include "ue_wrap/core/reflection.h"
 #include "ue_wrap/core/script_gate.h"
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <cstdint>
@@ -54,6 +55,8 @@ constexpr int kVerbTakeObj = 2;   // takeObj
 // The sweep drains an edge-driven set, not a poll; 250 ms coalesces a burst (a loot roll fires
 // addObject four times) into one broadcast.
 constexpr uint64_t kSweepMs = 250;
+constexpr uint64_t kAuditRefreshMs = 2000;
+constexpr size_t kAuditBatch = 12;
 
 std::atomic<coop::net::Session*> g_session{nullptr};
 
@@ -69,6 +72,14 @@ coop::blob_chunks::Assembler g_asm;
 // than the component pointer: IsLive cannot detect an address recycled by a new object between the
 // edge and the drain, and an eid re-resolves forward, so a destroyed container stops resolving.
 std::set<uint32_t> g_dirty;
+
+// A bounded safety net for game paths that mutate a propInventory without entering addObject or
+// takeObj (notably some spawned and device-owned containers). The ordinary verb edge remains the
+// immediate path; this only rechecks a small rotating slice and the content hash still suppresses
+// unchanged traffic.
+std::vector<coop::element::Registry::ActorIdPair> g_auditEntries;
+size_t g_auditCursor = 0;
+uint64_t g_nextAuditRefresh = 0;
 
 // The hash of the last blob sent and of the last applied, per eid. Skipping an unchanged blob is
 // what bounds the orphaned-buffer cost: a steady-state re-broadcast applies and allocates nothing.
@@ -364,6 +375,30 @@ void DrainDirty(coop::net::Session* s) {
     }
 }
 
+void AuditContainers() {
+    const uint64_t now = NowMs();
+    if (g_auditEntries.empty() || now >= g_nextAuditRefresh) {
+        coop::element::Registry::Get().SnapshotActorsByType(coop::element::ElementType::Prop,
+                                                              g_auditEntries);
+        if (!g_auditEntries.empty()) g_auditCursor %= g_auditEntries.size();
+        g_nextAuditRefresh = now + kAuditRefreshMs;
+    }
+    if (g_auditEntries.empty()) return;
+    const size_t count = (std::min)(kAuditBatch, g_auditEntries.size());
+    for (size_t i = 0; i < count; ++i) {
+        const auto& entry = g_auditEntries[g_auditCursor++ % g_auditEntries.size()];
+        if (!entry.actor || !R::IsLiveByIndex(entry.actor, entry.internalIdx) ||
+            !IsContainerActor(entry.actor)) continue;
+        void* inv = InventoryOf(entry.actor);
+        if (!inv || !IsWorldContainerInventory(inv)) continue;
+        // Before the host has seeded this eid a client has no CAS base. Checking it now would turn
+        // an ordinary join race into a base-zero write that the host must refuse; its verb edge
+        // still handles an actual player action once the seed lands.
+        if (!IsHost() && g_baseHash.find(static_cast<uint32_t>(entry.id)) == g_baseHash.end()) continue;
+        g_dirty.insert(static_cast<uint32_t>(entry.id));
+    }
+}
+
 // The apply.
 
 // The setter-managed state (currVol, Mass, the display names) is re-derived through the engine's
@@ -460,6 +495,10 @@ Ingest ApplyContents(uint32_t eid, const std::vector<SR::SaveRecord>& recs, uint
     SR::WriteArrHeader(slot, 0, buf, n);
 
     g_appliedHash[eid] = blobHash;
+    // The applied host truth is also what a later fallback pass should compare against. Without
+    // this, a client that received another peer's edit would immediately send that same slice back
+    // to the host despite having made no local change.
+    g_sentHash[eid] = blobHash;
     // The base a later local edit declares; never cleared by our own verb edge.
     if (!IsHost()) g_baseHash[eid] = blobHash;
     RederiveManagedState(OwnerOf(inv), inv);
@@ -653,6 +692,7 @@ void Tick() {
     // the host, which arbitrates and relays. Both sweep their parked inbound blobs -- the host's
     // were never swept at all, so a client write it could not resolve on arrival was neither
     // retried nor evicted for the life of the session.
+    AuditContainers();
     DrainDirty(s);
     pk::Sweep(&ReplayParked, NowMs());
 }
@@ -752,6 +792,9 @@ void OnDisconnect() {
     g_appliedHash.clear();
     g_asm.Clear();
     g_nextSweep = 0;
+    g_nextAuditRefresh = 0;
+    g_auditCursor = 0;
+    g_auditEntries.clear();
     g_announced = false;
     g_verbEntered = false;
 }
