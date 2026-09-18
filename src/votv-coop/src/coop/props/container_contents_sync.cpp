@@ -126,7 +126,9 @@ int32_t g_offInvPlayer = -2;  // propInventory_C.Player  -- the world-vs-PERSONA
 int32_t g_offInvOwner  = -2;  // propInventory_C.Owner   -- the Aprop_container_C
 int32_t g_offGObjStack = -2;  // saveSlot_C.GObjStack
 int32_t g_offPropInv   = -2;  // prop_container_C.propInventory
+int32_t g_offDronePropInv = -2;  // prop_inventoryContainer_drone_C.propInventory
 void* g_containerCls = nullptr;
+void* g_droneContainerCls = nullptr;
 
 // The two re-derive verbs, resolved once from the class that declares each, never the instance's
 // class (see ResolveRederiveFns).
@@ -144,6 +146,8 @@ int32_t CachedOffset(int32_t& slot, void* cls, const wchar_t* name) {
     return slot;
 }
 
+void* DroneContainerClass();
+
 template <class T> T ReadAt(const void* base, int32_t off) {
     T v{};
     std::memcpy(&v, reinterpret_cast<const uint8_t*>(base) + off, sizeof(T));
@@ -153,8 +157,12 @@ template <class T> T ReadAt(const void* base, int32_t off) {
 // The propInventory component of a container actor, or null.
 void* InventoryOf(void* containerActor) {
     if (!containerActor) return nullptr;
-    if (CachedOffset(g_offPropInv, R::ClassOf(containerActor), L"propInventory") < 0) return nullptr;
-    void* inv = ReadAt<void*>(containerActor, g_offPropInv);
+    void* cls = R::ClassOf(containerActor);
+    const bool droneCargo = DroneContainerClass() &&
+                            ue_wrap::prop::WalksToBase(cls, DroneContainerClass());
+    int32_t& off = droneCargo ? g_offDronePropInv : g_offPropInv;
+    if (CachedOffset(off, cls, L"propInventory") < 0) return nullptr;
+    void* inv = ReadAt<void*>(containerActor, off);
     return (inv && R::IsLive(inv)) ? inv : nullptr;
 }
 
@@ -201,6 +209,11 @@ void* ContainerClass() {
     return g_containerCls;
 }
 
+void* DroneContainerClass() {
+    if (!g_droneContainerCls) g_droneContainerCls = R::FindClass(L"prop_inventoryContainer_drone_C");
+    return g_droneContainerCls;
+}
+
 // A class by name, memoised (a null result too: one walk per name, ever).
 void* ClassByName(const std::wstring& name) {
     if (name.empty()) return nullptr;
@@ -230,9 +243,16 @@ bool IsInventoryComponent(void* obj) {
     void* base = InventoryClass();
     return base && obj && ue_wrap::prop::WalksToBase(R::ClassOf(obj), base);
 }
+// The delivery cargo actor does not descend from prop_container_C even though it owns the same
+// propInventory/GObjStack model. Leaving it outside this lane meant a client sack edited only its
+// local save slice: fast takes kept spawning items after the host had already consumed them.
 bool IsContainerActor(void* actor) {
     void* base = ContainerClass();
-    return base && actor && ue_wrap::prop::WalksToBase(R::ClassOf(actor), base);
+    if (!actor) return false;
+    void* cls = R::ClassOf(actor);
+    if (base && ue_wrap::prop::WalksToBase(cls, base)) return true;
+    void* drone = DroneContainerClass();
+    return drone && ue_wrap::prop::WalksToBase(cls, drone);
 }
 
 // Boundary 2: a nested container's ints[0][0] is its own GObjStack index, a slot number in the
@@ -673,6 +693,9 @@ void Install(coop::net::Session* session) {
     // This lane owns a container's GObjStack slice behind a host-arbitrated compare-and-swap; the
     // container's own save record carries the index into that stack, with none of the arbitration.
     coop::prop_save_data::DeclareClassOwnedElsewhere(L"prop_container_C");
+    // The cargo record contains a peer-local GObjStack index. Its contents are owned by this
+    // host-arbitrated lane, never by the generic prop save-record publisher.
+    coop::prop_save_data::DeclareClassOwnedElsewhere(L"prop_inventoryContainer_drone_C");
     g_session.store(session, std::memory_order_release);
 }
 

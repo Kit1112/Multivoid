@@ -12,6 +12,7 @@
 #include "ue_wrap/core/log.h"
 #include "ue_wrap/core/reflection.h"
 #include "ue_wrap/core/sdk_profile.h"
+#include "ue_wrap/actors/prop.h"
 
 #include <atomic>
 #include <chrono>
@@ -33,6 +34,25 @@ constexpr int32_t kActiveOffFallback = 0x0370;
 void*   g_cache    = nullptr;  // cached singleton drone actor (GT-only)
 int32_t g_cacheIdx = -1;       // its GUObjectArray slot -- IsLiveByIndex is safe vs a freed pointer
                                // (the project rule; IsLive(ptr) derefs the maybe-freed object itself)
+
+// The placed delivery cargo is identified by its save key, not by the first actor of its class:
+// a client can also have a live native private container. The lookup is throttled just like the
+// sack discovery; a valid cached mirror turns the steady path into two cheap reads.
+void* g_cargoCache = nullptr;
+int32_t g_cargoCacheIdx = -1;
+std::chrono::steady_clock::time_point g_nextCargoFind{};
+
+void* FindSharedCargo() {
+    if (g_cargoCache && R::IsLiveByIndex(g_cargoCache, g_cargoCacheIdx)) return g_cargoCache;
+    const auto now = std::chrono::steady_clock::now();
+    if (g_nextCargoFind.time_since_epoch().count() != 0 && now < g_nextCargoFind) return nullptr;
+    g_nextCargoFind = now + std::chrono::milliseconds(250);
+    void* cargo = ue_wrap::prop::FindByKeyString(L"drone_InventoryContainer");
+    if (!cargo || !R::IsLive(cargo) || R::ClassNameOf(cargo) != L"prop_inventoryContainer_drone_C") return nullptr;
+    g_cargoCache = cargo;
+    g_cargoCacheIdx = R::InternalIndexOf(cargo);
+    return cargo;
+}
 
 // ---- FX mirroring -- resolved lazily (separate from the pose path) ----
 bool    g_fxResolved   = false;
@@ -321,15 +341,11 @@ void RepointSackContainers() {
         now - s_lastSackScan < std::chrono::milliseconds(250)) return;
     s_lastSackScan = now;
 
-    void* drone = Find();
-    void* c = nullptr;
-    if (drone && EnsureFxResolved() && g_containerOff >= 0) {
-        c = *reinterpret_cast<void**>(reinterpret_cast<char*>(drone) + g_containerOff);
-    }
-    if (!c || !R::IsLive(c)) {
-        c = R::FindObjectByClass(L"prop_inventoryContainer_drone_C");
-    }
-    if (!c || !R::IsLive(c)) return;
+    // The native drone can create a private cargo actor keyed "droneContainer" on a client.
+    // It is live but is not the shared world cargo. Do not fall back to an arbitrary actor of the
+    // same class while the placed actor is materialising: opening that private stack is precisely
+    // what lets a rapid take mint duplicate items.
+    void* c = FindSharedCargo();
 
     static int32_t s_offSackContainer = -2;
     static void* s_sackCls = nullptr;
@@ -361,12 +377,11 @@ void RepointContainer(void* drone) {
     // 'droneContainer') is already mirrored by the prop pipeline -- find it + point the field at it so
     // the inventory opens. Idempotent: only writes when the field is null + the actor exists.
     void** slot = reinterpret_cast<void**>(reinterpret_cast<char*>(drone) + g_containerOff);
-    if (!(*slot && R::IsLive(*slot))) {
-        if (void* c = R::FindObjectByClass(L"prop_inventoryContainer_drone_C")) {
-            *slot = c;
-            UE_LOGI("drone: repointed mirror container @0x%04X -> %p (prop-mirrored 'droneContainer')",
-                    g_containerOff, c);
-        }
+    void* c = FindSharedCargo();
+    if (*slot != c) {
+        *slot = c;
+        UE_LOGI("drone: repointed mirror container @0x%04X -> %p (shared cargo%s)",
+                g_containerOff, c, c ? "" : " pending");
     }
     RepointSackContainers();
 }
